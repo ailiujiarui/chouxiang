@@ -158,6 +158,7 @@ class GitHubAutomationService:
             if run_result.record.status != "SUCCESS" or run_result.candidate_file is None:
                 self._comment_if_enabled(job, run_result.report_markdown)
                 return GitHubAutomationResult(
+                    job_id=job.job_id,
                     repo_full_name=job.repo_full_name,
                     issue_number=job.issue_number,
                     branch_name=branch_name,
@@ -170,6 +171,7 @@ class GitHubAutomationService:
             target_file.write_text(run_result.candidate_file.read_text(encoding="utf-8"), encoding="utf-8")
             if self.settings.dry_run:
                 return GitHubAutomationResult(
+                    job_id=job.job_id,
                     repo_full_name=job.repo_full_name,
                     issue_number=job.issue_number,
                     branch_name=branch_name,
@@ -191,6 +193,7 @@ class GitHubAutomationService:
                 body=run_result.report_markdown,
             )
             return GitHubAutomationResult(
+                job_id=job.job_id,
                 repo_full_name=job.repo_full_name,
                 issue_number=job.issue_number,
                 branch_name=branch_name,
@@ -201,6 +204,7 @@ class GitHubAutomationService:
             )
         except Exception as exc:
             return GitHubAutomationResult(
+                job_id=job.job_id,
                 repo_full_name=job.repo_full_name,
                 issue_number=job.issue_number,
                 branch_name=branch_name,

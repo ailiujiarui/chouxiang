@@ -62,6 +62,7 @@ class RefactorRunResult(BaseModel):
 
 
 class GitHubRefactorJob(BaseModel):
+    job_id: str
     repo_full_name: str
     clone_url: str
     default_branch: str = "main"
@@ -76,6 +77,7 @@ class GitHubRefactorJob(BaseModel):
 
 
 class GitHubAutomationResult(BaseModel):
+    job_id: str | None = None
     repo_full_name: str
     issue_number: int
     branch_name: str | None = None
@@ -84,3 +86,21 @@ class GitHubAutomationResult(BaseModel):
     pr_url: str | None = None
     workspace_path: Path | None = None
     error: str | None = None
+
+
+class GitHubJobRecord(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    job_id: str
+    repo_full_name: str
+    issue_number: int
+    target_path: str
+    tests_path: str
+    status: Literal["QUEUED", "RUNNING", "SUCCESS", "FAILED", "DRY_RUN"]
+    branch_name: str | None = None
+    run_id: str | None = None
+    pr_url: str | None = None
+    workspace_path: Path | None = None
+    error: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None

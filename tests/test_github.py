@@ -51,6 +51,7 @@ def test_github_service_dry_run_refactors_without_push(tmp_path: Path):
     )
     result = service.process(_job())
     assert result.status == "DRY_RUN"
+    assert result.job_id == "job-42"
     assert repo_manager.pushed is None
     assert "return (" in (checkout / "leap_year.py").read_text(encoding="utf-8")
 
@@ -72,6 +73,7 @@ def test_github_service_pushes_and_creates_pr(tmp_path: Path):
     )
     result = service.process(_job())
     assert result.status == "SUCCESS"
+    assert result.job_id == "job-42"
     assert result.pr_url == "https://github.com/octo/demo/pull/1"
     assert repo_manager.clone_url is not None
     assert "x-access-token:" in repo_manager.clone_url
@@ -83,6 +85,7 @@ def test_github_service_pushes_and_creates_pr(tmp_path: Path):
 
 def _job() -> GitHubRefactorJob:
     return GitHubRefactorJob(
+        job_id="job-42",
         repo_full_name="octo/demo",
         clone_url="https://github.com/octo/demo.git",
         default_branch="main",

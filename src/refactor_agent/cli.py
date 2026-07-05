@@ -7,6 +7,7 @@ import typer
 import uvicorn
 from rich.console import Console
 
+from refactor_agent.config import AppSettings
 from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
 from refactor_agent.models import RefactorRequest
 from refactor_agent.orchestrator import RefactorOrchestrator
@@ -75,6 +76,30 @@ def serve(
 ) -> None:
     """Serve the GitHub Webhook gateway."""
     uvicorn.run("refactor_agent.webhook:app", host=host, port=port, reload=reload)
+
+
+@app.command()
+def jobs(
+    limit: int = typer.Option(20, "--limit", min=1, max=100, help="Maximum number of jobs to show."),
+    database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
+    run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Run root used to infer the default database."),
+) -> None:
+    """List recent GitHub Webhook jobs."""
+    settings = AppSettings(run_root=run_root, database_path=database)
+    store = SQLiteRunStore(settings.resolved_database_path)
+    records = store.list_github_jobs(limit)
+    if not records:
+        console.print("No GitHub jobs recorded yet.", markup=False)
+        return
+    for record in records:
+        console.print(
+            (
+                f"{record.updated_at} | {record.status} | {record.job_id} | "
+                f"{record.repo_full_name}#{record.issue_number} | "
+                f"target={record.target_path} | run={record.run_id or '-'} | pr={record.pr_url or '-'}"
+            ),
+            markup=False,
+        )
 
 
 def _run_request(

@@ -4,27 +4,44 @@ import hashlib
 import hmac
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
 
 from refactor_agent.config import AppSettings
 from refactor_agent.github import GitHubAutomationService
 from refactor_agent.models import GitHubRefactorJob
+from refactor_agent.store import SQLiteRunStore
 
 
 def create_app(
     settings: AppSettings | None = None,
     service: GitHubAutomationService | None = None,
+    store: SQLiteRunStore | None = None,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
     service = service or GitHubAutomationService(settings)
+    store = store or SQLiteRunStore(settings.resolved_database_path)
     app = FastAPI(title="Refactor Agent Webhook", version="0.1.0")
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/jobs")
+    def list_jobs(limit: int = 20) -> dict[str, Any]:
+        bounded_limit = max(1, min(limit, 100))
+        return {"jobs": [job.model_dump(mode="json") for job in store.list_github_jobs(bounded_limit)]}
+
+    @app.get("/jobs/{job_id}")
+    def get_job(job_id: str) -> dict[str, Any]:
+        job = store.get_github_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+        return job.model_dump(mode="json")
 
     @app.post("/webhook/github", status_code=status.HTTP_202_ACCEPTED)
     @app.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED)
@@ -48,9 +65,11 @@ def create_app(
         if parsed is None:
             return {"status": "ignored", "event": event_name, "action": payload.get("action")}
 
-        background_tasks.add_task(service.process, parsed)
+        store.create_github_job(parsed)
+        background_tasks.add_task(_process_and_store, service, store, parsed)
         return {
             "status": "accepted",
+            "job_id": parsed.job_id,
             "repo": parsed.repo_full_name,
             "issue": parsed.issue_number,
             "target": parsed.target_path,
@@ -102,6 +121,7 @@ def parse_github_payload(
         return None
 
     return GitHubRefactorJob(
+        job_id=build_job_id(str(repo["full_name"]), int(issue["number"])),
         repo_full_name=str(repo["full_name"]),
         clone_url=str(repo.get("clone_url") or repo.get("html_url")),
         default_branch=str(repo.get("default_branch") or "main"),
@@ -114,6 +134,26 @@ def parse_github_payload(
         event_name=event_name,
         action=action,
     )
+
+
+def build_job_id(repo_full_name: str, issue_number: int) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_full_name).strip("_") or "repo"
+    return f"{safe_repo}__issue-{issue_number}__{stamp}-{uuid4().hex[:8]}"
+
+
+def _process_and_store(
+    service: GitHubAutomationService,
+    store: SQLiteRunStore,
+    job: GitHubRefactorJob,
+) -> None:
+    store.mark_github_job_running(job.job_id)
+    try:
+        result = service.process(job)
+    except Exception as exc:
+        store.fail_github_job(job, str(exc))
+        return
+    store.complete_github_job(job, result)
 
 
 def extract_directive(text: str, names: tuple[str, ...]) -> str | None:

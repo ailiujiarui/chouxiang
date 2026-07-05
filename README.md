@@ -50,3 +50,10 @@ tests: tests
 - `REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT=.github-workspaces`：GitHub 克隆目录。
 - `REFACTOR_AGENT_RUN_ROOT=.runs`：沙箱运行目录。
 - `REFACTOR_AGENT_MAX_RETRY=3`：最大自愈尝试次数。
+
+Webhook 作业会写入 SQLite。可以用 HTTP 或 CLI 查询：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/jobs
+refactor-agent jobs --limit 10
+```
