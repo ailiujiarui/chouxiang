@@ -6,7 +6,7 @@
 
 - `MinimizerAgent`：调用 DeepSeek/mock LLM 生成极简候选代码。
 - `AST guard`：用 Python 原生 `ast` 提取函数签名、Native CC、高复杂度子树，并在进沙箱前拒绝语法错误、危险调用和 public API 删除。
-- `AdversaryAgent`：对 pytest 通过的候选代码执行 AST mutation testing，生成比较符、布尔运算、字面量等变异体，验证测试是否能杀死变异。
+- `AdversaryAgent`：先基于 AST 自动生成边界 pytest 对抗测试，再执行 AST mutation testing，验证候选代码是否经得住额外攻击。
 - `Sandbox profiler`：用 `timeit` 记录目标模块导入耗时，并用 `tracemalloc` 记录 pytest 运行峰值内存。
 - `JudgeAgent`：用 `Reward = ΔCC * 3 + ΔLOC + MutationKillRate * 10 - RetryCount * 2` 评分，并把轨迹写入 `.runs/<run_id>/trajectory.jsonl`。
 

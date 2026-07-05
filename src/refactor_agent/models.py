@@ -96,6 +96,15 @@ class MutationTestResult(BaseModel):
         return self.killed / self.total if self.total else 1.0
 
 
+class AdversarialTestResult(BaseModel):
+    generated: int
+    passed: bool
+    returncode: int
+    test_file: Path | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+
 class PerformanceProfile(BaseModel):
     passed: bool
     pytest_returncode: int
@@ -111,12 +120,13 @@ class RewardBreakdown(BaseModel):
     delta_cc: int
     retry_count: int
     mutation_kill_rate: float = 1.0
+    adversarial_passed: bool = True
     reward: float
 
 
 class TrajectoryStep(BaseModel):
     attempt: int
-    status: Literal["AST_REJECTED", "PYTEST_FAILED", "SUCCESS", "FAILED"]
+    status: Literal["AST_REJECTED", "PYTEST_FAILED", "ADVERSARY_FAILED", "SUCCESS", "FAILED"]
     message: str
     reward: RewardBreakdown | None = None
 
@@ -146,6 +156,7 @@ class RefactorRunResult(BaseModel):
     ast_validation: CandidateValidationResult | None = None
     mutation_result: MutationTestResult | None = None
     performance_profile: PerformanceProfile | None = None
+    adversarial_result: AdversarialTestResult | None = None
 
 
 class GitHubRefactorJob(BaseModel):

@@ -3,8 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from refactor_agent.adversary import run_adversarial_tests
 from refactor_agent.llm import RefactorClient
-from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, MutationTestResult, RefactorRequest, RewardBreakdown
+from refactor_agent.models import (
+    AdversarialTestResult,
+    LLMRefactorResult,
+    MetricsSnapshot,
+    MutationTestResult,
+    RefactorRequest,
+    RewardBreakdown,
+)
 from refactor_agent.mutation import run_mutation_tests
 from refactor_agent.trajectory import calculate_reward
 
@@ -34,7 +42,7 @@ class MinimizerAgent:
 
 @dataclass
 class AdversaryAgent:
-    """Rule-based adversary that attacks candidates with AST mutation testing."""
+    """Rule-based adversary that attacks candidates with generated tests and mutation testing."""
 
     max_mutants: int = 8
 
@@ -55,6 +63,20 @@ class AdversaryAgent:
             max_mutants=self.max_mutants,
         )
 
+    def generate_tests(
+        self,
+        candidate_source: str,
+        workspace: Path,
+        target_file: Path,
+        timeout_seconds: float,
+    ) -> AdversarialTestResult:
+        return run_adversarial_tests(
+            candidate_source=candidate_source,
+            workspace=workspace,
+            target_file=target_file,
+            timeout_seconds=timeout_seconds,
+        )
+
 
 class JudgeAgent:
     """Scores the final candidate with a multi-objective reward function."""
@@ -65,10 +87,12 @@ class JudgeAgent:
         post: MetricsSnapshot,
         retry_count: int,
         mutation_result: MutationTestResult | None,
+        adversarial_result: AdversarialTestResult | None = None,
     ) -> RewardBreakdown:
         return calculate_reward(
             pre=pre,
             post=post,
             retry_count=retry_count,
             mutation_result=mutation_result,
+            adversarial_result=adversarial_result,
         )

@@ -44,6 +44,9 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     assert result.mutation_result is not None
     assert result.performance_profile is not None
     assert result.performance_profile.passed is True
+    assert result.adversarial_result is not None
+    assert result.adversarial_result.passed is True
+    assert "Adversarial tests" in result.report_markdown
     assert "Mutation testing" in result.report_markdown
     assert "Peak traced memory" in result.report_markdown
     assert (tmp_path / ".runs" / result.record.run_id / "trajectory.jsonl").is_file()

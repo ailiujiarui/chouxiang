@@ -9,6 +9,7 @@ from refactor_agent.ast_analyzer import validate_candidate_source
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
+    AdversarialTestResult,
     CandidateValidationResult,
     MutationTestResult,
     PerformanceProfile,
@@ -55,6 +56,7 @@ class RefactorOrchestrator:
         previous_error: str | None = None
         last_sandbox: SandboxResult | None = None
         last_validation: CandidateValidationResult | None = None
+        last_adversarial: AdversarialTestResult | None = None
         last_mutation: MutationTestResult | None = None
         last_performance: PerformanceProfile | None = None
         trajectory_path = self.run_root / run_id / "trajectory.jsonl"
@@ -89,6 +91,7 @@ class RefactorOrchestrator:
                         None,
                         str(exc),
                         last_validation,
+                        last_adversarial,
                         last_mutation,
                         None,
                         last_performance,
@@ -98,6 +101,7 @@ class RefactorOrchestrator:
                     last_sandbox_result=last_sandbox,
                     candidate_file=target_in_workspace,
                     ast_validation=last_validation,
+                    adversarial_result=last_adversarial,
                     mutation_result=last_mutation,
                     performance_profile=last_performance,
                 )
@@ -119,6 +123,20 @@ class RefactorOrchestrator:
                 timeout_seconds=self.pytest_timeout_seconds,
             )
             if last_sandbox.passed:
+                last_adversarial = self.adversary.generate_tests(
+                    candidate_source=current_code,
+                    workspace=workspace,
+                    target_file=target_in_workspace,
+                    timeout_seconds=self.pytest_timeout_seconds,
+                )
+                if not last_adversarial.passed:
+                    previous_error = _summarize_adversarial_failure(last_adversarial)
+                    append_trajectory(
+                        trajectory_path,
+                        TrajectoryStep(attempt=attempt, status="ADVERSARY_FAILED", message=previous_error),
+                    )
+                    continue
+
                 post = analyze_file(target_in_workspace)
                 last_mutation = self.adversary.challenge(
                     candidate_source=current_code,
@@ -138,6 +156,7 @@ class RefactorOrchestrator:
                     post=post,
                     retry_count=attempt - 1,
                     mutation_result=last_mutation,
+                    adversarial_result=last_adversarial,
                 )
                 append_trajectory(
                     trajectory_path,
@@ -169,6 +188,7 @@ class RefactorOrchestrator:
                         last_sandbox,
                         None,
                         last_validation,
+                        last_adversarial,
                         last_mutation,
                         reward,
                         last_performance,
@@ -178,6 +198,7 @@ class RefactorOrchestrator:
                     last_sandbox_result=last_sandbox,
                     candidate_file=target_in_workspace,
                     ast_validation=last_validation,
+                    adversarial_result=last_adversarial,
                     mutation_result=last_mutation,
                     performance_profile=last_performance,
                 )
@@ -212,6 +233,7 @@ class RefactorOrchestrator:
                 last_sandbox,
                 record.error,
                 last_validation,
+                last_adversarial,
                 last_mutation,
                 None,
                 last_performance,
@@ -221,6 +243,7 @@ class RefactorOrchestrator:
             last_sandbox_result=last_sandbox,
             candidate_file=target_in_workspace,
             ast_validation=last_validation,
+            adversarial_result=last_adversarial,
             mutation_result=last_mutation,
             performance_profile=last_performance,
         )
@@ -236,6 +259,14 @@ def _summarize_failure(result: SandboxResult) -> str:
     return combined[-8000:] if combined else f"pytest failed with return code {result.returncode}"
 
 
+def _summarize_adversarial_failure(result: AdversarialTestResult) -> str:
+    combined = "\n".join(part for part in [result.stdout, result.stderr] if part)
+    return (
+        "Adversary generated tests failed:\n"
+        + (combined[-8000:] if combined else f"pytest failed with return code {result.returncode}")
+    )
+
+
 def _build_report(
     record: RunRecord,
     workspace: Path,
@@ -243,6 +274,7 @@ def _build_report(
     sandbox_result: SandboxResult | None,
     error: str | None,
     ast_validation: CandidateValidationResult | None = None,
+    adversarial_result: AdversarialTestResult | None = None,
     mutation_result: MutationTestResult | None = None,
     reward=None,
     performance_profile: PerformanceProfile | None = None,
@@ -268,6 +300,12 @@ def _build_report(
         )
     if ast_validation is not None:
         lines.extend(["- AST guard: passed" if ast_validation.ok else "- AST guard: rejected"])
+    if adversarial_result is not None:
+        lines.append(
+            "- Adversarial tests: "
+            f"{adversarial_result.generated} generated, "
+            f"{'passed' if adversarial_result.passed else 'failed'}"
+        )
     if mutation_result is not None:
         lines.append(
             "- Mutation testing: "
