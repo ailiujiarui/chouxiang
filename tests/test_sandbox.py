@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from refactor_agent.sandbox import prepare_workspace, run_pytest, write_candidate
+from refactor_agent.sandbox import prepare_workspace, run_performance_profile, run_pytest, write_candidate
 
 
 def test_sandbox_detects_passing_tests(tmp_path: Path):
@@ -27,6 +27,17 @@ def test_write_candidate_allows_retry(tmp_path: Path):
     write_candidate(target, "def add(a, b):\n    return a + b\n")
     result = run_pytest(workspace, tests, timeout_seconds=10)
     assert result.passed is True
+
+
+def test_performance_profile_reports_time_and_memory(tmp_path: Path):
+    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
+    workspace = tmp_path / "workspace"
+    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
+    result = run_performance_profile(workspace, target, tests, timeout_seconds=10)
+    assert result.passed is True
+    assert result.pytest_duration_seconds > 0
+    assert result.peak_memory_kib > 0
+    assert result.import_time_seconds is not None
 
 
 def _make_project(tmp_path: Path, code: str) -> Path:

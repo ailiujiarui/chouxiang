@@ -11,13 +11,14 @@ from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
     CandidateValidationResult,
     MutationTestResult,
+    PerformanceProfile,
     RefactorRequest,
     RefactorRunResult,
     RunRecord,
     SandboxResult,
     TrajectoryStep,
 )
-from refactor_agent.sandbox import prepare_workspace, run_pytest, write_candidate
+from refactor_agent.sandbox import prepare_workspace, run_performance_profile, run_pytest, write_candidate
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.trajectory import append_trajectory
 
@@ -55,6 +56,7 @@ class RefactorOrchestrator:
         last_sandbox: SandboxResult | None = None
         last_validation: CandidateValidationResult | None = None
         last_mutation: MutationTestResult | None = None
+        last_performance: PerformanceProfile | None = None
         trajectory_path = self.run_root / run_id / "trajectory.jsonl"
 
         for attempt in range(1, request.max_retry + 1):
@@ -80,13 +82,24 @@ class RefactorOrchestrator:
                 self.store.save(record)
                 return RefactorRunResult(
                     record=record,
-                    report_markdown=_build_report(record, workspace, None, None, str(exc), last_validation, last_mutation, None),
+                    report_markdown=_build_report(
+                        record,
+                        workspace,
+                        None,
+                        None,
+                        str(exc),
+                        last_validation,
+                        last_mutation,
+                        None,
+                        last_performance,
+                    ),
                     workspace_path=workspace,
                     attempts=attempt,
                     last_sandbox_result=last_sandbox,
                     candidate_file=target_in_workspace,
                     ast_validation=last_validation,
                     mutation_result=last_mutation,
+                    performance_profile=last_performance,
                 )
 
             current_code = llm_result.fixed_code
@@ -114,6 +127,12 @@ class RefactorOrchestrator:
                     tests_path=tests_in_workspace,
                     timeout_seconds=self.pytest_timeout_seconds,
                 )
+                last_performance = run_performance_profile(
+                    workspace=workspace,
+                    target_file=target_in_workspace,
+                    tests_path=tests_in_workspace,
+                    timeout_seconds=self.pytest_timeout_seconds,
+                )
                 reward = self.judge.score(
                     pre=baseline,
                     post=post,
@@ -125,7 +144,7 @@ class RefactorOrchestrator:
                     TrajectoryStep(
                         attempt=attempt,
                         status="SUCCESS",
-                        message="pytest passed and mutation testing completed",
+                        message="pytest, mutation testing, and performance profiling completed",
                         reward=reward,
                     ),
                 )
@@ -152,6 +171,7 @@ class RefactorOrchestrator:
                         last_validation,
                         last_mutation,
                         reward,
+                        last_performance,
                     ),
                     workspace_path=workspace,
                     attempts=attempt,
@@ -159,6 +179,7 @@ class RefactorOrchestrator:
                     candidate_file=target_in_workspace,
                     ast_validation=last_validation,
                     mutation_result=last_mutation,
+                    performance_profile=last_performance,
                 )
 
             previous_error = _summarize_failure(last_sandbox)
@@ -184,13 +205,24 @@ class RefactorOrchestrator:
         )
         return RefactorRunResult(
             record=record,
-            report_markdown=_build_report(record, workspace, None, last_sandbox, record.error, last_validation, last_mutation, None),
+            report_markdown=_build_report(
+                record,
+                workspace,
+                None,
+                last_sandbox,
+                record.error,
+                last_validation,
+                last_mutation,
+                None,
+                last_performance,
+            ),
             workspace_path=workspace,
             attempts=request.max_retry,
             last_sandbox_result=last_sandbox,
             candidate_file=target_in_workspace,
             ast_validation=last_validation,
             mutation_result=last_mutation,
+            performance_profile=last_performance,
         )
 
 
@@ -213,6 +245,7 @@ def _build_report(
     ast_validation: CandidateValidationResult | None = None,
     mutation_result: MutationTestResult | None = None,
     reward=None,
+    performance_profile: PerformanceProfile | None = None,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -240,6 +273,19 @@ def _build_report(
             "- Mutation testing: "
             f"{mutation_result.killed}/{mutation_result.total} killed "
             f"({mutation_result.kill_rate * 100:.1f}% kill rate)"
+        )
+    if performance_profile is not None:
+        import_time = (
+            f"{performance_profile.import_time_seconds:.4f}s"
+            if performance_profile.import_time_seconds is not None
+            else "n/a"
+        )
+        lines.extend(
+            [
+                f"- Profiled pytest duration: {performance_profile.pytest_duration_seconds:.2f}s",
+                f"- Peak traced memory: {performance_profile.peak_memory_kib:.1f} KiB",
+                f"- Module import time: {import_time}",
+            ]
         )
     if reward is not None:
         lines.append(f"- Reward: {reward.reward:.2f}")

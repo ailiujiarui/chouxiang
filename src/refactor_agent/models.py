@@ -96,6 +96,16 @@ class MutationTestResult(BaseModel):
         return self.killed / self.total if self.total else 1.0
 
 
+class PerformanceProfile(BaseModel):
+    passed: bool
+    pytest_returncode: int
+    pytest_duration_seconds: float
+    peak_memory_kib: float
+    import_time_seconds: float | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+
 class RewardBreakdown(BaseModel):
     delta_loc: int
     delta_cc: int
@@ -135,6 +145,7 @@ class RefactorRunResult(BaseModel):
     candidate_file: Path | None = None
     ast_validation: CandidateValidationResult | None = None
     mutation_result: MutationTestResult | None = None
+    performance_profile: PerformanceProfile | None = None
 
 
 class GitHubRefactorJob(BaseModel):
