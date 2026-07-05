@@ -39,6 +39,11 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     result = orchestrator.run(request)
     assert result.record.status == "SUCCESS"
     assert result.record.self_heal_count == 1
+    assert result.ast_validation is not None
+    assert result.ast_validation.ok is True
+    assert result.mutation_result is not None
+    assert "Mutation testing" in result.report_markdown
+    assert (tmp_path / ".runs" / result.record.run_id / "trajectory.jsonl").is_file()
     assert (result.workspace_path / "leap_year.py").read_text(encoding="utf-8") != (
         project / "leap_year.py"
     ).read_text(encoding="utf-8")

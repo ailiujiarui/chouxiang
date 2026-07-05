@@ -2,6 +2,13 @@
 
 本项目实现 `plan.md` 中的本地闭环 MVP：读取 Python 文件和 Issue 描述，计算 LOC/圈复杂度，调用 DeepSeek 或 mock LLM 生成修复代码，在隔离工作区运行 `pytest`，失败时最多自愈 3 次，成功后输出指标报告并写入 SQLite。
 
+当前内核已经升级为轻量多 Agent 流程：
+
+- `MinimizerAgent`：调用 DeepSeek/mock LLM 生成极简候选代码。
+- `AST guard`：用 Python 原生 `ast` 提取函数签名、Native CC、高复杂度子树，并在进沙箱前拒绝语法错误、危险调用和 public API 删除。
+- `AdversaryAgent`：对 pytest 通过的候选代码执行 AST mutation testing，生成比较符、布尔运算、字面量等变异体，验证测试是否能杀死变异。
+- `JudgeAgent`：用 `Reward = ΔCC * 3 + ΔLOC + MutationKillRate * 10 - RetryCount * 2` 评分，并把轨迹写入 `.runs/<run_id>/trajectory.jsonl`。
+
 ## Quick Start
 
 ```powershell
@@ -22,6 +29,7 @@ refactor-agent run --target path\to\file.py --issue path\to\issue.md --tests pat
 - `DEEPSEEK_MODEL`，默认 `deepseek-chat`
 
 运行产物保存在 `.runs/<run_id>/workspace`，原始文件不会被直接覆盖。
+每次运行的自愈轨迹保存在 `.runs/<run_id>/trajectory.jsonl`。
 
 ## GitHub Webhook Mode
 

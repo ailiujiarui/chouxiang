@@ -4,11 +4,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from refactor_agent.agents import AdversaryAgent, JudgeAgent, MinimizerAgent
+from refactor_agent.ast_analyzer import validate_candidate_source
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.metrics import analyze_file
-from refactor_agent.models import RefactorRequest, RefactorRunResult, RunRecord, SandboxResult
+from refactor_agent.models import (
+    CandidateValidationResult,
+    MutationTestResult,
+    RefactorRequest,
+    RefactorRunResult,
+    RunRecord,
+    SandboxResult,
+    TrajectoryStep,
+)
 from refactor_agent.sandbox import prepare_workspace, run_pytest, write_candidate
 from refactor_agent.store import SQLiteRunStore
+from refactor_agent.trajectory import append_trajectory
 
 
 class RefactorOrchestrator:
@@ -23,6 +34,9 @@ class RefactorOrchestrator:
         self.run_root = run_root.resolve()
         self.store = store or SQLiteRunStore(self.run_root / "refactor_agent.sqlite")
         self.pytest_timeout_seconds = pytest_timeout_seconds
+        self.minimizer = MinimizerAgent(llm_client)
+        self.adversary = AdversaryAgent()
+        self.judge = JudgeAgent()
 
     def run(self, request: RefactorRequest) -> RefactorRunResult:
         run_id = _new_run_id()
@@ -39,10 +53,13 @@ class RefactorOrchestrator:
         current_code = original_code
         previous_error: str | None = None
         last_sandbox: SandboxResult | None = None
+        last_validation: CandidateValidationResult | None = None
+        last_mutation: MutationTestResult | None = None
+        trajectory_path = self.run_root / run_id / "trajectory.jsonl"
 
         for attempt in range(1, request.max_retry + 1):
             try:
-                llm_result = self.llm_client.refactor(
+                llm_result = self.minimizer.propose(
                     request=request,
                     current_code=current_code,
                     baseline_metrics=baseline,
@@ -63,14 +80,25 @@ class RefactorOrchestrator:
                 self.store.save(record)
                 return RefactorRunResult(
                     record=record,
-                    report_markdown=_build_report(record, workspace, None, None, str(exc)),
+                    report_markdown=_build_report(record, workspace, None, None, str(exc), last_validation, last_mutation, None),
                     workspace_path=workspace,
                     attempts=attempt,
                     last_sandbox_result=last_sandbox,
                     candidate_file=target_in_workspace,
+                    ast_validation=last_validation,
+                    mutation_result=last_mutation,
                 )
 
             current_code = llm_result.fixed_code
+            last_validation = validate_candidate_source(original_code, current_code)
+            if not last_validation.ok:
+                previous_error = "AST guard rejected candidate before sandbox:\n" + last_validation.summary()
+                append_trajectory(
+                    trajectory_path,
+                    TrajectoryStep(attempt=attempt, status="AST_REJECTED", message=previous_error),
+                )
+                continue
+
             write_candidate(target_in_workspace, current_code)
             last_sandbox = run_pytest(
                 workspace=workspace,
@@ -79,6 +107,28 @@ class RefactorOrchestrator:
             )
             if last_sandbox.passed:
                 post = analyze_file(target_in_workspace)
+                last_mutation = self.adversary.challenge(
+                    candidate_source=current_code,
+                    target_file=target_in_workspace,
+                    workspace=workspace,
+                    tests_path=tests_in_workspace,
+                    timeout_seconds=self.pytest_timeout_seconds,
+                )
+                reward = self.judge.score(
+                    pre=baseline,
+                    post=post,
+                    retry_count=attempt - 1,
+                    mutation_result=last_mutation,
+                )
+                append_trajectory(
+                    trajectory_path,
+                    TrajectoryStep(
+                        attempt=attempt,
+                        status="SUCCESS",
+                        message="pytest passed and mutation testing completed",
+                        reward=reward,
+                    ),
+                )
                 record = RunRecord(
                     run_id=run_id,
                     issue_id=request.issue_id,
@@ -93,14 +143,29 @@ class RefactorOrchestrator:
                 self.store.save(record)
                 return RefactorRunResult(
                     record=record,
-                    report_markdown=_build_report(record, workspace, llm_result.insult_review, last_sandbox, None),
+                    report_markdown=_build_report(
+                        record,
+                        workspace,
+                        llm_result.insult_review,
+                        last_sandbox,
+                        None,
+                        last_validation,
+                        last_mutation,
+                        reward,
+                    ),
                     workspace_path=workspace,
                     attempts=attempt,
                     last_sandbox_result=last_sandbox,
                     candidate_file=target_in_workspace,
+                    ast_validation=last_validation,
+                    mutation_result=last_mutation,
                 )
 
             previous_error = _summarize_failure(last_sandbox)
+            append_trajectory(
+                trajectory_path,
+                TrajectoryStep(attempt=attempt, status="PYTEST_FAILED", message=previous_error),
+            )
 
         record = RunRecord(
             run_id=run_id,
@@ -113,13 +178,19 @@ class RefactorOrchestrator:
             error=previous_error or "pytest failed",
         )
         self.store.save(record)
+        append_trajectory(
+            trajectory_path,
+            TrajectoryStep(attempt=request.max_retry, status="FAILED", message=record.error or "refactor failed"),
+        )
         return RefactorRunResult(
             record=record,
-            report_markdown=_build_report(record, workspace, None, last_sandbox, record.error),
+            report_markdown=_build_report(record, workspace, None, last_sandbox, record.error, last_validation, last_mutation, None),
             workspace_path=workspace,
             attempts=request.max_retry,
             last_sandbox_result=last_sandbox,
             candidate_file=target_in_workspace,
+            ast_validation=last_validation,
+            mutation_result=last_mutation,
         )
 
 
@@ -139,6 +210,9 @@ def _build_report(
     review: str | None,
     sandbox_result: SandboxResult | None,
     error: str | None,
+    ast_validation: CandidateValidationResult | None = None,
+    mutation_result: MutationTestResult | None = None,
+    reward=None,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -159,6 +233,19 @@ def _build_report(
                 f"- Pytest duration: {sandbox_result.duration_seconds:.2f}s",
             ]
         )
+    if ast_validation is not None:
+        lines.extend(["- AST guard: passed" if ast_validation.ok else "- AST guard: rejected"])
+    if mutation_result is not None:
+        lines.append(
+            "- Mutation testing: "
+            f"{mutation_result.killed}/{mutation_result.total} killed "
+            f"({mutation_result.kill_rate * 100:.1f}% kill rate)"
+        )
+    if reward is not None:
+        lines.append(f"- Reward: {reward.reward:.2f}")
+    if mutation_result and mutation_result.survival_details:
+        lines.extend(["", "#### Surviving Mutants", ""])
+        lines.extend(f"- {detail}" for detail in mutation_result.survival_details)
     if review:
         lines.extend(["", "#### Code Review", "", review])
     if error:

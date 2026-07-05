@@ -7,6 +7,7 @@ from typing import Protocol
 import httpx
 from pydantic import ValidationError
 
+from refactor_agent.ast_analyzer import analyze_ast, ast_prompt_summary
 from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest
 
 
@@ -163,11 +164,15 @@ def build_user_prompt(
     attempt: int,
 ) -> str:
     retry_text = (
-        "\n\n上一轮 pytest 失败信息如下，请修复它并保持代码简洁：\n"
+        "\n\n上一轮验证失败信息如下，请修复它并保持代码简洁：\n"
         f"{previous_error}"
         if previous_error
         else ""
     )
+    try:
+        ast_summary = ast_prompt_summary(analyze_ast(current_code))
+    except SyntaxError:
+        ast_summary = "Current code has a syntax error; repair syntax before refactoring."
     return f"""
 Issue:
 {request.issue_text}
@@ -178,6 +183,9 @@ Target file:
 Baseline metrics:
 - LOC: {baseline_metrics.loc}
 - Cyclomatic Complexity: {baseline_metrics.cyclomatic_complexity}
+
+AST semantic summary:
+{ast_summary}
 
 Attempt: {attempt}
 
