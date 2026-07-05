@@ -2,6 +2,7 @@ from pathlib import Path
 
 from refactor_agent.config import AppSettings
 from refactor_agent.github import GitHubAutomationService
+from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.llm import MockRefactorClient
 from refactor_agent.models import GitHubRefactorJob
 
@@ -56,6 +57,23 @@ def test_github_service_dry_run_refactors_without_push(tmp_path: Path):
     assert "return (" in (checkout / "leap_year.py").read_text(encoding="utf-8")
 
 
+def test_github_service_auto_locates_target_file(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    repo_manager = FakeRepoManager(checkout)
+    service = GitHubAutomationService(
+        settings=AppSettings(
+            dry_run=True,
+            run_root=tmp_path / ".runs",
+            database_path=tmp_path / ".runs" / "runs.sqlite",
+        ),
+        repo_manager=repo_manager,  # type: ignore[arg-type]
+        llm_factory=lambda: MockRefactorClient(),
+    )
+    result = service.process(_job(target_path=AUTO_TARGET_PATH))
+    assert result.status == "DRY_RUN"
+    assert "return (" in (checkout / "leap_year.py").read_text(encoding="utf-8")
+
+
 def test_github_service_pushes_and_creates_pr(tmp_path: Path):
     checkout = tmp_path / "checkout"
     repo_manager = FakeRepoManager(checkout)
@@ -83,7 +101,7 @@ def test_github_service_pushes_and_creates_pr(tmp_path: Path):
     assert "Refactor Agent Report" in api.pull_request["body"]
 
 
-def _job() -> GitHubRefactorJob:
+def _job(target_path: str = "leap_year.py") -> GitHubRefactorJob:
     return GitHubRefactorJob(
         job_id="job-42",
         repo_full_name="octo/demo",
@@ -92,7 +110,7 @@ def _job() -> GitHubRefactorJob:
         issue_number=42,
         issue_title="Leap year bug",
         issue_text="target: leap_year.py\ntests: tests\n1900 should not be a leap year",
-        target_path="leap_year.py",
+        target_path=target_path,
         tests_path="tests",
         event_name="issues",
         action="opened",

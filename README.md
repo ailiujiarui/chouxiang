@@ -45,12 +45,14 @@ refactor-agent serve --host 0.0.0.0 --port 8000
 
 Webhook URL 使用 `/webhooks/github` 或 `/webhook/github`。支持 `issues.opened` 和 `issue_comment.created`。
 
-Issue 正文或评论里需要显式写目标文件，测试路径可省略：
+Issue 正文或评论里可以显式写目标文件，测试路径可省略：
 
 ```text
 target: src/package/module.py
 tests: tests
 ```
+
+如果省略 `target`，Webhook 会在克隆仓库后自动扫描 Python 文件，并根据 Issue 文本里的文件名、函数名、类名和路径片段定位最可能的源码文件。
 
 常用环境变量：
 

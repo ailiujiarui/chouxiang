@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from refactor_agent.config import AppSettings
+from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.webhook import create_app, parse_github_payload, verify_github_signature
@@ -49,9 +50,11 @@ def test_parse_github_issue_payload_with_directives():
     assert job.tests_path == "tests/unit"
 
 
-def test_parse_github_payload_ignores_missing_target():
+def test_parse_github_payload_accepts_missing_target_for_auto_location():
     payload = _issue_payload("no directives here")
-    assert parse_github_payload("issues", payload) is None
+    job = parse_github_payload("issues", payload)
+    assert job is not None
+    assert job.target_path == AUTO_TARGET_PATH
 
 
 def test_webhook_accepts_signed_request_and_tracks_job(tmp_path: Path):

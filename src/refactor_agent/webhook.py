@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
 
 from refactor_agent.config import AppSettings
 from refactor_agent.github import GitHubAutomationService
+from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import GitHubRefactorJob
 from refactor_agent.store import SQLiteRunStore
 
@@ -111,11 +112,9 @@ def parse_github_payload(
 
     repo = payload.get("repository") or {}
     target_path = extract_directive(issue_text, ("target", "file", "path"))
-    if not target_path:
-        return None
     tests_path = extract_directive(issue_text, ("tests", "test")) or default_tests_path
     try:
-        target_path = normalize_repo_path(target_path)
+        target_path = normalize_repo_path(target_path) if target_path else AUTO_TARGET_PATH
         tests_path = normalize_repo_path(tests_path)
     except ValueError:
         return None

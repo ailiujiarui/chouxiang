@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from refactor_agent.config import AppSettings
+from refactor_agent.locator import AUTO_TARGET_PATH, locate_source_file
 from refactor_agent.llm import DeepSeekClient, MockRefactorClient, RefactorClient
 from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob, RefactorRequest
 from refactor_agent.orchestrator import RefactorOrchestrator
@@ -132,10 +133,11 @@ class GitHubAutomationService:
                 issue_number=job.issue_number,
             )
             repo_manager.create_branch(checkout_path, branch_name)
-            target_file = _repo_relative_path(checkout_path, job.target_path)
+            target_path = self._resolve_target_path(job, checkout_path)
+            target_file = _repo_relative_path(checkout_path, target_path)
             tests_path = _repo_relative_path(checkout_path, job.tests_path)
             if not target_file.is_file():
-                raise GitHubAutomationError(f"Target file does not exist in checkout: {job.target_path}")
+                raise GitHubAutomationError(f"Target file does not exist in checkout: {target_path}")
             if not tests_path.exists():
                 raise GitHubAutomationError(f"Tests path does not exist in checkout: {job.tests_path}")
 
@@ -184,7 +186,7 @@ class GitHubAutomationService:
                 raise GitHubAutomationError("GITHUB_TOKEN is required when dry_run is disabled.")
             api_client = self.api_client or GitHubApiClient(token, self.settings.github_api_url)
             commit_message = f"fix: refactor issue #{job.issue_number}"
-            repo_manager.commit_and_push(checkout_path, job.target_path, branch_name, commit_message)
+            repo_manager.commit_and_push(checkout_path, target_path, branch_name, commit_message)
             pr_url = api_client.create_pull_request(
                 repo_full_name=job.repo_full_name,
                 title=f"Refactor Agent fix for #{job.issue_number}: {job.issue_title}",
@@ -211,6 +213,17 @@ class GitHubAutomationService:
                 status="FAILED",
                 error=str(exc),
             )
+
+    def _resolve_target_path(self, job: GitHubRefactorJob, checkout_path: Path) -> str:
+        if job.target_path != AUTO_TARGET_PATH:
+            return job.target_path
+        located = locate_source_file(checkout_path, job.issue_text)
+        if located is None:
+            raise GitHubAutomationError(
+                "Could not auto-locate a Python source file from the issue text. "
+                "Add 'target: path/to/file.py' to the issue."
+            )
+        return located.path
 
     def _comment_if_enabled(self, job: GitHubRefactorJob, body: str) -> None:
         if self.settings.dry_run or not self.settings.github_token:
