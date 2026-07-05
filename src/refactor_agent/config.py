@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+
+class AppSettings(BaseModel):
+    github_token: str | None = None
+    github_webhook_secret: str | None = None
+    github_api_url: str = "https://api.github.com"
+    github_workspace_root: Path = Path(".github-workspaces")
+    run_root: Path = Path(".runs")
+    database_path: Path | None = None
+    default_tests_path: str = "tests"
+    max_retry: int = Field(default=3, ge=1)
+    pytest_timeout_seconds: float = Field(default=30.0, gt=0)
+    dry_run: bool = False
+    mock_llm: bool = False
+
+    @classmethod
+    def from_env(cls) -> "AppSettings":
+        return cls(
+            github_token=os.getenv("GITHUB_TOKEN"),
+            github_webhook_secret=os.getenv("GITHUB_WEBHOOK_SECRET"),
+            github_api_url=os.getenv("GITHUB_API_URL", "https://api.github.com"),
+            github_workspace_root=Path(os.getenv("REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT", ".github-workspaces")),
+            run_root=Path(os.getenv("REFACTOR_AGENT_RUN_ROOT", ".runs")),
+            database_path=_optional_path(os.getenv("REFACTOR_AGENT_DATABASE")),
+            default_tests_path=os.getenv("REFACTOR_AGENT_TESTS_PATH", "tests"),
+            max_retry=int(os.getenv("REFACTOR_AGENT_MAX_RETRY", "3")),
+            pytest_timeout_seconds=float(os.getenv("REFACTOR_AGENT_PYTEST_TIMEOUT", "30")),
+            dry_run=_env_bool("REFACTOR_AGENT_DRY_RUN", False),
+            mock_llm=_env_bool("REFACTOR_AGENT_MOCK_LLM", False),
+        )
+
+    @property
+    def resolved_database_path(self) -> Path:
+        return self.database_path or (self.run_root / "refactor_agent.sqlite")
+
+
+def _optional_path(value: str | None) -> Path | None:
+    return Path(value) if value else None
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}

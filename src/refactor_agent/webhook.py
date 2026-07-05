@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import re
+from pathlib import PurePosixPath
+from typing import Any
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, status
+
+from refactor_agent.config import AppSettings
+from refactor_agent.github import GitHubAutomationService
+from refactor_agent.models import GitHubRefactorJob
+
+
+def create_app(
+    settings: AppSettings | None = None,
+    service: GitHubAutomationService | None = None,
+) -> FastAPI:
+    settings = settings or AppSettings.from_env()
+    service = service or GitHubAutomationService(settings)
+    app = FastAPI(title="Refactor Agent Webhook", version="0.1.0")
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.post("/webhook/github", status_code=status.HTTP_202_ACCEPTED)
+    @app.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED)
+    async def github_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+        body = await request.body()
+        signature = request.headers.get("X-Hub-Signature-256")
+        if settings.github_webhook_secret and not verify_github_signature(
+            body,
+            signature,
+            settings.github_webhook_secret,
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid GitHub signature.")
+
+        event_name = request.headers.get("X-GitHub-Event", "")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload.") from exc
+
+        parsed = parse_github_payload(event_name, payload, settings.default_tests_path)
+        if parsed is None:
+            return {"status": "ignored", "event": event_name, "action": payload.get("action")}
+
+        background_tasks.add_task(service.process, parsed)
+        return {
+            "status": "accepted",
+            "repo": parsed.repo_full_name,
+            "issue": parsed.issue_number,
+            "target": parsed.target_path,
+            "tests": parsed.tests_path,
+        }
+
+    return app
+
+
+app = create_app()
+
+
+def verify_github_signature(body: bytes, signature_header: str | None, secret: str) -> bool:
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+
+
+def parse_github_payload(
+    event_name: str,
+    payload: dict[str, Any],
+    default_tests_path: str = "tests",
+) -> GitHubRefactorJob | None:
+    action = str(payload.get("action", ""))
+    if event_name == "issues" and action == "opened":
+        issue = payload.get("issue") or {}
+        if issue.get("pull_request"):
+            return None
+        issue_text = _join_text(issue.get("title"), issue.get("body"))
+    elif event_name == "issue_comment" and action == "created":
+        issue = payload.get("issue") or {}
+        if issue.get("pull_request"):
+            return None
+        comment = payload.get("comment") or {}
+        issue_text = _join_text(issue.get("title"), issue.get("body"), comment.get("body"))
+    else:
+        return None
+
+    repo = payload.get("repository") or {}
+    target_path = extract_directive(issue_text, ("target", "file", "path"))
+    if not target_path:
+        return None
+    tests_path = extract_directive(issue_text, ("tests", "test")) or default_tests_path
+    try:
+        target_path = normalize_repo_path(target_path)
+        tests_path = normalize_repo_path(tests_path)
+    except ValueError:
+        return None
+
+    return GitHubRefactorJob(
+        repo_full_name=str(repo["full_name"]),
+        clone_url=str(repo.get("clone_url") or repo.get("html_url")),
+        default_branch=str(repo.get("default_branch") or "main"),
+        issue_number=int(issue["number"]),
+        issue_title=str(issue.get("title") or f"Issue #{issue['number']}"),
+        issue_text=issue_text,
+        target_path=target_path,
+        tests_path=tests_path,
+        sender_login=(payload.get("sender") or {}).get("login"),
+        event_name=event_name,
+        action=action,
+    )
+
+
+def extract_directive(text: str, names: tuple[str, ...]) -> str | None:
+    names_pattern = "|".join(re.escape(name) for name in names)
+    patterns = [
+        rf"(?im)^\s*(?:{names_pattern})\s*[:=]\s*`?([^`\s]+)`?\s*$",
+        rf"(?im)\[(?:{names_pattern})\s*:\s*([^\]\s]+)\]",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def normalize_repo_path(value: str) -> str:
+    path = PurePosixPath(value.strip().replace("\\", "/"))
+    if path.is_absolute() or ".." in path.parts or not str(path):
+        raise ValueError(f"Unsafe repository path: {value}")
+    return str(path)
+
+
+def _join_text(*parts: str | None) -> str:
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
