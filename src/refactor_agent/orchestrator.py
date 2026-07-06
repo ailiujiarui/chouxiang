@@ -19,7 +19,12 @@ from refactor_agent.models import (
     SandboxResult,
     TrajectoryStep,
 )
-from refactor_agent.sandbox import prepare_workspace, run_performance_profile, run_pytest, write_candidate
+from refactor_agent.sandbox import (
+    prepare_workspace,
+    run_performance_profile_with_backend,
+    run_pytest_with_backend,
+    write_candidate,
+)
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.trajectory import append_trajectory
 
@@ -31,11 +36,19 @@ class RefactorOrchestrator:
         run_root: Path = Path(".runs"),
         store: SQLiteRunStore | None = None,
         pytest_timeout_seconds: float = 30.0,
+        sandbox_backend: str = "subprocess",
+        sandbox_docker_image: str = "refactor-agent-sandbox:py312",
+        sandbox_memory: str = "256m",
+        sandbox_cpus: float = 1.0,
     ) -> None:
         self.llm_client = llm_client
         self.run_root = run_root.resolve()
         self.store = store or SQLiteRunStore(self.run_root / "refactor_agent.sqlite")
         self.pytest_timeout_seconds = pytest_timeout_seconds
+        self.sandbox_backend = sandbox_backend
+        self.sandbox_docker_image = sandbox_docker_image
+        self.sandbox_memory = sandbox_memory
+        self.sandbox_cpus = sandbox_cpus
         self.minimizer = MinimizerAgent(llm_client)
         self.adversary = AdversaryAgent()
         self.judge = JudgeAgent()
@@ -117,10 +130,14 @@ class RefactorOrchestrator:
                 continue
 
             write_candidate(target_in_workspace, current_code)
-            last_sandbox = run_pytest(
+            last_sandbox = run_pytest_with_backend(
                 workspace=workspace,
                 tests_path=tests_in_workspace,
                 timeout_seconds=self.pytest_timeout_seconds,
+                backend=self.sandbox_backend,
+                docker_image=self.sandbox_docker_image,
+                memory=self.sandbox_memory,
+                cpus=self.sandbox_cpus,
             )
             if last_sandbox.passed:
                 last_adversarial = self.adversary.generate_tests(
@@ -128,6 +145,10 @@ class RefactorOrchestrator:
                     workspace=workspace,
                     target_file=target_in_workspace,
                     timeout_seconds=self.pytest_timeout_seconds,
+                    backend=self.sandbox_backend,
+                    docker_image=self.sandbox_docker_image,
+                    memory=self.sandbox_memory,
+                    cpus=self.sandbox_cpus,
                 )
                 if not last_adversarial.passed:
                     previous_error = _summarize_adversarial_failure(last_adversarial)
@@ -144,12 +165,20 @@ class RefactorOrchestrator:
                     workspace=workspace,
                     tests_path=tests_in_workspace,
                     timeout_seconds=self.pytest_timeout_seconds,
+                    backend=self.sandbox_backend,
+                    docker_image=self.sandbox_docker_image,
+                    memory=self.sandbox_memory,
+                    cpus=self.sandbox_cpus,
                 )
-                last_performance = run_performance_profile(
+                last_performance = run_performance_profile_with_backend(
                     workspace=workspace,
                     target_file=target_in_workspace,
                     tests_path=tests_in_workspace,
                     timeout_seconds=self.pytest_timeout_seconds,
+                    backend=self.sandbox_backend,
+                    docker_image=self.sandbox_docker_image,
+                    memory=self.sandbox_memory,
+                    cpus=self.sandbox_cpus,
                 )
                 reward = self.judge.score(
                     pre=baseline,

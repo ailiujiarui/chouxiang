@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from refactor_agent.models import MutationTestResult
-from refactor_agent.sandbox import run_pytest, write_candidate
+from refactor_agent.sandbox import run_pytest_with_backend, write_candidate
 
 
 @dataclass(frozen=True)
@@ -32,13 +32,25 @@ def run_mutation_tests(
     tests_path: Path,
     timeout_seconds: float = 30.0,
     max_mutants: int = 8,
+    backend: str = "subprocess",
+    docker_image: str = "refactor-agent-sandbox:py312",
+    memory: str = "256m",
+    cpus: float = 1.0,
 ) -> MutationTestResult:
     mutants = generate_mutants(candidate_source, max_mutants=max_mutants)
     killed = 0
     survived: list[str] = []
     for mutant in mutants:
         write_candidate(target_file, mutant.source)
-        result = run_pytest(workspace, tests_path, timeout_seconds=timeout_seconds)
+        result = run_pytest_with_backend(
+            workspace=workspace,
+            tests_path=tests_path,
+            timeout_seconds=timeout_seconds,
+            backend=backend,
+            docker_image=docker_image,
+            memory=memory,
+            cpus=cpus,
+        )
         if result.passed:
             survived.append(mutant.description)
         else:

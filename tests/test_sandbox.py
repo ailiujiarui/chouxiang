@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from refactor_agent.sandbox import prepare_workspace, run_performance_profile, run_pytest, write_candidate
+import pytest
+
+from refactor_agent.sandbox import (
+    build_docker_command,
+    prepare_workspace,
+    run_performance_profile,
+    run_pytest,
+    run_pytest_with_backend,
+    write_candidate,
+)
 
 
 def test_sandbox_detects_passing_tests(tmp_path: Path):
@@ -38,6 +47,38 @@ def test_performance_profile_reports_time_and_memory(tmp_path: Path):
     assert result.pytest_duration_seconds > 0
     assert result.peak_memory_kib > 0
     assert result.import_time_seconds is not None
+
+
+def test_build_docker_command_uses_network_and_resource_limits(tmp_path: Path):
+    command = build_docker_command(
+        workspace=tmp_path,
+        docker_image="refactor-agent-sandbox:py312",
+        memory="128m",
+        cpus=0.5,
+        inner_command="print('ok')",
+    )
+    assert command[:3] == ["docker", "run", "--rm"]
+    assert "--network" in command
+    assert "none" in command
+    assert "--memory" in command
+    assert "128m" in command
+    assert "--cpus" in command
+    assert "0.5" in command
+    assert "refactor-agent-sandbox:py312" in command
+
+
+def test_auto_backend_falls_back_to_subprocess_when_docker_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
+    workspace = tmp_path / "workspace"
+    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
+    monkeypatch.setattr("refactor_agent.sandbox.docker_available", lambda: False)
+    result = run_pytest_with_backend(workspace, tests, timeout_seconds=10, backend="auto")
+    assert result.passed is True
+
+
+def test_unknown_sandbox_backend_is_rejected(tmp_path: Path):
+    with pytest.raises(ValueError):
+        run_pytest_with_backend(tmp_path, tmp_path, backend="spaceship")
 
 
 def _make_project(tmp_path: Path, code: str) -> Path:

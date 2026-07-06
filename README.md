@@ -32,6 +32,28 @@ refactor-agent run --target path\to\file.py --issue path\to\issue.md --tests pat
 运行产物保存在 `.runs/<run_id>/workspace`，原始文件不会被直接覆盖。
 每次运行的自愈轨迹保存在 `.runs/<run_id>/trajectory.jsonl`。
 
+## Docker Sandbox
+
+默认沙箱后端是 `subprocess`。如果要启用无网络、限 CPU/内存的 Docker 后端，先构建镜像：
+
+```powershell
+docker build -f docker\sandbox.Dockerfile -t refactor-agent-sandbox:py312 .
+refactor-agent demo --sandbox-backend docker
+```
+
+也可以用自动模式，有 Docker daemon 时使用 Docker，否则回退到 subprocess：
+
+```powershell
+refactor-agent demo --sandbox-backend auto
+```
+
+Webhook 模式可用环境变量：
+
+- `REFACTOR_AGENT_SANDBOX_BACKEND=subprocess|docker|auto`
+- `REFACTOR_AGENT_SANDBOX_DOCKER_IMAGE=refactor-agent-sandbox:py312`
+- `REFACTOR_AGENT_SANDBOX_MEMORY=256m`
+- `REFACTOR_AGENT_SANDBOX_CPUS=1.0`
+
 ## GitHub Webhook Mode
 
 启动网关：

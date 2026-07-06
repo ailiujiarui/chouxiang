@@ -146,6 +146,10 @@ class GitHubAutomationService:
                 run_root=self.settings.run_root,
                 store=SQLiteRunStore(self.settings.resolved_database_path),
                 pytest_timeout_seconds=self.settings.pytest_timeout_seconds,
+                sandbox_backend=self.settings.sandbox_backend,
+                sandbox_docker_image=self.settings.sandbox_docker_image,
+                sandbox_memory=self.settings.sandbox_memory,
+                sandbox_cpus=self.settings.sandbox_cpus,
             )
             run_result = orchestrator.run(
                 RefactorRequest(

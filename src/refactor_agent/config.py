@@ -16,6 +16,10 @@ class AppSettings(BaseModel):
     default_tests_path: str = "tests"
     max_retry: int = Field(default=3, ge=1)
     pytest_timeout_seconds: float = Field(default=30.0, gt=0)
+    sandbox_backend: str = "subprocess"
+    sandbox_docker_image: str = "refactor-agent-sandbox:py312"
+    sandbox_memory: str = "256m"
+    sandbox_cpus: float = Field(default=1.0, gt=0)
     dry_run: bool = False
     mock_llm: bool = False
 
@@ -31,6 +35,10 @@ class AppSettings(BaseModel):
             default_tests_path=os.getenv("REFACTOR_AGENT_TESTS_PATH", "tests"),
             max_retry=int(os.getenv("REFACTOR_AGENT_MAX_RETRY", "3")),
             pytest_timeout_seconds=float(os.getenv("REFACTOR_AGENT_PYTEST_TIMEOUT", "30")),
+            sandbox_backend=os.getenv("REFACTOR_AGENT_SANDBOX_BACKEND", "subprocess"),
+            sandbox_docker_image=os.getenv("REFACTOR_AGENT_SANDBOX_DOCKER_IMAGE", "refactor-agent-sandbox:py312"),
+            sandbox_memory=os.getenv("REFACTOR_AGENT_SANDBOX_MEMORY", "256m"),
+            sandbox_cpus=float(os.getenv("REFACTOR_AGENT_SANDBOX_CPUS", "1.0")),
             dry_run=_env_bool("REFACTOR_AGENT_DRY_RUN", False),
             mock_llm=_env_bool("REFACTOR_AGENT_MOCK_LLM", False),
         )

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from refactor_agent.ast_analyzer import analyze_ast
 from refactor_agent.models import AdversarialTestResult
-from refactor_agent.sandbox import run_pytest
+from refactor_agent.sandbox import run_pytest_with_backend
 
 
 def generate_adversarial_tests(source: str, module_name: str) -> str:
@@ -29,6 +29,10 @@ def run_adversarial_tests(
     workspace: Path,
     target_file: Path,
     timeout_seconds: float = 30.0,
+    backend: str = "subprocess",
+    docker_image: str = "refactor-agent-sandbox:py312",
+    memory: str = "256m",
+    cpus: float = 1.0,
 ) -> AdversarialTestResult:
     module_name = ".".join(target_file.relative_to(workspace).with_suffix("").parts)
     if module_name.endswith(".__init__"):
@@ -41,7 +45,15 @@ def run_adversarial_tests(
     tests_dir.mkdir(parents=True, exist_ok=True)
     test_file = tests_dir / f"test_adversary_{target_file.stem}.py"
     test_file.write_text(generated_source, encoding="utf-8")
-    result = run_pytest(workspace, test_file, timeout_seconds=timeout_seconds)
+    result = run_pytest_with_backend(
+        workspace=workspace,
+        tests_path=test_file,
+        timeout_seconds=timeout_seconds,
+        backend=backend,
+        docker_image=docker_image,
+        memory=memory,
+        cpus=cpus,
+    )
     return AdversarialTestResult(
         generated=_count_tests(generated_source),
         passed=result.passed,

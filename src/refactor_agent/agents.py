@@ -53,6 +53,10 @@ class AdversaryAgent:
         workspace: Path,
         tests_path: Path,
         timeout_seconds: float,
+        backend: str = "subprocess",
+        docker_image: str = "refactor-agent-sandbox:py312",
+        memory: str = "256m",
+        cpus: float = 1.0,
     ) -> MutationTestResult:
         return run_mutation_tests(
             candidate_source=candidate_source,
@@ -61,6 +65,10 @@ class AdversaryAgent:
             tests_path=tests_path,
             timeout_seconds=timeout_seconds,
             max_mutants=self.max_mutants,
+            backend=backend,
+            docker_image=docker_image,
+            memory=memory,
+            cpus=cpus,
         )
 
     def generate_tests(
@@ -69,12 +77,20 @@ class AdversaryAgent:
         workspace: Path,
         target_file: Path,
         timeout_seconds: float,
+        backend: str = "subprocess",
+        docker_image: str = "refactor-agent-sandbox:py312",
+        memory: str = "256m",
+        cpus: float = 1.0,
     ) -> AdversarialTestResult:
         return run_adversarial_tests(
             candidate_source=candidate_source,
             workspace=workspace,
             target_file=target_file,
             timeout_seconds=timeout_seconds,
+            backend=backend,
+            docker_image=docker_image,
+            memory=memory,
+            cpus=cpus,
         )
 
 

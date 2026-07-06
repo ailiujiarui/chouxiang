@@ -25,6 +25,8 @@ def run(
     repo_name: str | None = typer.Option(None, "--repo-name", help="Optional name stored in SQLite reports."),
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess, docker, or auto."),
+    sandbox_docker_image: str = typer.Option("refactor-agent-sandbox:py312", "--sandbox-docker-image", help="Docker image for docker sandbox backend."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated run workspaces."),
     database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
     mock: bool = typer.Option(False, "--mock", help="Use deterministic local mock LLM."),
@@ -38,7 +40,7 @@ def run(
         repo_name=repo_name,
         max_retry=max_retry,
     )
-    result = _run_request(request, run_root, database, timeout, mock)
+    result = _run_request(request, run_root, database, timeout, mock, sandbox_backend, sandbox_docker_image)
     console.print(result.report_markdown, markup=False)
     raise typer.Exit(code=0 if result.record.status == "SUCCESS" else 1)
 
@@ -47,6 +49,8 @@ def run(
 def demo(
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess, docker, or auto."),
+    sandbox_docker_image: str = typer.Option("refactor-agent-sandbox:py312", "--sandbox-docker-image", help="Docker image for docker sandbox backend."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated run workspaces."),
     database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
     real_api: bool = typer.Option(False, "--real-api", help="Use DeepSeek instead of the built-in mock."),
@@ -63,7 +67,7 @@ def demo(
         repo_name="demo-leap-year",
         max_retry=max_retry,
     )
-    result = _run_request(request, run_root, database, timeout, mock=not real_api)
+    result = _run_request(request, run_root, database, timeout, mock=not real_api, sandbox_backend=sandbox_backend, sandbox_docker_image=sandbox_docker_image)
     console.print(result.report_markdown, markup=False)
     raise typer.Exit(code=0 if result.record.status == "SUCCESS" else 1)
 
@@ -108,6 +112,8 @@ def _run_request(
     database: Path | None,
     timeout: float,
     mock: bool,
+    sandbox_backend: str = "subprocess",
+    sandbox_docker_image: str = "refactor-agent-sandbox:py312",
 ):
     try:
         llm_client = MockRefactorClient() if mock else DeepSeekClient()
@@ -121,6 +127,8 @@ def _run_request(
         run_root=run_root,
         store=store,
         pytest_timeout_seconds=timeout,
+        sandbox_backend=sandbox_backend,
+        sandbox_docker_image=sandbox_docker_image,
     )
     return orchestrator.run(request)
 
