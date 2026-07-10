@@ -3,15 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from refactor_agent.adversary import run_adversarial_tests
+from refactor_agent.adversary import critique_candidate, run_adversarial_tests
 from refactor_agent.llm import RefactorClient
 from refactor_agent.models import (
+    AdversarialCritique,
     AdversarialTestResult,
+    CandidateValidationResult,
     LLMRefactorResult,
     MetricsSnapshot,
     MutationTestResult,
     RefactorRequest,
     RewardBreakdown,
+    SandboxResult,
 )
 from refactor_agent.mutation import run_mutation_tests
 from refactor_agent.trajectory import calculate_reward
@@ -46,6 +49,9 @@ class AdversaryAgent:
 
     max_mutants: int = 8
 
+    def critique(self, candidate_source: str, issue_text: str) -> AdversarialCritique:
+        return critique_candidate(candidate_source, issue_text)
+
     def challenge(
         self,
         candidate_source: str,
@@ -77,6 +83,7 @@ class AdversaryAgent:
         workspace: Path,
         target_file: Path,
         timeout_seconds: float,
+        issue_text: str = "",
         backend: str = "subprocess",
         docker_image: str = "refactor-agent-sandbox:py312",
         memory: str = "256m",
@@ -86,12 +93,27 @@ class AdversaryAgent:
             candidate_source=candidate_source,
             workspace=workspace,
             target_file=target_file,
+            issue_text=issue_text,
             timeout_seconds=timeout_seconds,
             backend=backend,
             docker_image=docker_image,
             memory=memory,
             cpus=cpus,
         )
+
+
+class DefenderAgent:
+    """Conservative reviewer that protects syntax, public API, and regression tests."""
+
+    def review_static(self, validation: CandidateValidationResult) -> str:
+        if validation.ok:
+            return "AST 守卫通过：语法、安全检查和公开 API 都没被候选代码拆坏。"
+        return "AST 守卫拒绝候选代码：\n" + validation.summary()
+
+    def review_pytest(self, result: SandboxResult) -> str:
+        if result.passed:
+            return f"回归测试通过，用时 {result.duration_seconds:.2f}s。"
+        return f"回归测试失败，返回码 {result.returncode}。"
 
 
 class JudgeAgent:

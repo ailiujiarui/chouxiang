@@ -48,6 +48,8 @@ class GitRepositoryManager:
         self.runner(["git", "checkout", "-b", branch_name], checkout_path)
 
     def commit_and_push(self, checkout_path: Path, file_path: str, branch_name: str, message: str) -> None:
+        self.runner(["git", "config", "user.name", "Refactor Agent Bot"], checkout_path)
+        self.runner(["git", "config", "user.email", "refactor-agent@users.noreply.github.com"], checkout_path)
         self.runner(["git", "add", file_path], checkout_path)
         status = self.runner(["git", "status", "--porcelain", "--", file_path], checkout_path)
         if not status.stdout.strip():
@@ -150,6 +152,7 @@ class GitHubAutomationService:
                 sandbox_docker_image=self.settings.sandbox_docker_image,
                 sandbox_memory=self.settings.sandbox_memory,
                 sandbox_cpus=self.settings.sandbox_cpus,
+                graph_backend=self.settings.graph_backend,
             )
             run_result = orchestrator.run(
                 RefactorRequest(
@@ -197,6 +200,11 @@ class GitHubAutomationService:
                 head=branch_name,
                 base=job.default_branch,
                 body=run_result.report_markdown,
+            )
+            api_client.create_issue_comment(
+                job.repo_full_name,
+                job.issue_number,
+                f"Refactor Agent completed the signed webhook run.\n\nPull request: {pr_url}\n\n{run_result.report_markdown}",
             )
             return GitHubAutomationResult(
                 job_id=job.job_id,

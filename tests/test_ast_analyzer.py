@@ -1,4 +1,11 @@
-from refactor_agent.ast_analyzer import analyze_ast, ast_prompt_summary, validate_candidate_source
+from refactor_agent.ast_analyzer import (
+    analyze_ast,
+    ast_hotspot_prompt,
+    ast_prompt_summary,
+    controlled_subtree_rewrite,
+    select_target_regions,
+    validate_candidate_source,
+)
 
 
 def test_analyze_ast_extracts_functions_and_complexity():
@@ -44,3 +51,31 @@ def test_validate_candidate_rejects_syntax_error():
     )
     assert result.ok is False
     assert result.findings[0].rule == "candidate-syntax"
+
+
+def test_ast_hotspot_prompt_extracts_high_complexity_subtree():
+    source = """
+def boring(value):
+    return value
+
+
+def messy(value):
+    if value > 10:
+        return "big"
+    if value > 0:
+        return "small"
+    if value == 0:
+        return "zero"
+    return "negative"
+"""
+    prompt = ast_hotspot_prompt(source)
+
+    assert "AST 热点子树" in prompt
+    assert "`messy`" in prompt
+    assert "结构熵" in prompt
+    assert "def boring" not in prompt
+
+
+def test_ast_hotspot_prompt_handles_simple_code():
+    prompt = ast_hotspot_prompt("def tiny(value):\n    return value\n")
+    assert "未发现超过复杂度阈值" in prompt

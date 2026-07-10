@@ -32,6 +32,15 @@ class FunctionSignature(BaseModel):
     complexity: int
 
 
+class TargetRegion(BaseModel):
+    qualified_name: str
+    lineno: int
+    end_lineno: int
+    complexity: int
+    node_count: int
+    structural_entropy: float
+
+
 class ClassSummary(BaseModel):
     name: str
     lineno: int
@@ -53,6 +62,7 @@ class AstAnalysis(BaseModel):
     classes: list[ClassSummary] = Field(default_factory=list)
     public_symbols: list[str] = Field(default_factory=list)
     high_complexity_regions: list[FunctionSignature] = Field(default_factory=list)
+    target_regions: list[TargetRegion] = Field(default_factory=list)
     safety_findings: list[SafetyFinding] = Field(default_factory=list)
 
 
@@ -71,10 +81,49 @@ class CandidateValidationResult(BaseModel):
         )
 
 
+class AstRewriteResult(BaseModel):
+    ok: bool
+    source: str
+    allowed_regions: list[str] = Field(default_factory=list)
+    changed_regions: list[str] = Field(default_factory=list)
+    findings: list[SafetyFinding] = Field(default_factory=list)
+
+    def summary(self) -> str:
+        if self.ok:
+            regions = ", ".join(self.changed_regions) or "none"
+            return f"AST subtree rewrite passed; changed regions: {regions}."
+        return "\n".join(
+            f"{finding.severity.upper()} {finding.rule}"
+            f"{f' line {finding.lineno}' if finding.lineno else ''}: {finding.message}"
+            for finding in self.findings
+        )
+
+
 class LLMRefactorResult(BaseModel):
     thought: str
     fixed_code: str
     insult_review: str
+    modified_regions: list[str] = Field(default_factory=list)
+
+
+class LLMDefenderReviewResult(BaseModel):
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+    boundary_risks: list[str] = Field(default_factory=list)
+    readability_risks: list[str] = Field(default_factory=list)
+    conservative_fix_suggestion: str
+
+
+class LLMAdversaryTestResult(BaseModel):
+    thought: str
+    pytest_code: str = ""
+    hypothesis_code: str = ""
+    attack_plan: list[str] = Field(default_factory=list)
+
+
+class LLMJudgeReviewResult(BaseModel):
+    verdict: Literal["APPROVE", "RETRY", "REJECT"]
+    rationale: str
+    review: str
 
 
 class SandboxResult(BaseModel):
@@ -105,6 +154,13 @@ class AdversarialTestResult(BaseModel):
     stderr: str = ""
 
 
+class AdversarialCritique(BaseModel):
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+    attack_plan: list[str] = Field(default_factory=list)
+    counterexample_hint: str | None = None
+    rationale: str
+
+
 class PerformanceProfile(BaseModel):
     passed: bool
     pytest_returncode: int
@@ -124,10 +180,44 @@ class RewardBreakdown(BaseModel):
     reward: float
 
 
+class AgentDebateMessage(BaseModel):
+    round: int
+    agent: Literal["MINIMIZER", "DEFENDER", "ADVERSARY", "JUDGE"]
+    content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DebateRound(BaseModel):
+    round: int
+    candidate_loc: int | None = None
+    candidate_cc: int | None = None
+    pytest_passed: bool = False
+    adversarial_passed: bool | None = None
+    mutation_kill_rate: float | None = None
+    reward: RewardBreakdown | None = None
+    code_change_percent: float | None = None
+    converged: bool = False
+    messages: list[AgentDebateMessage] = Field(default_factory=list)
+
+
 class TrajectoryStep(BaseModel):
     attempt: int
-    status: Literal["AST_REJECTED", "PYTEST_FAILED", "ADVERSARY_FAILED", "SUCCESS", "FAILED"]
+    status: Literal[
+        "MINIMIZER_PROPOSED",
+        "DEFENDER_REVIEWED",
+        "AST_REJECTED",
+        "PYTEST_FAILED",
+        "ADVERSARY_CRITIQUED",
+        "ADVERSARY_CHALLENGED",
+        "ADVERSARY_FAILED",
+        "JUDGE_SCORED",
+        "DEBATE_CONVERGED",
+        "SUCCESS",
+        "FAILED",
+    ]
     message: str
+    agent: Literal["MINIMIZER", "DEFENDER", "ADVERSARY", "JUDGE", "SYSTEM"] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     reward: RewardBreakdown | None = None
 
 
@@ -142,6 +232,22 @@ class RunRecord(BaseModel):
     self_heal_count: int
     status: Literal["SUCCESS", "FAILED"]
     error: str | None = None
+    pytest_duration_seconds: float | None = None
+    profiled_pytest_duration_seconds: float | None = None
+    peak_memory_kib: float | None = None
+    import_time_seconds: float | None = None
+
+
+class TrajectoryMemoryRecord(BaseModel):
+    memory_id: str
+    run_id: str
+    repo_name: str
+    target_path: str
+    status: Literal["SUCCESS", "FAILED"]
+    lesson: str
+    error_signature: str | None = None
+    reward: float | None = None
+    created_at: str | None = None
 
 
 class RefactorRunResult(BaseModel):
@@ -157,6 +263,7 @@ class RefactorRunResult(BaseModel):
     mutation_result: MutationTestResult | None = None
     performance_profile: PerformanceProfile | None = None
     adversarial_result: AdversarialTestResult | None = None
+    debate_rounds: list[DebateRound] = Field(default_factory=list)
 
 
 class GitHubRefactorJob(BaseModel):

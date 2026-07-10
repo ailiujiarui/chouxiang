@@ -4,7 +4,13 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from refactor_agent.models import GitHubAutomationResult, GitHubJobRecord, GitHubRefactorJob, RunRecord
+from refactor_agent.models import (
+    GitHubAutomationResult,
+    GitHubJobRecord,
+    GitHubRefactorJob,
+    RunRecord,
+    TrajectoryMemoryRecord,
+)
 
 
 class SQLiteRunStore:
@@ -43,6 +49,66 @@ class SQLiteRunStore:
         if row is None:
             return None
         return RunRecord(**dict(row))
+
+    def list_runs(self, limit: int = 20) -> list[RunRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM runs ORDER BY run_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [RunRecord(**dict(row)) for row in rows]
+
+    def save_memory(self, record: TrajectoryMemoryRecord) -> None:
+        created_at = record.created_at or _now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO trajectory_memory (
+                    memory_id, run_id, repo_name, target_path, status,
+                    lesson, error_signature, reward, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.memory_id,
+                    record.run_id,
+                    record.repo_name,
+                    record.target_path,
+                    record.status,
+                    record.lesson,
+                    record.error_signature,
+                    record.reward,
+                    created_at,
+                ),
+            )
+
+    def list_memory(
+        self,
+        repo_name: str | None = None,
+        target_path: str | None = None,
+        limit: int = 5,
+    ) -> list[TrajectoryMemoryRecord]:
+        clauses = []
+        params: list[object] = []
+        if repo_name:
+            clauses.append("repo_name = ?")
+            params.append(repo_name)
+        if target_path:
+            clauses.append("target_path = ?")
+            params.append(target_path)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(limit)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM trajectory_memory
+                {where}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [TrajectoryMemoryRecord(**dict(row)) for row in rows]
 
     def create_github_job(self, job: GitHubRefactorJob) -> GitHubJobRecord:
         now = _now()
@@ -178,6 +244,27 @@ class SQLiteRunStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trajectory_memory (
+                    memory_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    target_path TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED')),
+                    lesson TEXT NOT NULL,
+                    error_signature TEXT,
+                    reward REAL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_trajectory_memory_lookup
+                ON trajectory_memory (repo_name, target_path, created_at DESC)
                 """
             )
 

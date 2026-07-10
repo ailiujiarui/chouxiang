@@ -20,6 +20,10 @@ class AppSettings(BaseModel):
     sandbox_docker_image: str = "refactor-agent-sandbox:py312"
     sandbox_memory: str = "256m"
     sandbox_cpus: float = Field(default=1.0, gt=0)
+    graph_backend: str = "langgraph"
+    llm_provider: str = "deepseek"
+    docker_driver: str = "sdk"
+    db_driver: str = "sqlalchemy"
     dry_run: bool = False
     mock_llm: bool = False
 
@@ -39,6 +43,10 @@ class AppSettings(BaseModel):
             sandbox_docker_image=os.getenv("REFACTOR_AGENT_SANDBOX_DOCKER_IMAGE", "refactor-agent-sandbox:py312"),
             sandbox_memory=os.getenv("REFACTOR_AGENT_SANDBOX_MEMORY", "256m"),
             sandbox_cpus=float(os.getenv("REFACTOR_AGENT_SANDBOX_CPUS", "1.0")),
+            graph_backend=os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            llm_provider=os.getenv("REFACTOR_AGENT_LLM_PROVIDER", "deepseek"),
+            docker_driver=os.getenv("REFACTOR_AGENT_DOCKER_DRIVER", "sdk"),
+            db_driver=os.getenv("REFACTOR_AGENT_DB_DRIVER", "sqlalchemy"),
             dry_run=_env_bool("REFACTOR_AGENT_DRY_RUN", False),
             mock_llm=_env_bool("REFACTOR_AGENT_MOCK_LLM", False),
         )

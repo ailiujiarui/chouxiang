@@ -1,5 +1,14 @@
 # Refactor Agent
 
+## Architecture and Validation
+
+- The default control plane is a real LangGraph state graph: `MINIMIZER -> DEFENDER -> ADVERSARY -> JUDGE`. Set `REFACTOR_AGENT_GRAPH_BACKEND=loop` for the deterministic fallback.
+- LLM output is treated as an untrusted full-file proposal. The system independently computes the AST diff and only writes back selected hotspot functions or methods.
+- Imports, public symbols, signatures, decorators, class structure, and non-target functions must remain unchanged. Violations are rejected before sandbox execution and become retry feedback.
+- Both entry points are supported: `refactor-agent ...` and `python -m refactor_agent.cli ...`.
+- On Windows, start Docker Desktop and wait for `docker version` to report a Server version before selecting `--sandbox-backend docker`.
+- A webhook can be validated without a public tunnel by posting a GitHub-compatible `issues.opened` JSON body to `/webhooks/github`, with `X-GitHub-Event: issues` and an `X-Hub-Signature-256: sha256=...` HMAC generated from `GITHUB_WEBHOOK_SECRET`.
+
 本项目实现 `plan.md` 中的本地闭环 MVP：读取 Python 文件和 Issue 描述，计算 LOC/圈复杂度，调用 DeepSeek 或 mock LLM 生成修复代码，在隔离工作区运行 `pytest`，失败时最多自愈 3 次，成功后输出指标报告并写入 SQLite。
 
 当前内核已经升级为轻量多 Agent 流程：
@@ -32,6 +41,16 @@ refactor-agent run --target path\to\file.py --issue path\to\issue.md --tests pat
 运行产物保存在 `.runs/<run_id>/workspace`，原始文件不会被直接覆盖。
 每次运行的自愈轨迹保存在 `.runs/<run_id>/trajectory.jsonl`。
 
+## AST Hotspot Analysis
+
+可以单独查看目标文件的 AST 语义摘要和高复杂度热点子树：
+
+```powershell
+refactor-agent ast-hotspots --target src\refactor_agent\orchestrator.py --max-regions 2
+```
+
+同样的热点信息会被注入 DeepSeek prompt，让 Agent 优先处理复杂度最高的函数/方法，而不是盲目重写整个文件。
+
 ## Docker Sandbox
 
 默认沙箱后端是 `subprocess`。如果要启用无网络、限 CPU/内存的 Docker 后端，先构建镜像：
@@ -53,6 +72,48 @@ Webhook 模式可用环境变量：
 - `REFACTOR_AGENT_SANDBOX_DOCKER_IMAGE=refactor-agent-sandbox:py312`
 - `REFACTOR_AGENT_SANDBOX_MEMORY=256m`
 - `REFACTOR_AGENT_SANDBOX_CPUS=1.0`
+
+## Live Demo Arena
+
+## Docker Memory Store
+
+轨迹记忆库可以放进 Docker volume，容器内默认路径是 `/data/refactor_agent.sqlite`：
+
+```powershell
+docker compose build refactor-agent
+docker compose run --rm refactor-agent demo --timeout 30
+docker compose run --rm refactor-agent memories --limit 10
+```
+
+迁移本机已有 `.runs/refactor_agent.sqlite` 到 Docker volume：
+
+```powershell
+docker compose run --rm --entrypoint sh refactor-agent -lc "cp /workspace/repo/.runs/refactor_agent.sqlite /data/refactor_agent.sqlite"
+```
+
+更多说明见 `docker/README.md`。
+
+Built-in demo cases:
+
+```powershell
+refactor-agent demo-cases
+refactor-agent demo --case leap-year --sandbox-backend auto
+refactor-agent demo --case add-maze --sandbox-backend auto
+refactor-agent demo --case business-day --sandbox-backend auto
+refactor-agent demo --case adversarial-weekend --mock-fail-times 1 --sandbox-backend auto
+refactor-agent demo-suite --sandbox-backend auto
+refactor-agent state-machine
+```
+
+`demo-suite` 会按路演顺序连续运行内置案例，写入同一个 SQLite，并输出中文总战报。跑完后直接打开竞技场就能看到对抗回合和指标图表。
+
+The arena is an optional Streamlit extra:
+
+```powershell
+python -m pip install -e .[dashboard]
+refactor-agent dashboard --host 127.0.0.1 --port 8501
+refactor-agent arena-export --output arena-report.md
+```
 
 ## GitHub Webhook Mode
 

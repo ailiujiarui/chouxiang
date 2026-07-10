@@ -4,10 +4,12 @@ import pytest
 
 from refactor_agent.sandbox import (
     build_docker_command,
+    DockerStatus,
     prepare_workspace,
     run_performance_profile,
     run_pytest,
     run_pytest_with_backend,
+    SandboxUnavailableError,
     write_candidate,
 )
 
@@ -71,9 +73,24 @@ def test_auto_backend_falls_back_to_subprocess_when_docker_missing(tmp_path: Pat
     project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
     workspace = tmp_path / "workspace"
     _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
-    monkeypatch.setattr("refactor_agent.sandbox.docker_available", lambda: False)
+    monkeypatch.setattr(
+        "refactor_agent.sandbox.docker_status",
+        lambda: DockerStatus(available=False, error="virtualization missing"),
+    )
     result = run_pytest_with_backend(workspace, tests, timeout_seconds=10, backend="auto")
     assert result.passed is True
+
+
+def test_docker_backend_fails_fast_when_docker_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "refactor_agent.sandbox.docker_status",
+        lambda: DockerStatus(available=False, executable="docker", error="virtualization missing"),
+    )
+    with pytest.raises(SandboxUnavailableError, match="virtualization missing"):
+        run_pytest_with_backend(tmp_path, tmp_path, backend="docker")
 
 
 def test_unknown_sandbox_backend_is_rejected(tmp_path: Path):

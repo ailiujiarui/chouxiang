@@ -7,7 +7,7 @@ from typing import Protocol
 import httpx
 from pydantic import ValidationError
 
-from refactor_agent.ast_analyzer import analyze_ast, ast_prompt_summary
+from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary, select_target_regions
 from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest
 
 
@@ -86,7 +86,7 @@ class DeepSeekClient:
 
 
 class MockRefactorClient:
-    """Deterministic local client used by tests and the built-in demo."""
+    """Deterministic local client used by tests and offline demos."""
 
     def __init__(self, fail_times: int = 0) -> None:
         self.fail_times = fail_times
@@ -101,23 +101,55 @@ class MockRefactorClient:
         attempt: int,
     ) -> LLMRefactorResult:
         self.calls += 1
+        code, review = self._candidate_for(current_code, baseline_metrics)
         if self.calls <= self.fail_times:
-            code = "def is_leap_year(year):\n    return year % 4 == 0 and year % 100 == 0\n"
-            review = "先把分支拆了，但这版故意保留一个逻辑瑕疵用于自愈测试。"
-        else:
-            code = (
-                "def is_leap_year(year):\n"
-                "    return (year % 4 == 0) * (year % 100 != 0) + (year % 400 == 0) > 0\n"
-            )
-            saved = max(baseline_metrics.loc - 2, 0)
-            review = (
-                "原实现把一个布尔表达式写成了条件迷宫。"
-                f"现在用一行布尔算术收束逻辑，少走了 {saved} 行弯路。"
-            )
+            code, review = self._broken_candidate_for(current_code)
         return LLMRefactorResult(
-            thought="Use the canonical leap-year predicate and preserve the public function name.",
+            thought="保留公开 API，把绕远路的分支压成测试能证明的最小表达式。",
             fixed_code=code,
             insult_review=review,
+        )
+
+    def _candidate_for(self, current_code: str, baseline_metrics: MetricsSnapshot) -> tuple[str, str]:
+        saved = max(baseline_metrics.loc - 2, 0)
+        if "def add(" in current_code:
+            return (
+                "def add(left, right):\n"
+                "    return left + right\n",
+                f"原代码把一个加号写成了 {baseline_metrics.loc} 行手摇计算器，仪式感很足，必要性约等于零。"
+                f"现在让 `+` 干它本来就会干的活，顺手裁掉 {saved} 行废话。",
+            )
+        if "def is_business_day(" in current_code:
+            return (
+                "def is_business_day(day):\n"
+                "    return day in {1, 2, 3, 4, 5}\n",
+                "这段分支楼梯把工作日判断演成了连续剧，每个 `if` 都在抢镜但没人推动剧情。"
+                f"集合成员判断一刀收工，少了 {saved} 行排队报数。",
+            )
+        return (
+            "def is_leap_year(year):\n"
+            "    return (year % 4 == 0) and (year % 100 != 0 or year % 400 == 0)\n",
+            "原实现把一个布尔规则拆成了迷宫式门禁，百年规则还被它顺手放错了行李。"
+            f"现在逻辑回到一行正轨，少了 {saved} 行绕路表演。",
+        )
+
+    def _broken_candidate_for(self, current_code: str) -> tuple[str, str]:
+        if "def add(" in current_code:
+            return (
+                "def add(left, right):\n"
+                "    return left - right\n",
+                "第一轮故意把加法写成减法，给自愈循环留个醒目的坑位。",
+            )
+        if "def is_business_day(" in current_code:
+            return (
+                "def is_business_day(day):\n"
+                "    return day > 0\n",
+                "第一轮假装周末不存在，这种乐观主义正好交给对抗测试当场拆穿。",
+            )
+        return (
+            "def is_leap_year(year):\n"
+            "    return year % 4 == 0 and year % 100 == 0\n",
+            "第一轮虽然拍扁了分支，但把百年规则拍成了事故现场，方便自愈回炉。",
         )
 
 
@@ -134,24 +166,31 @@ def parse_llm_result(content: str) -> LLMRefactorResult:
 
 def build_system_prompt() -> str:
     return """
-# Role
-你是一个极简主义代码重构 Agent。你喜欢删掉冗余分支，但必须尊重测试、可读性和业务语义。
+# 角色
+你是一个极简主义代码重构 Agent。你喜欢删除冗余分支和样板代码，但正确性、可读性和业务语义永远高于炫技。
 
-# Task
-根据 Issue 描述修复目标 Python 代码。优先降低 LOC 和圈复杂度，但不能牺牲正确性。
+# 任务
+根据 Issue 修复目标 Python 文件。优先降低 LOC 和圈复杂度，但绝不能牺牲测试行为。
 
-# Constraints
-1. fixed_code 必须是完整可运行的目标文件内容。
-2. 不要引入新的第三方库。
-3. 输出必须是严格 JSON，不要包含 Markdown 代码围栏。
-4. insult_review 可以讽刺代码结构，但只能批评代码，不做人身攻击。
-5. thought 只写简短实现理由，不要输出冗长推理过程。
+# 语言与风格
+1. thought 和 insult_review 必须使用简体中文。
+2. insult_review 要更毒舌一点，像资深 reviewer 在毫不留情地吐槽代码结构。
+3. 可以嘲讽重复逻辑、分支地狱、绕路实现、样板代码和过度设计。
+4. 只能攻击代码，不能攻击作者、能力、身份、群体；不要脏话、仇恨、暴力或人身羞辱。
+5. 毒舌要具体，点名代码问题，别写空泛鸡汤。
+6. 不要使用 emoji 或特殊装饰符号，避免 Windows 控制台编码炸锅。
 
-# Output Format
+# 约束
+1. fixed_code 必须是目标文件的完整可运行内容。
+2. 不要引入新的第三方依赖。
+3. 只输出严格 JSON，不要 Markdown 代码围栏。
+4. thought 是简短实现理由，不要输出长篇推理过程。
+
+# 输出格式
 {
-  "thought": "简短说明修复策略",
+  "thought": "简短实现理由",
   "fixed_code": "完整 Python 文件内容",
-  "insult_review": "针对原代码冗余结构的简短评论"
+  "insult_review": "更毒舌但只针对代码结构的中文 review"
 }
 """.strip()
 
@@ -164,32 +203,46 @@ def build_user_prompt(
     attempt: int,
 ) -> str:
     retry_text = (
-        "\n\n上一轮验证失败信息如下，请修复它并保持代码简洁：\n"
+        "\n\n上一轮验证失败。请在保持代码极简的同时修复这些问题：\n"
         f"{previous_error}"
         if previous_error
         else ""
     )
     try:
         ast_summary = ast_prompt_summary(analyze_ast(current_code))
+        hotspot_prompt = ast_hotspot_prompt(current_code)
+        allowed_regions = select_target_regions(current_code)
     except SyntaxError:
-        ast_summary = "Current code has a syntax error; repair syntax before refactoring."
+        allowed_regions = []
+        ast_summary = "当前代码存在语法错误；先修复语法，再做重构。"
+        hotspot_prompt = "AST 热点子树：当前代码无法解析，先修复语法。"
     return f"""
-Issue:
+Issue：
 {request.issue_text}
 
-Target file:
+目标文件：
 {request.target_file}
 
-Baseline metrics:
+基线指标：
 - LOC: {baseline_metrics.loc}
-- Cyclomatic Complexity: {baseline_metrics.cyclomatic_complexity}
+- 圈复杂度: {baseline_metrics.cyclomatic_complexity}
 
-AST semantic summary:
+AST 语义摘要：
 {ast_summary}
 
-Attempt: {attempt}
+{hotspot_prompt}
 
-Current code:
+Allowed AST qualified names:
+{", ".join(allowed_regions) or "none"}
+
+Boundary contract:
+- Return the complete file in fixed_code, but change only the allowed functions or methods.
+- Do not add/remove public symbols or change signatures, decorators, imports, or non-target nodes.
+- List actual qualified names in modified_regions; the system independently verifies the AST diff.
+
+尝试轮次：{attempt}
+
+当前代码：
 ```python
 {current_code}
 ```

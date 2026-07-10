@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from refactor_agent.config import AppSettings
-from refactor_agent.github import GitHubAutomationService
+from refactor_agent.github import GitHubAutomationService, GitRepositoryManager
 from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.llm import MockRefactorClient
 from refactor_agent.models import GitHubRefactorJob
@@ -29,13 +29,14 @@ class FakeRepoManager:
 class FakeGitHubApi:
     def __init__(self) -> None:
         self.pull_request: dict[str, str] | None = None
+        self.issue_comment: dict[str, object] | None = None
 
     def create_pull_request(self, repo_full_name: str, title: str, head: str, base: str, body: str) -> str:
         self.pull_request = {"repo": repo_full_name, "title": title, "head": head, "base": base, "body": body}
         return "https://github.com/octo/demo/pull/1"
 
     def create_issue_comment(self, repo_full_name: str, issue_number: int, body: str) -> None:
-        raise AssertionError("unexpected failure comment")
+        self.issue_comment = {"repo": repo_full_name, "issue": issue_number, "body": body}
 
 
 def test_github_service_dry_run_refactors_without_push(tmp_path: Path):
@@ -99,6 +100,28 @@ def test_github_service_pushes_and_creates_pr(tmp_path: Path):
     assert repo_manager.pushed[0] == "leap_year.py"
     assert api.pull_request is not None
     assert "Refactor Agent Report" in api.pull_request["body"]
+    assert api.issue_comment is not None
+    assert "https://github.com/octo/demo/pull/1" in str(api.issue_comment["body"])
+
+
+def test_repository_manager_sets_local_bot_identity_before_commit(tmp_path: Path):
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], cwd: Path):
+        commands.append(command)
+        from subprocess import CompletedProcess
+
+        stdout = " M target.py\n" if command[:3] == ["git", "status", "--porcelain"] else ""
+        return CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    manager = GitRepositoryManager(tmp_path, runner=runner)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    manager.commit_and_push(checkout, "target.py", "refactor-agent/issue-1", "fix issue")
+    assert commands[:2] == [
+        ["git", "config", "user.name", "Refactor Agent Bot"],
+        ["git", "config", "user.email", "refactor-agent@users.noreply.github.com"],
+    ]
 
 
 def _job(target_path: str = "leap_year.py") -> GitHubRefactorJob:
