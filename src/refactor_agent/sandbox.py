@@ -290,6 +290,7 @@ def build_docker_command(
     cpus: float,
     inner_command: str,
     docker_executable: str = "docker",
+    pids_limit: int = 128,
 ) -> list[str]:
     workspace = workspace.resolve()
     return [
@@ -298,14 +299,29 @@ def build_docker_command(
         "--rm",
         "--network",
         "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        str(pids_limit),
+        "--user",
+        "65532:65532",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=64m",
         "--memory",
         memory,
         "--cpus",
         str(cpus),
         "-e",
         "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "PYTHONPYCACHEPREFIX=/tmp/pycache",
+        "-e",
+        "HOME=/tmp",
         "-v",
-        f"{workspace.as_posix()}:/workspace",
+        f"{workspace.as_posix()}:/workspace:ro",
         "-w",
         "/workspace",
         docker_image,
@@ -420,8 +436,10 @@ def _decode_timeout_stream(value: str | bytes | None) -> str:
 
 
 def _sandbox_env() -> dict[str, str]:
-    env = os.environ.copy()
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE"}
+    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTEST_ADDOPTS"] = "-p no:cacheprovider"
     return env
 
 

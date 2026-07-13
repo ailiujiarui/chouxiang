@@ -15,6 +15,7 @@ class RefactorRequest(BaseModel):
     repo_name: str | None = None
     issue_id: str | None = None
     max_retry: int = Field(default=3, ge=1)
+    allowed_import_roots: set[str] = Field(default_factory=set)
 
 
 class MetricsSnapshot(BaseModel):
@@ -39,6 +40,9 @@ class TargetRegion(BaseModel):
     complexity: int
     node_count: int
     structural_entropy: float
+    kind: Literal["function", "method", "module"] = "function"
+    score: int = 0
+    reason: str = "complexity fallback"
 
 
 class ClassSummary(BaseModel):
@@ -84,8 +88,10 @@ class CandidateValidationResult(BaseModel):
 class AstRewriteResult(BaseModel):
     ok: bool
     source: str
+    selected_regions: list[TargetRegion] = Field(default_factory=list)
     allowed_regions: list[str] = Field(default_factory=list)
     changed_regions: list[str] = Field(default_factory=list)
+    added_imports: list[str] = Field(default_factory=list)
     findings: list[SafetyFinding] = Field(default_factory=list)
 
     def summary(self) -> str:
@@ -260,16 +266,19 @@ class RefactorRunResult(BaseModel):
     last_sandbox_result: SandboxResult | None = None
     candidate_file: Path | None = None
     ast_validation: CandidateValidationResult | None = None
+    ast_rewrite: AstRewriteResult | None = None
     mutation_result: MutationTestResult | None = None
     performance_profile: PerformanceProfile | None = None
     adversarial_result: AdversarialTestResult | None = None
     debate_rounds: list[DebateRound] = Field(default_factory=list)
+    graph_backend: str | None = None
+    graph_node_trace: list[str] = Field(default_factory=list)
 
 
 class GitHubRefactorJob(BaseModel):
     job_id: str
+    delivery_id: str
     repo_full_name: str
-    clone_url: str
     default_branch: str = "main"
     issue_number: int
     issue_title: str
@@ -297,6 +306,7 @@ class GitHubJobRecord(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     job_id: str
+    delivery_id: str
     repo_full_name: str
     issue_number: int
     target_path: str
@@ -307,5 +317,9 @@ class GitHubJobRecord(BaseModel):
     pr_url: str | None = None
     workspace_path: Path | None = None
     error: str | None = None
+    payload_json: str | None = None
+    attempt_count: int = 0
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None

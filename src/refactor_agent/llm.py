@@ -211,7 +211,7 @@ def build_user_prompt(
     try:
         ast_summary = ast_prompt_summary(analyze_ast(current_code))
         hotspot_prompt = ast_hotspot_prompt(current_code)
-        allowed_regions = select_target_regions(current_code)
+        allowed_regions = select_target_regions(current_code, request.issue_text, previous_error)
     except SyntaxError:
         allowed_regions = []
         ast_summary = "当前代码存在语法错误；先修复语法，再做重构。"
@@ -233,7 +233,10 @@ AST 语义摘要：
 {hotspot_prompt}
 
 Allowed AST qualified names:
-{", ".join(allowed_regions) or "none"}
+{", ".join(region.qualified_name for region in allowed_regions) or "none"}
+
+Allowed new import roots:
+{", ".join(sorted(request.allowed_import_roots)) or "none"}
 
 Boundary contract:
 - Return the complete file in fixed_code, but change only the allowed functions or methods.

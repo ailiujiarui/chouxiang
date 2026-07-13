@@ -11,6 +11,8 @@ import uvicorn
 from rich.console import Console
 
 from refactor_agent.arena_export import write_arena_report
+from refactor_agent.benchmark import render_benchmark_markdown, run_benchmark, serialize_benchmark
+from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.demo_cases import DEMO_CASE_NAMES, get_demo_case, materialize_demo_case
@@ -20,6 +22,7 @@ from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
 from refactor_agent.models import RefactorRequest
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.store import SQLiteRunStore
+from refactor_agent.webhook import validate_webhook_settings
 
 app = typer.Typer(help="Local closed-loop code refactoring agent.")
 console = Console()
@@ -39,6 +42,7 @@ def run(
     database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
     mock: bool = typer.Option(False, "--mock", help="Use deterministic local mock LLM."),
     mock_fail_times: int = typer.Option(0, "--mock-fail-times", min=0, help="Make mock LLM intentionally fail this many first attempts."),
+    allow_import: list[str] | None = typer.Option(None, "--allow-import", help="Allow a new import root; repeat as needed."),
 ) -> None:
     """Run the refactor loop on a local target file."""
     _validate_input(target, issue, tests)
@@ -48,6 +52,7 @@ def run(
         tests_path=tests,
         repo_name=repo_name,
         max_retry=max_retry,
+        allowed_import_roots=set(allow_import or []),
     )
     result = _run_request(request, run_root, database, timeout, mock, sandbox_backend, sandbox_docker_image, mock_fail_times)
     _print_plain(result.report_markdown)
@@ -183,6 +188,32 @@ def demo_cases() -> None:
         console.print(f"{case.name}: {case.title}", markup=False)
 
 
+@app.command()
+def benchmark(
+    output_dir: Path = typer.Option(Path("benchmark-results"), "--output-dir", help="Evidence output directory."),
+    run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated benchmark workspaces."),
+    timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess or docker."),
+    graph_backend: str = typer.Option("langgraph", "--graph-backend", help="langgraph or loop."),
+) -> None:
+    """Run the deterministic six-case benchmark and emit JSON and Markdown."""
+    run_root = _resolve_run_root(run_root)
+    observations = run_benchmark(
+        run_root=run_root,
+        sandbox_backend=sandbox_backend,
+        graph_backend=graph_backend,
+        timeout_seconds=timeout,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "benchmark.json"
+    markdown_path = output_dir / "benchmark.md"
+    markdown = render_benchmark_markdown(observations)
+    json_path.write_text(serialize_benchmark(observations) + "\n", encoding="utf-8")
+    markdown_path.write_text(markdown + "\n", encoding="utf-8")
+    _print_plain(markdown)
+    _print_plain(f"\nJSON: {json_path}\nMarkdown: {markdown_path}")
+
+
 @app.command("state-machine")
 def state_machine() -> None:
     """Print the multi-agent debate state machine as Mermaid."""
@@ -290,6 +321,12 @@ def serve(
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn auto-reload."),
 ) -> None:
     """Serve the GitHub Webhook gateway."""
+    settings = AppSettings.from_env()
+    try:
+        validate_webhook_settings(settings, require_docker=True)
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
     uvicorn.run("refactor_agent.webhook:app", host=host, port=port, reload=reload)
 
 

@@ -48,6 +48,8 @@ http://127.0.0.1:8501
 
 ## 说明
 
+Webhook 执行必须使用 Docker。当前容器以非 root 用户运行，并启用只读根文件系统、无网络、capability 清空、`no-new-privileges`、PID/CPU/内存限制。宿主机 `subprocess` 后端只适用于可信本地代码，不属于安全沙箱。
+
 SQLite 不是数据库服务，所以这里没有单独起一个“memory db server”。更稳的做法是让 `refactor-agent` 容器把 SQLite 文件写入 Docker volume。这样容器删了也不丢记忆，换机器时只要迁移 Docker volume 或导出 `/data/refactor_agent.sqlite` 即可。
 
 ## 镜像源提示

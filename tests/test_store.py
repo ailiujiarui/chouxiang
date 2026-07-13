@@ -59,8 +59,8 @@ def test_store_tracks_github_job_lifecycle(tmp_path: Path):
     store = SQLiteRunStore(tmp_path / "runs.sqlite")
     job = GitHubRefactorJob(
         job_id="job-1",
+        delivery_id="delivery-1",
         repo_full_name="octo/demo",
-        clone_url="https://github.com/octo/demo.git",
         issue_number=42,
         issue_title="Bug",
         issue_text="target: app.py",
@@ -91,3 +91,37 @@ def test_store_tracks_github_job_lifecycle(tmp_path: Path):
     assert completed.status == "SUCCESS"
     assert completed.pr_url == "https://github.com/octo/demo/pull/1"
     assert store.list_github_jobs()[0].job_id == "job-1"
+
+
+def test_store_deduplicates_delivery_and_recovers_expired_lease(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    job = GitHubRefactorJob(
+        job_id="job-1",
+        delivery_id="delivery-1",
+        repo_full_name="octo/demo",
+        issue_number=42,
+        issue_title="Bug",
+        issue_text="target: app.py",
+        target_path="app.py",
+        tests_path="tests",
+        event_name="issues",
+        action="opened",
+    )
+    assert store.create_github_job(job).job_id == "job-1"
+    duplicate = job.model_copy(update={"job_id": "job-duplicate"})
+    assert store.create_github_job(duplicate).job_id == "job-1"
+    concurrent = job.model_copy(update={"job_id": "job-concurrent", "delivery_id": "delivery-2"})
+    assert store.create_github_job(concurrent).job_id == "job-1"
+
+    claimed = store.claim_next_github_job("worker-1", lease_seconds=30, max_attempts=3)
+    assert claimed is not None
+    assert claimed.status == "RUNNING"
+    assert claimed.attempt_count == 1
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE github_jobs SET lease_expires_at = '2000-01-01T00:00:00+00:00' WHERE job_id = 'job-1'"
+        )
+    reclaimed = store.claim_next_github_job("worker-2", lease_seconds=30, max_attempts=3)
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == 2
+    assert reclaimed.lease_owner == "worker-2"

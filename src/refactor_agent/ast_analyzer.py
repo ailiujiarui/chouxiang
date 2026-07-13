@@ -5,6 +5,7 @@ from collections import Counter
 from collections.abc import Iterable
 from math import log2
 import textwrap
+import re
 
 from refactor_agent.models import (
     AstAnalysis,
@@ -13,6 +14,7 @@ from refactor_agent.models import (
     ClassSummary,
     FunctionSignature,
     SafetyFinding,
+    TargetRegion,
 )
 
 
@@ -107,47 +109,140 @@ def validate_candidate_source(original_source: str, candidate_source: str) -> Ca
     return CandidateValidationResult(ok=not findings, analysis=candidate, findings=findings)
 
 
-def select_target_regions(source: str, max_regions: int = 3) -> list[str]:
+def select_target_regions(
+    source: str,
+    issue_text: str = "",
+    failure_feedback: str | None = None,
+    max_regions: int = 3,
+) -> list[TargetRegion]:
     analysis = analyze_ast(source)
     functions = [
         *analysis.functions,
         *(method for class_summary in analysis.classes for method in class_summary.methods),
     ]
-    ranked = sorted(functions, key=lambda item: (item.complexity, item.end_lineno or item.lineno), reverse=True)
-    hotspots = [item for item in ranked if item.complexity >= HIGH_COMPLEXITY_THRESHOLD]
-    selected = hotspots[:max_regions] or ranked[:1]
-    return [item.qualified_name for item in selected]
+    evidence = f"{issue_text}\n{failure_feedback or ''}".lower()
+    evidence_tokens = set(re.findall(r"[a-z_][a-z0-9_]*", evidence))
+    traceback_lines = {
+        int(value)
+        for value in re.findall(r"(?:\bline\s+|[\w./\\-]+\.py:)(\d+)\b", evidence)
+    }
+    tree = ast.parse(source)
+    candidates: list[TargetRegion] = []
+    for item in functions:
+        score = item.complexity * 5
+        reasons = [f"complexity={item.complexity}"]
+        qualified = item.qualified_name.lower()
+        name = item.name.lower()
+        if _contains_symbol(evidence, qualified):
+            score += 1000
+            reasons.append("exact qualified symbol in evidence")
+        elif name in evidence_tokens:
+            score += 500
+            reasons.append("symbol token in evidence")
+        if any(item.lineno <= line <= (item.end_lineno or item.lineno) for line in traceback_lines):
+            score += 800
+            reasons.append("traceback line in region")
+        metrics = _subtree_metrics(tree, item.qualified_name)
+        candidates.append(
+            TargetRegion(
+                qualified_name=item.qualified_name,
+                lineno=item.lineno,
+                end_lineno=item.end_lineno or item.lineno,
+                complexity=item.complexity,
+                node_count=int(metrics["nodes"]),
+                structural_entropy=metrics["entropy"],
+                kind="method" if "." in item.qualified_name else "function",
+                score=score,
+                reason="; ".join(reasons),
+            )
+        )
+    for node in tree.body:
+        if not _is_module_target(node):
+            continue
+        score = 0
+        reasons: list[str] = []
+        if any(node.lineno <= line <= (node.end_lineno or node.lineno) for line in traceback_lines):
+            score += 1200
+            reasons.append("explicit module statement line in evidence")
+        symbols = _module_statement_symbols(node)
+        named_symbols = sorted(symbols & evidence_tokens)
+        if named_symbols:
+            score += 700
+            reasons.append(f"module symbol in evidence: {', '.join(named_symbols)}")
+        if not score:
+            continue
+        metrics = _node_metrics(node)
+        candidates.append(
+            TargetRegion(
+                qualified_name=_module_target_key(node),
+                lineno=node.lineno,
+                end_lineno=node.end_lineno or node.lineno,
+                complexity=metrics["complexity"],
+                node_count=metrics["nodes"],
+                structural_entropy=metrics["entropy"],
+                kind="module",
+                score=score,
+                reason="; ".join(reasons),
+            )
+        )
+    ranked = sorted(candidates, key=lambda item: (item.score, item.complexity, item.end_lineno), reverse=True)
+    evidence_matches = [item for item in ranked if item.reason != f"complexity={item.complexity}"]
+    return (evidence_matches or ranked[:1])[:max_regions]
+
+
+def _contains_symbol(evidence: str, symbol: str) -> bool:
+    return re.search(rf"(?<![\w.]){re.escape(symbol)}(?![\w.])", evidence) is not None
 
 
 def controlled_subtree_rewrite(
     original_source: str,
     candidate_source: str,
-    allowed_regions: list[str] | None = None,
+    allowed_regions: list[str | TargetRegion] | None = None,
+    allowed_import_roots: set[str] | None = None,
 ) -> AstRewriteResult:
     try:
         original_tree = ast.parse(original_source)
     except SyntaxError as exc:
         finding = SafetyFinding(rule="original-syntax", message=str(exc), lineno=exc.lineno)
         return AstRewriteResult(ok=False, source=original_source, findings=[finding])
+    selected = select_target_regions(original_source) if allowed_regions is None else allowed_regions
+    selected_regions = [item for item in selected if isinstance(item, TargetRegion)]
+    allowed = [item.qualified_name if isinstance(item, TargetRegion) else item for item in selected]
     try:
         candidate_tree = ast.parse(candidate_source)
     except SyntaxError as exc:
         finding = SafetyFinding(rule="candidate-syntax", message=str(exc), lineno=exc.lineno)
-        return AstRewriteResult(ok=False, source=original_source, findings=[finding])
+        return AstRewriteResult(
+            ok=False,
+            source=original_source,
+            selected_regions=selected_regions,
+            allowed_regions=allowed,
+            findings=[finding],
+        )
 
-    allowed = allowed_regions or select_target_regions(original_source)
+    allowed_functions = [name for name in allowed if not name.startswith("module:")]
+    allowed_modules = [name for name in allowed if name.startswith("module:")]
+    import_findings, added_import_nodes, added_import_texts = _import_change_findings(
+        original_tree,
+        candidate_tree,
+        allowed_import_roots or set(),
+    )
     findings: list[SafetyFinding] = []
     original_nodes = _qualified_function_nodes(original_tree)
     candidate_nodes = _qualified_function_nodes(candidate_tree)
-    changed = sorted(
+    changed_functions = sorted(
         name
         for name in set(original_nodes) | set(candidate_nodes)
         if _node_fingerprint(original_nodes.get(name)) != _node_fingerprint(candidate_nodes.get(name))
     )
 
-    findings.extend(_module_boundary_findings(original_tree, candidate_tree))
-    for name in changed:
-        if name not in allowed:
+    module_targets, module_findings = _resolve_module_targets(original_tree, candidate_tree, allowed_modules)
+    findings.extend(module_findings)
+    ignored_module_slots = {slot for slot, _, _ in module_targets.values()}
+    findings.extend(_module_boundary_findings(original_tree, candidate_tree, ignored_module_slots))
+    findings.extend(import_findings)
+    for name in changed_functions:
+        if name not in allowed_functions:
             node = candidate_nodes.get(name) or original_nodes.get(name)
             findings.append(
                 SafetyFinding(
@@ -156,7 +251,7 @@ def controlled_subtree_rewrite(
                     lineno=getattr(node, "lineno", None),
                 )
             )
-    for name in allowed:
+    for name in allowed_functions:
         original_node = original_nodes.get(name)
         candidate_node = candidate_nodes.get(name)
         if original_node is None or candidate_node is None:
@@ -177,6 +272,12 @@ def controlled_subtree_rewrite(
                 )
             )
 
+    changed_modules = sorted(
+        name
+        for name, (_, original_node, candidate_node) in module_targets.items()
+        if _node_fingerprint(original_node) != _node_fingerprint(candidate_node)
+    )
+    changed = sorted([*changed_functions, *changed_modules])
     validation = validate_candidate_source(original_source, candidate_source)
     findings.extend(validation.findings)
     findings = _deduplicate_findings(findings)
@@ -184,6 +285,7 @@ def controlled_subtree_rewrite(
         return AstRewriteResult(
             ok=False,
             source=original_source,
+            selected_regions=selected_regions,
             allowed_regions=allowed,
             changed_regions=changed,
             findings=findings,
@@ -193,18 +295,26 @@ def controlled_subtree_rewrite(
     candidate_lines = candidate_source.splitlines(keepends=True)
     replacements: list[tuple[int, int, str]] = []
     for name in changed:
-        original_node = original_nodes[name]
-        candidate_node = candidate_nodes[name]
+        if name.startswith("module:"):
+            _, original_node, candidate_node = module_targets[name]
+        else:
+            original_node = original_nodes[name]
+            candidate_node = candidate_nodes[name]
         replacement = _node_source(candidate_lines, candidate_node, original_node.col_offset)
         replacements.append((original_node.lineno - 1, original_node.end_lineno or original_node.lineno, replacement))
     for start, end, replacement in sorted(replacements, reverse=True):
         original_lines[start:end] = [replacement]
+    added_imports = [_node_source(candidate_lines, node, 0).rstrip() for node in added_import_nodes]
+    if added_imports:
+        insertion = _import_insertion_line(original_tree)
+        original_lines[insertion:insertion] = [f"{value}\n" for value in added_imports]
     rewritten = "".join(original_lines)
     final_validation = validate_candidate_source(original_source, rewritten)
     if not final_validation.ok:
         return AstRewriteResult(
             ok=False,
             source=original_source,
+            selected_regions=selected_regions,
             allowed_regions=allowed,
             changed_regions=changed,
             findings=final_validation.findings,
@@ -212,8 +322,10 @@ def controlled_subtree_rewrite(
     return AstRewriteResult(
         ok=True,
         source=rewritten,
+        selected_regions=selected_regions,
         allowed_regions=allowed,
         changed_regions=changed,
+        added_imports=added_import_texts,
     )
 
 
@@ -426,7 +538,11 @@ def _signature_fingerprint(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return ast.dump(_function_shell(node), include_attributes=False)
 
 
-def _module_boundary_findings(original: ast.Module, candidate: ast.Module) -> list[SafetyFinding]:
+def _module_boundary_findings(
+    original: ast.Module,
+    candidate: ast.Module,
+    ignored_module_slots: set[int] | None = None,
+) -> list[SafetyFinding]:
     original_nodes = _qualified_function_nodes(original)
     candidate_nodes = _qualified_function_nodes(candidate)
     findings: list[SafetyFinding] = []
@@ -437,7 +553,8 @@ def _module_boundary_findings(original: ast.Module, candidate: ast.Module) -> li
                 message="Candidate added or removed a function/method outside controlled subtree replacement.",
             )
         )
-    if _non_function_fingerprint(original) != _non_function_fingerprint(candidate):
+    ignored = ignored_module_slots or set()
+    if _non_function_fingerprint(original, ignored) != _non_function_fingerprint(candidate, ignored):
         findings.append(
             SafetyFinding(
                 rule="module-boundary-changed",
@@ -447,10 +564,112 @@ def _module_boundary_findings(original: ast.Module, candidate: ast.Module) -> li
     return findings
 
 
-def _non_function_fingerprint(tree: ast.Module) -> str:
+def _import_change_findings(
+    original: ast.Module,
+    candidate: ast.Module,
+    allowed_roots: set[str],
+) -> tuple[list[SafetyFinding], list[ast.Import | ast.ImportFrom], list[str]]:
+    original_entries = _import_entries(original)
+    candidate_entries = _import_entries(candidate)
+    original_imports = Counter((scope, _node_fingerprint(node)) for scope, node in original_entries)
+    candidate_imports = Counter((scope, _node_fingerprint(node)) for scope, node in candidate_entries)
+    findings: list[SafetyFinding] = []
+    if any(count > candidate_imports[key] for key, count in original_imports.items()):
+        findings.append(SafetyFinding(rule="import-removed-or-changed", message="Existing imports cannot be removed or rewritten."))
+    additions: list[tuple[str, ast.Import | ast.ImportFrom]] = []
+    remaining = original_imports.copy()
+    for scope, node in candidate_entries:
+        key = (scope, _node_fingerprint(node))
+        if remaining[key]:
+            remaining[key] -= 1
+        else:
+            additions.append((scope, node))
+    normalized_allowed = {root.split(".")[0] for root in allowed_roots}
+    accepted_module: list[ast.Import | ast.ImportFrom] = []
+    accepted_text: list[str] = []
+    for scope, node in additions:
+        roots = _import_roots(node)
+        if isinstance(node, ast.ImportFrom) and node.level:
+            findings.append(SafetyFinding(rule="relative-import-added", message="New relative imports are not allowed.", lineno=node.lineno))
+            continue
+        if any(alias.name == "*" for alias in node.names):
+            findings.append(SafetyFinding(rule="wildcard-import-added", message="New wildcard imports are not allowed.", lineno=node.lineno))
+            continue
+        denied = sorted(root for root in roots if root not in normalized_allowed or root in BLOCKED_IMPORTS)
+        if denied:
+            findings.append(
+                SafetyFinding(
+                    rule="import-not-allowlisted",
+                    message=f"New import roots are not allowlisted: {', '.join(denied)}.",
+                    lineno=node.lineno,
+                )
+            )
+            continue
+        if scope == "module":
+            accepted_module.append(node)
+        accepted_text.append(ast.unparse(node))
+    return findings, accepted_module, accepted_text
+
+
+def _import_entries(tree: ast.Module) -> list[tuple[str, ast.Import | ast.ImportFrom]]:
+    visitor = _ImportScopeVisitor()
+    visitor.visit(tree)
+    return visitor.entries
+
+
+class _ImportScopeVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.scope: list[str] = []
+        self.entries: list[tuple[str, ast.Import | ast.ImportFrom]] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.entries.append((".".join(self.scope) or "module", node))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.entries.append((".".join(self.scope) or "module", node))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+
+def _import_roots(node: ast.Import | ast.ImportFrom) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {alias.name.split(".")[0] for alias in node.names}
+    return {(node.module or "").split(".")[0]}
+
+
+def _import_insertion_line(tree: ast.Module) -> int:
+    insertion = 0
+    for index, node in enumerate(tree.body):
+        if index == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            insertion = node.end_lineno or node.lineno
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            insertion = node.end_lineno or node.lineno
+            continue
+        break
+    return insertion
+
+
+def _non_function_fingerprint(tree: ast.Module, ignored_module_slots: set[int] | None = None) -> str:
     body: list[ast.stmt] = []
+    normalized_index = 0
+    ignored = ignored_module_slots or set()
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if normalized_index in ignored:
+            body.append(ast.Pass())
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             body.append(_function_shell(node))
         elif isinstance(node, ast.ClassDef):
             class_body = [
@@ -469,7 +688,118 @@ def _non_function_fingerprint(tree: ast.Module) -> str:
             )
         else:
             body.append(node)
+        normalized_index += 1
     return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
+
+
+def _resolve_module_targets(
+    original: ast.Module,
+    candidate: ast.Module,
+    allowed: list[str],
+) -> tuple[dict[str, tuple[int, ast.stmt, ast.stmt]], list[SafetyFinding]]:
+    original_body = [node for node in original.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
+    candidate_body = [node for node in candidate.body if not isinstance(node, (ast.Import, ast.ImportFrom))]
+    resolved: dict[str, tuple[int, ast.stmt, ast.stmt]] = {}
+    findings: list[SafetyFinding] = []
+    for target in allowed:
+        original_match = next(
+            (
+                (index, node)
+                for index, node in enumerate(original_body)
+                if _module_target_key(node) == target and _is_module_target(node)
+            ),
+            None,
+        )
+        if original_match is None:
+            findings.append(
+                SafetyFinding(
+                    rule="target-region-missing",
+                    message=f"Allowed AST region {target!r} does not identify an eligible top-level statement.",
+                )
+            )
+            continue
+        index, original_node = original_match
+        if index >= len(candidate_body):
+            findings.append(
+                SafetyFinding(
+                    rule="target-region-missing",
+                    message=f"Candidate removed allowed AST region {target!r}.",
+                    lineno=original_node.lineno,
+                )
+            )
+            continue
+        candidate_node = candidate_body[index]
+        if type(candidate_node) is not type(original_node):
+            findings.append(
+                SafetyFinding(
+                    rule="target-region-kind-changed",
+                    message=f"Allowed AST region {target!r} changed statement type.",
+                    lineno=candidate_node.lineno,
+                )
+            )
+            continue
+        if _module_binding_fingerprint(candidate_node) != _module_binding_fingerprint(original_node):
+            findings.append(
+                SafetyFinding(
+                    rule="module-target-binding-changed",
+                    message=f"Allowed AST region {target!r} changed its module-level binding.",
+                    lineno=candidate_node.lineno,
+                )
+            )
+            continue
+        resolved[target] = (index, original_node, candidate_node)
+    return resolved, findings
+
+
+def _is_module_target(node: ast.stmt) -> bool:
+    return isinstance(
+        node,
+        (
+            ast.Assign,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.If,
+            ast.For,
+            ast.AsyncFor,
+            ast.While,
+            ast.Try,
+            ast.With,
+            ast.AsyncWith,
+            ast.Match,
+        ),
+    )
+
+
+def _module_target_key(node: ast.stmt) -> str:
+    return f"module:{node.lineno}:{type(node).__name__}"
+
+
+def _module_binding_fingerprint(node: ast.stmt) -> str | None:
+    if isinstance(node, ast.Assign):
+        return ast.dump(ast.Tuple(elts=node.targets, ctx=ast.Store()), include_attributes=False)
+    if isinstance(node, ast.AnnAssign):
+        return ast.dump(ast.Tuple(elts=[node.target, node.annotation], ctx=ast.Store()), include_attributes=False)
+    if isinstance(node, ast.AugAssign):
+        return ast.dump(node.target, include_attributes=False)
+    return None
+
+
+def _module_statement_symbols(node: ast.stmt) -> set[str]:
+    names: set[str] = set()
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Store):
+            names.add(item.id.lower())
+    return names
+
+
+def _node_metrics(node: ast.AST) -> dict[str, int | float]:
+    visitor = _ComplexityVisitor()
+    visitor.visit(node)
+    node_types = [type(item).__name__ for item in ast.walk(node)]
+    counts = Counter(node_types)
+    total = len(node_types)
+    entropy = -sum((count / total) * log2(count / total) for count in counts.values()) if total else 0.0
+    return {"complexity": visitor.complexity, "nodes": total, "entropy": entropy}
 
 
 def _function_shell(node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.FunctionDef | ast.AsyncFunctionDef:

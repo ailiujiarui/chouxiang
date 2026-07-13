@@ -2,11 +2,11 @@
 
 ## Architecture and Validation
 
-- The default control plane is a real LangGraph state graph: `MINIMIZER -> DEFENDER -> ADVERSARY -> JUDGE`. Set `REFACTOR_AGENT_GRAPH_BACKEND=loop` for the deterministic fallback.
-- LLM output is treated as an untrusted full-file proposal. The system independently computes the AST diff and only writes back selected hotspot functions or methods.
-- Imports, public symbols, signatures, decorators, class structure, and non-target functions must remain unchanged. Violations are rejected before sandbox execution and become retry feedback.
+- LangGraph executes the real `prepare -> minimizer -> ast_guard -> pytest -> adversary -> mutation -> judge -> finalize` workflow. `loop` is a compatibility executor over the same node methods and legal routing table.
+- LLM output is treated as an untrusted full-file proposal. The system independently computes the AST diff and only writes back Issue/traceback-selected functions, methods, or explicitly referenced top-level statements.
+- New imports are denied by default. `--allow-import` and `REFACTOR_AGENT_ALLOWED_IMPORTS` can admit absolute, non-wildcard roots; dangerous imports/calls, removed imports, public API changes, signatures, decorators, and target-external changes remain blocked.
 - Both entry points are supported: `refactor-agent ...` and `python -m refactor_agent.cli ...`.
-- On Windows, start Docker Desktop and wait for `docker version` to report a Server version before selecting `--sandbox-backend docker`.
+- Webhook mode is fail-closed and requires Docker. Local `subprocess` mode is trusted-code execution, not a security sandbox.
 - A webhook can be validated without a public tunnel by posting a GitHub-compatible `issues.opened` JSON body to `/webhooks/github`, with `X-GitHub-Event: issues` and an `X-Hub-Signature-256: sha256=...` HMAC generated from `GITHUB_WEBHOOK_SECRET`.
 
 本项目实现 `plan.md` 中的本地闭环 MVP：读取 Python 文件和 Issue 描述，计算 LOC/圈复杂度，调用 DeepSeek 或 mock LLM 生成修复代码，在隔离工作区运行 `pytest`，失败时最多自愈 3 次，成功后输出指标报告并写入 SQLite。
@@ -49,11 +49,39 @@ refactor-agent run --target path\to\file.py --issue path\to\issue.md --tests pat
 refactor-agent ast-hotspots --target src\refactor_agent\orchestrator.py --max-regions 2
 ```
 
-同样的热点信息会被注入 DeepSeek prompt，让 Agent 优先处理复杂度最高的函数/方法，而不是盲目重写整个文件。
+Issue 中的 qualified name、函数名、traceback 行号和 `path.py:line` 证据优先于复杂度。没有明确证据时才回退到复杂度最高的函数；仅含模块语句的文件不会被猜测修改。显式模块目标使用 `module:<line>:<AST-type>`，例如 `module:1:Assign`。
+
+允许候选新增标准库或项目依赖时，必须显式授权导入根：
+
+```powershell
+refactor-agent run --target app.py --issue issue.md --tests tests --allow-import math
+```
+
+## Execution Graph
+
+默认后端是 `langgraph`。故障隔离或调试时可切换到调用同一组节点的 `loop` 后端：
+
+```powershell
+$env:REFACTOR_AGENT_GRAPH_BACKEND="loop"
+refactor-agent demo
+refactor-agent state-machine
+```
+
+报告、`trajectory.jsonl` 和 Mermaid 状态机均来自实际执行节点轨迹。
+
+## Reproducible Benchmark
+
+六案例 mock 基准覆盖普通函数、低复杂度命名目标、类方法、模块语句、弱测试对抗自愈和不安全候选拒绝：
+
+```powershell
+refactor-agent benchmark --output-dir benchmark-results --run-root .runs\benchmark
+```
+
+命令同时生成 `benchmark.json` 和 `benchmark.md`。2026-07-13 本地连续两轮结果在排除时间戳和运行耗时后完全一致：样本数 6，5 个安全案例成功且变异击杀率均为 100%，1 个不安全导入案例按预期拒绝。该结果不是跨仓库成功率或复杂度改善率结论。
 
 ## Docker Sandbox
 
-默认沙箱后端是 `subprocess`。如果要启用无网络、限 CPU/内存的 Docker 后端，先构建镜像：
+本地 CLI 默认后端是 `subprocess`，仅用于可信代码。Webhook 强制使用无网络、非 root、只读根文件系统、能力清空、PID/CPU/内存受限的 Docker 后端：
 
 ```powershell
 docker build -f docker\sandbox.Dockerfile -t refactor-agent-sandbox:py312 .
@@ -68,7 +96,7 @@ refactor-agent demo --sandbox-backend auto
 
 Webhook 模式可用环境变量：
 
-- `REFACTOR_AGENT_SANDBOX_BACKEND=subprocess|docker|auto`
+- `REFACTOR_AGENT_SANDBOX_BACKEND=subprocess|docker|auto`（Webhook 启动时必须为 `docker`）
 - `REFACTOR_AGENT_SANDBOX_DOCKER_IMAGE=refactor-agent-sandbox:py312`
 - `REFACTOR_AGENT_SANDBOX_MEMORY=256m`
 - `REFACTOR_AGENT_SANDBOX_CPUS=1.0`
@@ -123,6 +151,10 @@ refactor-agent arena-export --output arena-report.md
 $env:GITHUB_WEBHOOK_SECRET="your-webhook-secret"
 $env:GITHUB_TOKEN="ghp_..."
 $env:DEEPSEEK_API_KEY="sk-..."
+$env:REFACTOR_AGENT_ADMIN_TOKEN="separate-admin-secret"
+$env:REFACTOR_AGENT_ALLOWED_REPOSITORIES="owner/repository"
+$env:REFACTOR_AGENT_ALLOWED_SENDERS="trusted-github-login"
+$env:REFACTOR_AGENT_SANDBOX_BACKEND="docker"
 refactor-agent serve --host 0.0.0.0 --port 8000
 ```
 
@@ -144,10 +176,17 @@ tests: tests
 - `REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT=.github-workspaces`：GitHub 克隆目录。
 - `REFACTOR_AGENT_RUN_ROOT=.runs`：沙箱运行目录。
 - `REFACTOR_AGENT_MAX_RETRY=3`：最大自愈尝试次数。
+- `REFACTOR_AGENT_ALLOWED_REPOSITORIES=owner/repo`：Webhook 仓库 allowlist，必填。
+- `REFACTOR_AGENT_ALLOWED_IMPORTS=math,decimal`：Webhook 可新增导入根；Issue 文本不能授予该权限。
+- `REFACTOR_AGENT_ALLOWED_SENDERS=login`：允许触发自动改码的 GitHub 用户 allowlist，必填。
+- `REFACTOR_AGENT_ADMIN_TOKEN=...`：查询 `/jobs` 时使用的独立 Bearer Token，必填。
+- `REFACTOR_AGENT_RETAIN_CHECKOUTS=false`：默认在作业结束后删除 Git clone。
+- `REFACTOR_AGENT_JOB_LEASE_SECONDS=300`：持久 worker 租约时间。
+- `REFACTOR_AGENT_JOB_MAX_ATTEMPTS=3`：租约恢复最大次数。
 
 Webhook 作业会写入 SQLite。可以用 HTTP 或 CLI 查询：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/jobs
+Invoke-RestMethod http://127.0.0.1:8000/jobs -Headers @{Authorization="Bearer $env:REFACTOR_AGENT_ADMIN_TOKEN"}
 refactor-agent jobs --limit 10
 ```

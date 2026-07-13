@@ -11,6 +11,7 @@ from refactor_agent.sandbox import (
     run_pytest_with_backend,
     SandboxUnavailableError,
     write_candidate,
+    _sandbox_env,
 )
 
 
@@ -67,6 +68,22 @@ def test_build_docker_command_uses_network_and_resource_limits(tmp_path: Path):
     assert "--cpus" in command
     assert "0.5" in command
     assert "refactor-agent-sandbox:py312" in command
+    assert "--read-only" in command
+    assert ["--cap-drop", "ALL"] == command[command.index("--cap-drop") : command.index("--cap-drop") + 2]
+    assert "no-new-privileges" in command
+    assert "--pids-limit" in command
+    assert "--user" in command
+    assert command[command.index("-v") + 1].endswith(":/workspace:ro")
+
+
+def test_subprocess_environment_drops_credentials(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "secret")
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "secret")
+    env = _sandbox_env()
+    assert "GITHUB_TOKEN" not in env
+    assert "DEEPSEEK_API_KEY" not in env
+    assert "GITHUB_WEBHOOK_SECRET" not in env
 
 
 def test_auto_backend_falls_back_to_subprocess_when_docker_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

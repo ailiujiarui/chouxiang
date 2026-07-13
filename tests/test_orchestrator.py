@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 
 from refactor_agent.debate_state import validate_status_sequence
-from refactor_agent.llm import MockRefactorClient
+from refactor_agent.llm import LLMError, MockRefactorClient
 from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest, TrajectoryMemoryRecord
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.sandbox import DockerStatus
@@ -35,6 +35,18 @@ class ExplodingClient:
         attempt: int,
     ) -> LLMRefactorResult:
         raise AssertionError("LLM should not be called when sandbox preflight fails")
+
+
+class LLMFailingClient:
+    def refactor(
+        self,
+        request: RefactorRequest,
+        current_code: str,
+        baseline_metrics: MetricsSnapshot,
+        previous_error: str | None,
+        attempt: int,
+    ) -> LLMRefactorResult:
+        raise LLMError("provider unavailable")
 
 
 class CapturingClient:
@@ -104,6 +116,11 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     assert "验证矩阵" in result.report_markdown
     assert "| LOC |" in result.report_markdown
     assert "| AST 守卫 (AST guard) |" in result.report_markdown
+    assert "Selected AST targets" in result.report_markdown
+    assert "Executed graph nodes" in result.report_markdown
+    assert "PREPARE -> MINIMIZER -> AST_GUARD" in result.report_markdown
+    assert result.ast_rewrite is not None
+    assert result.ast_rewrite.allowed_regions == ["is_leap_year"]
     trajectory_path = tmp_path / ".runs" / result.record.run_id / "trajectory.jsonl"
     assert trajectory_path.is_file()
     statuses = [
@@ -124,11 +141,18 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     judge_step = next(step for step in steps if step["status"] == "JUDGE_SCORED")
     assert judge_step["metadata"]["graph"]["backend"] == "langgraph"
     assert judge_step["metadata"]["graph"]["node_trace"] == [
+        "PREPARE",
         "MINIMIZER",
-        "DEFENDER",
+        "AST_GUARD",
+        "PYTEST",
+        "MINIMIZER",
+        "AST_GUARD",
+        "PYTEST",
         "ADVERSARY",
+        "MUTATION",
         "JUDGE",
     ]
+    assert result.graph_node_trace == judge_step["metadata"]["graph"]["node_trace"] + ["FINALIZE"]
     assert judge_step["metadata"]["graph"]["verdict"] == "APPROVE"
     assert (result.workspace_path / "leap_year.py").read_text(encoding="utf-8") != (
         project / "leap_year.py"
@@ -190,6 +214,26 @@ def test_orchestrator_fails_after_max_retry(tmp_path: Path):
     result = orchestrator.run(request)
     assert result.record.status == "FAILED"
     assert result.record.self_heal_count == 2
+
+
+def test_orchestrator_records_immediate_llm_failure_without_self_heal(tmp_path: Path):
+    project = _make_leap_project(tmp_path)
+    request = RefactorRequest(
+        target_file=project / "leap_year.py",
+        issue_text="1900 should not be a leap year",
+        tests_path=project / "tests",
+        repo_name="leap",
+        max_retry=2,
+    )
+    result = RefactorOrchestrator(
+        llm_client=LLMFailingClient(),
+        run_root=tmp_path / ".runs",
+        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
+    ).run(request)
+
+    assert result.record.status == "FAILED"
+    assert result.attempts == 1
+    assert result.record.self_heal_count == 0
 
 
 def test_orchestrator_supports_loop_graph_backend(tmp_path: Path):

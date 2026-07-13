@@ -8,8 +8,8 @@ from uuid import uuid4
 
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
-from refactor_agent.debate_graph import DebateGraphState, run_debate_graph
-from refactor_agent.debate_state import render_mermaid_state_diagram, should_converge
+from refactor_agent.execution_graph import ExecutionState, run_execution_graph
+from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.memory import build_memory_context, failure_memory, success_memory, target_memory_key
 from refactor_agent.metrics import analyze_file
@@ -17,6 +17,7 @@ from refactor_agent.models import (
     AdversarialCritique,
     AdversarialTestResult,
     AgentDebateMessage,
+    AstRewriteResult,
     CandidateValidationResult,
     DebateRound,
     MutationTestResult,
@@ -69,591 +70,375 @@ class RefactorOrchestrator:
         self.adversary = AdversaryAgent()
         self.judge = JudgeAgent()
 
-    def _decide_graph(
-        self,
-        *,
-        attempt: int,
-        max_attempts: int,
-        ast_ok: bool,
-        pytest_passed: bool,
-        adversarial_passed: bool | None = None,
-        mutation_kill_rate: float | None = None,
-        reward: float | None = None,
-        failure_feedback: str | None = None,
-    ) -> DebateGraphState:
-        return run_debate_graph(
-            attempt=attempt,
-            max_attempts=max_attempts,
-            ast_ok=ast_ok,
-            pytest_passed=pytest_passed,
-            adversarial_passed=adversarial_passed,
-            mutation_kill_rate=mutation_kill_rate,
-            reward=reward,
-            failure_feedback=failure_feedback,
-            backend=self.graph_backend,
-        )
-
     def run(self, request: RefactorRequest) -> RefactorRunResult:
-        run_id = _new_run_id()
-        workspace = self.run_root / run_id / "workspace"
-        repo_name = request.repo_name or request.target_file.resolve().parent.name
-        memory_key = target_memory_key(request.target_file)
-        memory_context = build_memory_context(self.store.list_memory(repo_name, memory_key, limit=3))
-        llm_request = _request_with_memory(request, memory_context)
-        baseline = analyze_file(request.target_file)
-        original_code = request.target_file.read_text(encoding="utf-8")
-        allowed_regions = select_target_regions(original_code)
-        _, target_in_workspace, tests_in_workspace = prepare_workspace(
-            request.target_file,
-            request.tests_path,
-            workspace,
+        return _RefactorWorkflow(self, request).run()
+
+
+class _RefactorWorkflow:
+    def __init__(self, orchestrator: RefactorOrchestrator, request: RefactorRequest) -> None:
+        self.orchestrator = orchestrator
+        self.request = request
+        self.run_id = _new_run_id()
+        self.workspace = orchestrator.run_root / self.run_id / "workspace"
+        self.repo_name = request.repo_name or request.target_file.resolve().parent.name
+        self.memory_key = target_memory_key(request.target_file)
+        self.trajectory_path = orchestrator.run_root / self.run_id / "trajectory.jsonl"
+
+    def run(self) -> RefactorRunResult:
+        final = run_execution_graph(
+            {
+                "attempt": 0,
+                "max_attempts": self.request.max_retry,
+                "current_code": "",
+                "previous_error": None,
+                "debate_rounds": [],
+                "node_trace": [],
+                "next_node": "prepare",
+            },
+            self,
+            self.orchestrator.graph_backend,
         )
-        trajectory_path = self.run_root / run_id / "trajectory.jsonl"
+        result: RefactorRunResult = final["result"]
+        result.graph_backend = self.orchestrator.graph_backend
+        result.graph_node_trace = final["node_trace"]
+        return result
+
+    def prepare(self, state: ExecutionState) -> ExecutionState:
+        memory = build_memory_context(self.orchestrator.store.list_memory(self.repo_name, self.memory_key, limit=3))
+        state["llm_request"] = _request_with_memory(self.request, memory)
+        state["baseline"] = analyze_file(self.request.target_file)
+        state["original_code"] = self.request.target_file.read_text(encoding="utf-8")
+        state["current_code"] = state["original_code"]
+        _, state["target_file"], state["tests_path"] = prepare_workspace(
+            self.request.target_file,
+            self.request.tests_path,
+            self.workspace,
+        )
         try:
-            active_backend, _ = resolve_sandbox_backend(self.sandbox_backend)
+            state["active_backend"], _ = resolve_sandbox_backend(self.orchestrator.sandbox_backend)
         except SandboxUnavailableError as exc:
-            record = RunRecord(
-                run_id=run_id,
-                issue_id=request.issue_id,
-                repo_name=repo_name,
-                pre_loc=baseline.loc,
-                pre_cc=baseline.cyclomatic_complexity,
-                self_heal_count=0,
-                status="FAILED",
-                error=str(exc),
-            )
-            self.store.save(record)
-            append_trajectory(
-                trajectory_path,
-                TrajectoryStep(attempt=0, status="FAILED", message=str(exc)),
-            )
-            return RefactorRunResult(
-                record=record,
-                report_markdown=_build_report(
-                    record,
-                    workspace,
-                    None,
-                    None,
-                    str(exc),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-                workspace_path=workspace,
-                attempts=0,
-                last_sandbox_result=None,
-                candidate_file=target_in_workspace,
-            )
+            state["terminal_error"] = str(exc)
+            state["next_node"] = "finalize"
+            return state
+        state["next_node"] = "minimizer"
+        return state
 
-        current_code = original_code
-        previous_error: str | None = None
-        last_sandbox: SandboxResult | None = None
-        last_validation: CandidateValidationResult | None = None
-        last_adversarial: AdversarialTestResult | None = None
-        last_mutation: MutationTestResult | None = None
-        last_performance: PerformanceProfile | None = None
-        previous_candidate_code: str | None = None
-        debate_rounds: list[DebateRound] = []
+    def minimizer(self, state: ExecutionState) -> ExecutionState:
+        state["attempt"] += 1
+        state["allowed_regions"] = select_target_regions(
+            state["original_code"],
+            self.request.issue_text,
+            state.get("previous_error"),
+        )
+        try:
+            result = self.orchestrator.minimizer.propose(
+                request=state["llm_request"],
+                current_code=state["current_code"],
+                baseline_metrics=state["baseline"],
+                previous_error=state.get("previous_error"),
+                attempt=state["attempt"],
+            )
+        except LLMError as exc:
+            state["terminal_error"] = str(exc)
+            state["next_node"] = "finalize"
+            return state
+        state["llm_result"] = result
+        state["round_messages"] = [
+            AgentDebateMessage(round=state["attempt"], agent="MINIMIZER", content=result.thought)
+        ]
+        self._trajectory(state, "MINIMIZER_PROPOSED", result.thought, "MINIMIZER")
+        state["next_node"] = "ast_guard"
+        return state
 
-        for attempt in range(1, request.max_retry + 1):
-            try:
-                llm_result = self.minimizer.propose(
-                    request=llm_request,
-                    current_code=current_code,
-                    baseline_metrics=baseline,
-                    previous_error=previous_error,
-                    attempt=attempt,
-                )
-            except LLMError as exc:
-                record = RunRecord(
-                    run_id=run_id,
-                    issue_id=request.issue_id,
-                    repo_name=repo_name,
-                    pre_loc=baseline.loc,
-                    pre_cc=baseline.cyclomatic_complexity,
-                    self_heal_count=attempt - 1,
-                    status="FAILED",
-                    error=str(exc),
-                )
-                self.store.save(record)
-                self.store.save_memory(failure_memory(record, memory_key))
-                return RefactorRunResult(
-                    record=record,
-                    report_markdown=_build_report(
-                        record,
-                        workspace,
-                        None,
-                        None,
-                        str(exc),
-                        last_validation,
-                        last_adversarial,
-                        last_mutation,
-                        None,
-                        last_performance,
-                        debate_rounds,
-                    ),
-                    workspace_path=workspace,
-                    attempts=attempt,
-                    last_sandbox_result=last_sandbox,
-                    candidate_file=target_in_workspace,
-                    ast_validation=last_validation,
-                    adversarial_result=last_adversarial,
-                    mutation_result=last_mutation,
-                    performance_profile=last_performance,
-                    debate_rounds=debate_rounds,
-                )
+    def ast_guard(self, state: ExecutionState) -> ExecutionState:
+        rewrite = controlled_subtree_rewrite(
+            state["original_code"],
+            state["llm_result"].fixed_code,
+            state["allowed_regions"],
+            self.request.allowed_import_roots,
+        )
+        state["rewrite"] = rewrite
+        candidate = rewrite.source
+        state["code_change_percent"] = _code_change_percent(
+            state.get("previous_candidate_code") or state["original_code"], candidate
+        )
+        state["previous_candidate_code"] = candidate
+        state["current_code"] = candidate
+        validation = validate_candidate_source(state["original_code"], candidate)
+        if not rewrite.ok:
+            validation = CandidateValidationResult(ok=False, findings=rewrite.findings)
+        state["validation"] = validation
+        message = self.orchestrator.defender.review_static(validation)
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="DEFENDER", content=message)
+        )
+        if not validation.ok:
+            state["previous_error"] = "AST guard rejected candidate:\n" + validation.summary()
+            self._trajectory(
+                state,
+                "AST_REJECTED",
+                state["previous_error"],
+                "DEFENDER",
+                self._rewrite_metadata(rewrite),
+            )
+            self._close_round(state)
+            return self._retry_or_finalize(state)
+        self._trajectory(
+            state,
+            "DEFENDER_REVIEWED",
+            message,
+            "DEFENDER",
+            self._rewrite_metadata(rewrite),
+        )
+        state["next_node"] = "pytest"
+        return state
 
-            rewrite = controlled_subtree_rewrite(original_code, llm_result.fixed_code, allowed_regions)
-            current_code = rewrite.source
-            code_change_percent = _code_change_percent(previous_candidate_code or original_code, current_code)
-            previous_candidate_code = current_code
-            round_messages = [
-                AgentDebateMessage(
-                    round=attempt,
-                    agent="MINIMIZER",
-                    content=llm_result.thought,
-                    metadata={
-                        "review": llm_result.insult_review,
-                        "code_change_percent": code_change_percent,
-                    },
-                )
-            ]
-            append_trajectory(
-                trajectory_path,
-                TrajectoryStep(
-                    attempt=attempt,
-                    status="MINIMIZER_PROPOSED",
-                    agent="MINIMIZER",
-                    message=llm_result.thought,
-                    metadata={
-                        "review": llm_result.insult_review,
-                        "code_change_percent": code_change_percent,
-                    },
-                ),
-            )
+    def pytest(self, state: ExecutionState) -> ExecutionState:
+        write_candidate(state["target_file"], state["current_code"])
+        result = run_pytest_with_backend(
+            workspace=self.workspace,
+            tests_path=state["tests_path"],
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            backend=state["active_backend"],
+            docker_image=self.orchestrator.sandbox_docker_image,
+            memory=self.orchestrator.sandbox_memory,
+            cpus=self.orchestrator.sandbox_cpus,
+        )
+        state["sandbox"] = result
+        message = self.orchestrator.defender.review_pytest(result)
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="DEFENDER", content=message)
+        )
+        if not result.passed:
+            state["previous_error"] = _summarize_failure(result)
+            self._trajectory(state, "PYTEST_FAILED", state["previous_error"], "DEFENDER")
+            self._close_round(state, pytest_passed=False)
+            return self._retry_or_finalize(state)
+        state["next_node"] = "adversary"
+        return state
 
-            last_validation = validate_candidate_source(original_code, current_code)
-            if not rewrite.ok:
-                last_validation = CandidateValidationResult(ok=False, findings=rewrite.findings)
-            if not last_validation.ok:
-                graph_state = self._decide_graph(
-                    attempt=attempt,
-                    max_attempts=request.max_retry,
-                    ast_ok=False,
-                    pytest_passed=False,
-                    failure_feedback=last_validation.summary(),
-                )
-                previous_error = "AST 守卫在进入沙箱前拒绝候选代码：\n" + last_validation.summary()
-                defender_message = self.defender.review_static(last_validation)
-                round_messages.append(
-                    AgentDebateMessage(round=attempt, agent="DEFENDER", content=defender_message)
-                )
-                debate_rounds.append(
-                    DebateRound(
-                        round=attempt,
-                        code_change_percent=code_change_percent,
-                        converged=False,
-                        messages=round_messages,
-                    )
-                )
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="AST_REJECTED",
-                        agent="DEFENDER",
-                        message=previous_error,
-                        metadata={
-                            "findings": [finding.model_dump(mode="json") for finding in last_validation.findings],
-                            "graph": _graph_metadata(graph_state, self.graph_backend),
-                        },
-                    ),
-                )
-                continue
-            defender_message = self.defender.review_static(last_validation)
-            round_messages.append(
-                AgentDebateMessage(round=attempt, agent="DEFENDER", content=defender_message)
-            )
-            append_trajectory(
-                trajectory_path,
-                TrajectoryStep(
-                    attempt=attempt,
-                    status="DEFENDER_REVIEWED",
-                    agent="DEFENDER",
-                    message=defender_message,
-                ),
-            )
+    def adversary(self, state: ExecutionState) -> ExecutionState:
+        critique = self.orchestrator.adversary.critique(state["current_code"], self.request.issue_text)
+        critique_message = _summarize_critique(critique)
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=critique_message)
+        )
+        self._trajectory(state, "ADVERSARY_CRITIQUED", critique_message, "ADVERSARY")
+        result = self.orchestrator.adversary.generate_tests(
+            candidate_source=state["current_code"],
+            workspace=self.workspace,
+            target_file=state["target_file"],
+            issue_text=self.request.issue_text,
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            backend=state["active_backend"],
+            docker_image=self.orchestrator.sandbox_docker_image,
+            memory=self.orchestrator.sandbox_memory,
+            cpus=self.orchestrator.sandbox_cpus,
+        )
+        state["adversarial"] = result
+        message = _summarize_adversary_pass(result)
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=message)
+        )
+        self._trajectory(state, "ADVERSARY_CHALLENGED", message, "ADVERSARY")
+        if not result.passed:
+            state["previous_error"] = _summarize_adversarial_failure(result) + "\n" + critique_message
+            self._trajectory(state, "ADVERSARY_FAILED", state["previous_error"], "ADVERSARY")
+            self._close_round(state, pytest_passed=True, adversarial_passed=False)
+            return self._retry_or_finalize(state)
+        state["next_node"] = "mutation"
+        return state
 
-            write_candidate(target_in_workspace, current_code)
-            last_sandbox = run_pytest_with_backend(
-                workspace=workspace,
-                tests_path=tests_in_workspace,
-                timeout_seconds=self.pytest_timeout_seconds,
-                backend=active_backend,
-                docker_image=self.sandbox_docker_image,
-                memory=self.sandbox_memory,
-                cpus=self.sandbox_cpus,
-            )
-            pytest_message = self.defender.review_pytest(last_sandbox)
-            round_messages.append(
-                AgentDebateMessage(
-                    round=attempt,
-                    agent="DEFENDER",
-                    content=pytest_message,
-                    metadata={
-                        "returncode": last_sandbox.returncode,
-                        "duration_seconds": last_sandbox.duration_seconds,
-                    },
-                )
-            )
-            if last_sandbox.passed:
-                adversarial_critique = self.adversary.critique(current_code, request.issue_text)
-                critique_message = _summarize_critique(adversarial_critique)
-                round_messages.append(
-                    AgentDebateMessage(
-                        round=attempt,
-                        agent="ADVERSARY",
-                        content=critique_message,
-                        metadata=adversarial_critique.model_dump(mode="json"),
-                    )
-                )
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="ADVERSARY_CRITIQUED",
-                        agent="ADVERSARY",
-                        message=critique_message,
-                        metadata=adversarial_critique.model_dump(mode="json"),
-                    ),
-                )
-                last_adversarial = self.adversary.generate_tests(
-                    candidate_source=current_code,
-                    workspace=workspace,
-                    target_file=target_in_workspace,
-                    issue_text=request.issue_text,
-                    timeout_seconds=self.pytest_timeout_seconds,
-                    backend=active_backend,
-                    docker_image=self.sandbox_docker_image,
-                    memory=self.sandbox_memory,
-                    cpus=self.sandbox_cpus,
-                )
-                adversary_message = _summarize_adversary_pass(last_adversarial)
-                round_messages.append(
-                    AgentDebateMessage(
-                        round=attempt,
-                        agent="ADVERSARY",
-                        content=adversary_message,
-                        metadata={
-                            "generated": last_adversarial.generated,
-                            "passed": last_adversarial.passed,
-                            "returncode": last_adversarial.returncode,
-                        },
-                    )
-                )
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="ADVERSARY_CHALLENGED",
-                        agent="ADVERSARY",
-                        message=adversary_message,
-                        metadata={
-                            "generated": last_adversarial.generated,
-                            "passed": last_adversarial.passed,
-                            "returncode": last_adversarial.returncode,
-                        },
-                    ),
-                )
-                if not last_adversarial.passed:
-                    graph_state = self._decide_graph(
-                        attempt=attempt,
-                        max_attempts=request.max_retry,
-                        ast_ok=True,
-                        pytest_passed=True,
-                        adversarial_passed=False,
-                        failure_feedback=_summarize_adversarial_failure(last_adversarial),
-                    )
-                    previous_error = (
-                        _summarize_adversarial_failure(last_adversarial)
-                        + "\n\n对抗 Agent 诊断：\n"
-                        + critique_message
-                    )
-                    debate_rounds.append(
-                        DebateRound(
-                            round=attempt,
-                            pytest_passed=True,
-                            adversarial_passed=False,
-                            code_change_percent=code_change_percent,
-                            converged=False,
-                            messages=round_messages,
-                        )
-                    )
-                    append_trajectory(
-                        trajectory_path,
-                        TrajectoryStep(
-                            attempt=attempt,
-                            status="ADVERSARY_FAILED",
-                            agent="ADVERSARY",
-                            message=previous_error,
-                            metadata={"graph": _graph_metadata(graph_state, self.graph_backend)},
-                        ),
-                    )
-                    continue
+    def mutation(self, state: ExecutionState) -> ExecutionState:
+        state["post"] = analyze_file(state["target_file"])
+        mutation_tests = _combined_mutation_tests_path(
+            self.workspace,
+            state["tests_path"],
+            state["adversarial"].test_file,
+        )
+        state["mutation"] = self.orchestrator.adversary.challenge(
+            candidate_source=state["current_code"],
+            target_file=state["target_file"],
+            workspace=self.workspace,
+            tests_path=mutation_tests,
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            backend=state["active_backend"],
+            docker_image=self.orchestrator.sandbox_docker_image,
+            memory=self.orchestrator.sandbox_memory,
+            cpus=self.orchestrator.sandbox_cpus,
+        )
+        message = _summarize_mutation(state["mutation"])
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=message)
+        )
+        self._trajectory(state, "ADVERSARY_CHALLENGED", message, "ADVERSARY")
+        state["performance"] = run_performance_profile_with_backend(
+            workspace=self.workspace,
+            target_file=state["target_file"],
+            tests_path=state["tests_path"],
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            backend=state["active_backend"],
+            docker_image=self.orchestrator.sandbox_docker_image,
+            memory=self.orchestrator.sandbox_memory,
+            cpus=self.orchestrator.sandbox_cpus,
+        )
+        state["next_node"] = "judge"
+        return state
 
-                post = analyze_file(target_in_workspace)
-                mutation_tests_path = _combined_mutation_tests_path(
-                    workspace,
-                    tests_in_workspace,
-                    last_adversarial.test_file,
-                )
-                last_mutation = self.adversary.challenge(
-                    candidate_source=current_code,
-                    target_file=target_in_workspace,
-                    workspace=workspace,
-                    tests_path=mutation_tests_path,
-                    timeout_seconds=self.pytest_timeout_seconds,
-                    backend=active_backend,
-                    docker_image=self.sandbox_docker_image,
-                    memory=self.sandbox_memory,
-                    cpus=self.sandbox_cpus,
-                )
-                mutation_message = _summarize_mutation(last_mutation)
-                round_messages.append(
-                    AgentDebateMessage(
-                        round=attempt,
-                        agent="ADVERSARY",
-                        content=mutation_message,
-                        metadata={
-                            "total": last_mutation.total,
-                            "killed": last_mutation.killed,
-                            "survived": last_mutation.survived,
-                            "kill_rate": last_mutation.kill_rate,
-                        },
-                    )
-                )
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="ADVERSARY_CHALLENGED",
-                        agent="ADVERSARY",
-                        message=mutation_message,
-                        metadata={
-                            "total": last_mutation.total,
-                            "killed": last_mutation.killed,
-                            "survived": last_mutation.survived,
-                            "kill_rate": last_mutation.kill_rate,
-                        },
-                    ),
-                )
-                last_performance = run_performance_profile_with_backend(
-                    workspace=workspace,
-                    target_file=target_in_workspace,
-                    tests_path=tests_in_workspace,
-                    timeout_seconds=self.pytest_timeout_seconds,
-                    backend=active_backend,
-                    docker_image=self.sandbox_docker_image,
-                    memory=self.sandbox_memory,
-                    cpus=self.sandbox_cpus,
-                )
-                reward = self.judge.score(
-                    pre=baseline,
-                    post=post,
-                    retry_count=attempt - 1,
-                    mutation_result=last_mutation,
-                    adversarial_result=last_adversarial,
-                )
-                graph_state = self._decide_graph(
-                    attempt=attempt,
-                    max_attempts=request.max_retry,
-                    ast_ok=True,
-                    pytest_passed=True,
-                    adversarial_passed=last_adversarial.passed,
-                    mutation_kill_rate=last_mutation.kill_rate,
-                    reward=reward.reward,
-                )
-                judge_message = _summarize_judge(reward)
-                round_messages.append(
-                    AgentDebateMessage(
-                        round=attempt,
-                        agent="JUDGE",
-                        content=judge_message,
-                        metadata={
-                            **reward.model_dump(mode="json"),
-                            "graph": _graph_metadata(graph_state, self.graph_backend),
-                        },
-                    )
-                )
-                debate_rounds.append(
-                    DebateRound(
-                        round=attempt,
-                        candidate_loc=post.loc,
-                        candidate_cc=post.cyclomatic_complexity,
-                        pytest_passed=True,
-                        adversarial_passed=last_adversarial.passed,
-                        mutation_kill_rate=last_mutation.kill_rate,
-                        reward=reward,
-                        code_change_percent=code_change_percent,
-                        converged=should_converge(attempt, code_change_percent, request.max_retry)
-                        or last_adversarial.passed,
-                        messages=round_messages,
-                    )
-                )
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="JUDGE_SCORED",
-                        agent="JUDGE",
-                        message=judge_message,
-                        metadata={
-                            **reward.model_dump(mode="json"),
-                            "graph": _graph_metadata(graph_state, self.graph_backend),
-                        },
-                        reward=reward,
-                    ),
-                )
-                if graph_state["verdict"] != "APPROVE":
-                    previous_error = f"Judge verdict: {graph_state['verdict']}"
-                    continue
-                append_trajectory(
-                    trajectory_path,
-                    TrajectoryStep(
-                        attempt=attempt,
-                        status="DEBATE_CONVERGED",
-                        agent="JUDGE",
-                        message="极简候选代码扛过了防守检查、对抗测试、变异测试和裁判评分。",
-                        reward=reward,
-                    ),
-                )
-                record = RunRecord(
-                    run_id=run_id,
-                    issue_id=request.issue_id,
-                    repo_name=repo_name,
-                    pre_loc=baseline.loc,
-                    post_loc=post.loc,
-                    pre_cc=baseline.cyclomatic_complexity,
-                    post_cc=post.cyclomatic_complexity,
-                    self_heal_count=attempt - 1,
-                    status="SUCCESS",
-                )
-                self.store.save(record)
-                self.store.save_memory(success_memory(record, memory_key, llm_result.insult_review, reward))
-                return RefactorRunResult(
-                    record=record,
-                    report_markdown=_build_report(
-                        record,
-                        workspace,
-                        llm_result.insult_review,
-                        last_sandbox,
-                        None,
-                        last_validation,
-                        last_adversarial,
-                        last_mutation,
-                        reward,
-                        last_performance,
-                        debate_rounds,
-                    ),
-                    workspace_path=workspace,
-                    attempts=attempt,
-                    last_sandbox_result=last_sandbox,
-                    candidate_file=target_in_workspace,
-                    ast_validation=last_validation,
-                    adversarial_result=last_adversarial,
-                    mutation_result=last_mutation,
-                    performance_profile=last_performance,
-                    debate_rounds=debate_rounds,
-                )
+    def judge(self, state: ExecutionState) -> ExecutionState:
+        reward = self.orchestrator.judge.score(
+            pre=state["baseline"],
+            post=state["post"],
+            retry_count=state["attempt"] - 1,
+            mutation_result=state["mutation"],
+            adversarial_result=state["adversarial"],
+        )
+        state["reward"] = reward
+        approved = state["adversarial"].passed and state["mutation"].kill_rate >= 1.0
+        verdict = "APPROVE" if approved else ("RETRY" if state["attempt"] < state["max_attempts"] else "REJECT")
+        message = _summarize_judge(reward)
+        graph = {
+            "backend": self.orchestrator.graph_backend,
+            "node_trace": [*state.get("node_trace", []), "JUDGE"],
+            "verdict": verdict,
+        }
+        state["round_messages"].append(
+            AgentDebateMessage(round=state["attempt"], agent="JUDGE", content=message, metadata={"graph": graph})
+        )
+        self._close_round(
+            state,
+            pytest_passed=True,
+            adversarial_passed=state["adversarial"].passed,
+            mutation_kill_rate=state["mutation"].kill_rate,
+            reward=reward,
+            converged=approved,
+        )
+        self._trajectory(state, "JUDGE_SCORED", message, "JUDGE", {"graph": graph}, reward)
+        if approved:
+            state["approved"] = True
+            self._trajectory(state, "DEBATE_CONVERGED", "Candidate passed the executed graph.", "JUDGE", reward=reward)
+            state["next_node"] = "finalize"
+            return state
+        survivors = "; ".join(state["mutation"].survival_details) or "none"
+        state["previous_error"] = (
+            f"Judge verdict: {verdict}. Mutation kill rate: {state['mutation'].kill_rate:.3f}. "
+            f"Surviving mutants: {survivors}"
+        )
+        return self._retry_or_finalize(state)
 
-            previous_error = _summarize_failure(last_sandbox)
-            graph_state = self._decide_graph(
-                attempt=attempt,
-                max_attempts=request.max_retry,
-                ast_ok=True,
-                pytest_passed=False,
-                failure_feedback=previous_error,
-            )
-            debate_rounds.append(
-                DebateRound(
-                    round=attempt,
-                    pytest_passed=False,
-                    code_change_percent=code_change_percent,
-                    converged=False,
-                    messages=round_messages,
-                )
-            )
-            append_trajectory(
-                trajectory_path,
-                TrajectoryStep(
-                    attempt=attempt,
-                    status="PYTEST_FAILED",
-                    agent="DEFENDER",
-                    message=previous_error,
-                    metadata={
-                        "returncode": last_sandbox.returncode,
-                        "graph": _graph_metadata(graph_state, self.graph_backend),
-                    },
-                ),
-            )
-
+    def finalize(self, state: ExecutionState) -> ExecutionState:
+        baseline = state["baseline"]
+        approved = bool(state.get("approved"))
+        error = None if approved else str(state.get("terminal_error") or state.get("previous_error") or "refactor failed")
+        post = state.get("post") if approved else None
+        attempts = int(state.get("attempt", 0))
+        if approved or state.get("terminal_error"):
+            self_heal_count = max(attempts - 1, 0)
+        else:
+            self_heal_count = attempts
+        graph_trace = [*state.get("node_trace", []), "FINALIZE"]
         record = RunRecord(
-            run_id=run_id,
-            issue_id=request.issue_id,
-            repo_name=repo_name,
+            run_id=self.run_id,
+            issue_id=self.request.issue_id,
+            repo_name=self.repo_name,
             pre_loc=baseline.loc,
+            post_loc=post.loc if post else None,
             pre_cc=baseline.cyclomatic_complexity,
-            self_heal_count=request.max_retry,
-            status="FAILED",
-            error=previous_error or "pytest 失败",
+            post_cc=post.cyclomatic_complexity if post else None,
+            self_heal_count=self_heal_count,
+            status="SUCCESS" if approved else "FAILED",
+            error=error,
         )
-        self.store.save(record)
-        self.store.save_memory(failure_memory(record, memory_key))
-        append_trajectory(
-            trajectory_path,
-            TrajectoryStep(attempt=request.max_retry, status="FAILED", message=record.error or "重构失败"),
-        )
-        return RefactorRunResult(
+        self.orchestrator.store.save(record)
+        llm_result = state.get("llm_result")
+        if approved:
+            self.orchestrator.store.save_memory(
+                success_memory(record, self.memory_key, llm_result.insult_review, state["reward"])
+            )
+        else:
+            self.orchestrator.store.save_memory(failure_memory(record, self.memory_key))
+            self._trajectory(state, "FAILED", error or "refactor failed")
+        state["result"] = RefactorRunResult(
             record=record,
             report_markdown=_build_report(
                 record,
-                workspace,
-                None,
-                last_sandbox,
-                record.error,
-                last_validation,
-                last_adversarial,
-                last_mutation,
-                None,
-                last_performance,
-                debate_rounds,
+                self.workspace,
+                llm_result.insult_review if approved and llm_result else None,
+                state.get("sandbox"),
+                error,
+                state.get("validation"),
+                state.get("adversarial"),
+                state.get("mutation"),
+                state.get("reward"),
+                state.get("performance"),
+                state["debate_rounds"],
+                state.get("rewrite"),
+                self.orchestrator.graph_backend,
+                graph_trace,
             ),
-            workspace_path=workspace,
-            attempts=request.max_retry,
-            last_sandbox_result=last_sandbox,
-            candidate_file=target_in_workspace,
-            ast_validation=last_validation,
-            adversarial_result=last_adversarial,
-            mutation_result=last_mutation,
-            performance_profile=last_performance,
-            debate_rounds=debate_rounds,
+            workspace_path=self.workspace,
+            attempts=attempts,
+            last_sandbox_result=state.get("sandbox"),
+            candidate_file=state.get("target_file"),
+            ast_validation=state.get("validation"),
+            ast_rewrite=state.get("rewrite"),
+            adversarial_result=state.get("adversarial"),
+            mutation_result=state.get("mutation"),
+            performance_profile=state.get("performance"),
+            debate_rounds=state["debate_rounds"],
+            graph_backend=self.orchestrator.graph_backend,
+            graph_node_trace=graph_trace,
         )
+        state["next_node"] = "finalize"
+        return state
+
+    def _retry_or_finalize(self, state: ExecutionState) -> ExecutionState:
+        state["next_node"] = "minimizer" if state["attempt"] < state["max_attempts"] else "finalize"
+        return state
+
+    def _close_round(self, state: ExecutionState, **updates) -> None:
+        state["debate_rounds"].append(
+            DebateRound(
+                round=state["attempt"],
+                code_change_percent=state.get("code_change_percent"),
+                messages=state.get("round_messages", []),
+                **updates,
+            )
+        )
+
+    def _trajectory(
+        self,
+        state: ExecutionState,
+        status: str,
+        message: str,
+        agent: str | None = None,
+        metadata: dict | None = None,
+        reward: RewardBreakdown | None = None,
+    ) -> None:
+        append_trajectory(
+            self.trajectory_path,
+            TrajectoryStep(
+                attempt=int(state.get("attempt", 0)),
+                status=status,
+                message=message,
+                agent=agent,
+                metadata=metadata or {},
+                reward=reward,
+            ),
+        )
+
+    @staticmethod
+    def _rewrite_metadata(rewrite: AstRewriteResult) -> dict[str, object]:
+        return {
+            "selected_targets": [region.model_dump(mode="json") for region in rewrite.selected_regions],
+            "changed_regions": rewrite.changed_regions,
+            "added_imports": rewrite.added_imports,
+        }
 
 
 def _new_run_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"{stamp}-{uuid4().hex[:8]}"
-
-
-def _graph_metadata(state: DebateGraphState, backend: str) -> dict[str, object]:
-    return {
-        "backend": backend,
-        "node_trace": state["node_trace"],
-        "verdict": state["verdict"],
-        "failure_feedback": state["failure_feedback"],
-    }
 
 
 def _request_with_memory(request: RefactorRequest, memory_context: str | None) -> RefactorRequest:
@@ -736,92 +521,6 @@ def _combined_mutation_tests_path(
     shutil.copy2(adversarial_test_file, adversarial_target / adversarial_test_file.name)
     return combined
 
-
-def _build_report_legacy(
-    record: RunRecord,
-    workspace: Path,
-    review: str | None,
-    sandbox_result: SandboxResult | None,
-    error: str | None,
-    ast_validation: CandidateValidationResult | None = None,
-    adversarial_result: AdversarialTestResult | None = None,
-    mutation_result: MutationTestResult | None = None,
-    reward=None,
-    performance_profile: PerformanceProfile | None = None,
-    debate_rounds: list[DebateRound] | None = None,
-) -> str:
-    loc_delta = _delta(record.pre_loc, record.post_loc)
-    cc_delta = _delta(record.pre_cc, record.post_cc)
-    lines = [
-        "### 重构 Agent 毒舌报告 / Refactor Agent Report",
-        "",
-        f"- 状态 (Status): **{_status_cn(record.status)}**",
-        f"- 运行 ID (Run ID): `{record.run_id}`",
-        f"- 沙箱工作区 (Workspace): `{workspace}`",
-        f"- 自愈次数 (Self-heal count): {record.self_heal_count}",
-        f"- LOC: {record.pre_loc} -> {record.post_loc} ({loc_delta})",
-        f"- 圈复杂度 (Cyclomatic Complexity): {record.pre_cc} -> {record.post_cc} ({cc_delta})",
-    ]
-    if sandbox_result is not None:
-        lines.extend(
-            [
-                f"- Pytest 返回码 (Pytest return code): {sandbox_result.returncode}",
-                f"- Pytest 耗时 (Pytest duration): {sandbox_result.duration_seconds:.2f}s",
-            ]
-        )
-    if ast_validation is not None:
-        lines.extend(["- AST 守卫 (AST guard): 通过" if ast_validation.ok else "- AST 守卫 (AST guard): 拒绝"])
-    if adversarial_result is not None:
-        lines.append(
-            "- 对抗测试 (Adversarial tests): "
-            f"生成 {adversarial_result.generated} 个，"
-            f"{'通过' if adversarial_result.passed else '失败'}"
-        )
-    if mutation_result is not None:
-        lines.append(
-            "- 变异测试 (Mutation testing): "
-            f"击杀 {mutation_result.killed}/{mutation_result.total} 个 "
-            f"（击杀率 {mutation_result.kill_rate * 100:.1f}%）"
-        )
-    if performance_profile is not None:
-        import_time = (
-            f"{performance_profile.import_time_seconds:.4f}s"
-            if performance_profile.import_time_seconds is not None
-            else "n/a"
-        )
-        lines.extend(
-            [
-                f"- 性能采样 Pytest 耗时 (Profiled pytest duration): {performance_profile.pytest_duration_seconds:.2f}s",
-                f"- 峰值追踪内存 (Peak traced memory): {performance_profile.peak_memory_kib:.1f} KiB",
-                f"- 模块导入耗时 (Module import time): {import_time}",
-            ]
-        )
-    if reward is not None:
-        lines.append(f"- 裁判奖励分 (Reward): {reward.reward:.2f}")
-    if debate_rounds:
-        converged = sum(1 for item in debate_rounds if item.converged)
-        lines.append(f"- 多 Agent 对抗轮次 (Multi-agent debate rounds): {len(debate_rounds)}（{converged} 轮收敛）")
-        lines.extend(["", "#### 对抗状态机 (Debate State Machine)", "", "```mermaid", render_mermaid_state_diagram(), "```"])
-        lines.extend(["", "#### 多 Agent 对抗记录 (Multi-Agent Debate)", ""])
-        for item in debate_rounds:
-            lines.append(
-                f"- 第 {item.round} 轮: pytest={_bool_cn(item.pytest_passed)}, "
-                f"对抗={_bool_cn(item.adversarial_passed)}, "
-                f"变异击杀率={_format_optional_rate(item.mutation_kill_rate)}, "
-                f"奖励分={_format_optional_reward(item.reward)}"
-            )
-            for message in item.messages:
-                lines.append(f"  - {message.agent}: {message.content}")
-    if mutation_result and mutation_result.survival_details:
-        lines.extend(["", "#### 未被杀死的变异体 (Surviving Mutants)", ""])
-        lines.extend(f"- {detail}" for detail in mutation_result.survival_details)
-    if review:
-        lines.extend(["", "#### 毒舌代码审查 (Code Review)", "", review])
-    if error:
-        lines.extend(["", "#### 错误详情 (Error)", "", "```text", error[-4000:], "```"])
-    return "\n".join(lines)
-
-
 def _delta(before: int | None, after: int | None) -> str:
     if before is None or after is None:
         return "n/a"
@@ -830,16 +529,6 @@ def _delta(before: int | None, after: int | None) -> str:
         return f"{change:+d}"
     percentage = (change / before) * 100
     return f"{change:+d}, {percentage:+.1f}%"
-
-
-def _status_cn(status: str) -> str:
-    return {"SUCCESS": "成功", "FAILED": "失败"}.get(status, status)
-
-
-def _bool_cn(value: bool | None) -> str:
-    if value is None:
-        return "n/a"
-    return "通过" if value else "失败"
 
 
 def _format_optional_rate(value: float | None) -> str:
@@ -866,6 +555,9 @@ def _build_report(
     reward: RewardBreakdown | None = None,
     performance_profile: PerformanceProfile | None = None,
     debate_rounds: list[DebateRound] | None = None,
+    ast_rewrite: AstRewriteResult | None = None,
+    graph_backend: str | None = None,
+    graph_node_trace: list[str] | None = None,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -962,6 +654,32 @@ def _build_report(
             f"- 裁判奖励分 (Reward): {_format_optional_reward(reward)}",
         ]
     )
+    if ast_rewrite is not None:
+        targets = ", ".join(
+            f"{region.qualified_name} ({region.reason})" for region in ast_rewrite.selected_regions
+        ) or ", ".join(ast_rewrite.allowed_regions) or "none"
+        changed = ", ".join(ast_rewrite.changed_regions) or "none"
+        imports = ", ".join(ast_rewrite.added_imports) or "none"
+        lines.extend(
+            [
+                "",
+                "#### Controlled AST Rewrite",
+                "",
+                f"- Selected AST targets: {targets}",
+                f"- Changed AST regions: {changed}",
+                f"- Added imports: {imports}",
+            ]
+        )
+    if graph_backend and graph_node_trace:
+        lines.extend(
+            [
+                "",
+                "#### Execution Graph",
+                "",
+                f"- Graph backend: {graph_backend}",
+                f"- Executed graph nodes: {' -> '.join(graph_node_trace)}",
+            ]
+        )
     if debate_rounds:
         converged = sum(1 for item in debate_rounds if item.converged)
         lines.append(f"- 多 Agent 对抗轮次 (Multi-agent debate rounds): {len(debate_rounds)}（{converged} 轮收敛）")

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from refactor_agent.execution_graph import render_execution_mermaid
+
 
 @dataclass(frozen=True)
 class DebateTransition:
@@ -12,8 +14,10 @@ class DebateTransition:
 
 
 DEBATE_TRANSITIONS = [
+    DebateTransition("START", "FAILED", "terminal setup or LLM failure"),
     DebateTransition("START", "MINIMIZER_PROPOSED", "生成候选"),
     DebateTransition("MINIMIZER_PROPOSED", "DEFENDER_REVIEWED", "AST 通过"),
+    DebateTransition("MINIMIZER_PROPOSED", "AST_REJECTED", "AST 失败"),
     DebateTransition("DEFENDER_REVIEWED", "AST_REJECTED", "AST 失败"),
     DebateTransition("DEFENDER_REVIEWED", "PYTEST_FAILED", "pytest 失败"),
     DebateTransition("DEFENDER_REVIEWED", "ADVERSARY_CRITIQUED", "pytest 通过"),
@@ -22,9 +26,13 @@ DEBATE_TRANSITIONS = [
     DebateTransition("ADVERSARY_CHALLENGED", "ADVERSARY_FAILED", "发现反例"),
     DebateTransition("ADVERSARY_CHALLENGED", "JUDGE_SCORED", "扛过攻击"),
     DebateTransition("JUDGE_SCORED", "DEBATE_CONVERGED", "接受奖励分"),
+    DebateTransition("JUDGE_SCORED", "FAILED", "terminal rejection"),
     DebateTransition("AST_REJECTED", "MINIMIZER_PROPOSED", "回炉重试"),
     DebateTransition("PYTEST_FAILED", "MINIMIZER_PROPOSED", "回炉重试"),
     DebateTransition("ADVERSARY_FAILED", "MINIMIZER_PROPOSED", "带着红队意见重试"),
+    DebateTransition("AST_REJECTED", "FAILED", "retry limit reached"),
+    DebateTransition("PYTEST_FAILED", "FAILED", "retry limit reached"),
+    DebateTransition("ADVERSARY_FAILED", "FAILED", "retry limit reached"),
     DebateTransition("DEBATE_CONVERGED", "SUCCESS", "收尾"),
 ]
 
@@ -33,12 +41,7 @@ RETRY_STATES = {"AST_REJECTED", "PYTEST_FAILED", "ADVERSARY_FAILED"}
 
 
 def render_mermaid_state_diagram() -> str:
-    lines = ["stateDiagram-v2", "    [*] --> START"]
-    for transition in DEBATE_TRANSITIONS:
-        lines.append(f"    {transition.source} --> {transition.target}: {transition.label}")
-    lines.append("    SUCCESS --> [*]")
-    lines.append("    FAILED --> [*]")
-    return "\n".join(lines)
+    return render_execution_mermaid()
 
 
 def legal_transition_pairs() -> set[tuple[str, str]]:
