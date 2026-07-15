@@ -1,6 +1,18 @@
 from pathlib import Path
 
-from refactor_agent.cli import _resolve_database, _resolve_github_workspace_root, _resolve_run_root
+from typer.testing import CliRunner
+
+from refactor_agent.config import AppSettings
+from refactor_agent.cli import (
+    _resolve_database,
+    _resolve_deadline,
+    _resolve_github_workspace_root,
+    _resolve_run_root,
+    app,
+)
+
+
+runner = CliRunner()
 
 
 def test_resolve_run_root_uses_env_for_default(monkeypatch, tmp_path: Path):
@@ -26,3 +38,27 @@ def test_resolve_github_workspace_root_uses_env_for_default(monkeypatch, tmp_pat
 
     assert _resolve_github_workspace_root(Path(".github-url-workspaces")) == env_workspace
     assert _resolve_github_workspace_root(tmp_path / "explicit") == tmp_path / "explicit"
+
+
+def test_settings_read_default_and_configured_job_deadline(monkeypatch):
+    monkeypatch.delenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", raising=False)
+    assert AppSettings.from_env().job_deadline_seconds == 900
+
+    monkeypatch.setenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "1200")
+    assert AppSettings.from_env().job_deadline_seconds == 1200
+
+
+def test_resolve_deadline_uses_env_only_for_default(monkeypatch):
+    monkeypatch.setenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "1200")
+    assert _resolve_deadline(900) == 1200
+    assert _resolve_deadline(600) == 600
+
+
+def test_run_cli_exposes_bounded_deadline_option():
+    help_result = runner.invoke(app, ["run", "--help"])
+    assert help_result.exit_code == 0
+    assert "--deadline" in help_result.stdout
+
+    invalid = runner.invoke(app, ["run", "--deadline", "29"])
+    assert invalid.exit_code == 2
+    assert "30" in invalid.stderr

@@ -1,0 +1,12 @@
+diff --git a/more_itertools/more.py b/more_itertools/more.py
+--- a/more_itertools/more.py
++++ b/more_itertools/more.py
+@@ -231,7 +231,7 @@ def chunked(iterable, n, strict=False):
+ 
+     """
+     iterator = iter(partial(take, n, iter(iterable)), [])
+-    if strict:
++    if False and strict:
+         if n is None:
+             raise ValueError('n must not be None when using strict mode.')
+ 

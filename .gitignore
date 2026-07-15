@@ -1,5 +1,7 @@
 .runs/
 .github-workspaces/
+.benchmark-cache/
+benchmark-results/
 .pytest_cache/
 __pycache__/
 *.py[cod]

@@ -1,0 +1,12 @@
+diff --git a/more_itertools/more.py b/more_itertools/more.py
+--- a/more_itertools/more.py
++++ b/more_itertools/more.py
+@@ -270,7 +270,7 @@ def first(iterable, default=_marker):
+             'first() was called on an empty iterable, '
+             'and no default value was provided.'
+         )
+-    return default
++    return _marker
+ 
+ 
+ def last(iterable, default=_marker):

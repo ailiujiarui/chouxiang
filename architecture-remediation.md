@@ -1,7 +1,7 @@
 # Execution Graph, AST Targeting, and Evidence Remediation Design
 
 Date: 2026-07-13
-Status: Implemented and self-reviewed (2026-07-13)
+Status: Python architecture implemented and self-reviewed (2026-07-13); multi-language backend proposed (2026-07-15)
 
 ## Objective
 
@@ -103,6 +103,111 @@ Add `.github/workflows/ci.yml` with no external secrets:
 - `state-machine` renders the actual compiled graph topology.
 - Reports identify why each AST target was selected and which imports, if any, were admitted.
 
+## Proposed Multi-Language Backend Architecture
+
+### Current Boundary
+
+The current implementation is Python-only. It depends directly on Python's standard-library `ast`, Python-specific complexity analysis and subtree replacement, `pytest`, Python mutation tooling, and a Python 3.12 sandbox image. Accepting a repository URL does not make an unsupported language executable; URL admission and language support are separate capabilities.
+
+An AST is not a universal cross-language representation. Every language defines different syntax nodes, symbol rules, type systems, module systems, formatting behavior, build tools, and test runners. Tree-sitter can provide consistent concrete syntax trees for many languages, but it does not replace compiler-level type resolution, overload resolution, macro expansion, or language-specific safety checks.
+
+### Shared Orchestration
+
+LangGraph, Agent roles, retry routing, trajectory persistence, reward calculation, cancellation, deadlines, leases, artifacts, and the Judge decision contract remain language-neutral. They consume normalized evidence and delegate all source-language operations to a selected backend.
+
+The shared workflow remains:
+
+1. detect repository language and select one registered backend;
+2. locate candidate source files and target regions;
+3. ask Minimizer for an untrusted candidate;
+4. perform backend-specific syntax, symbol, API, and change-boundary validation;
+5. run backend-specific tests, adversarial checks, mutation checks, and performance sampling;
+6. let Judge approve, retry, or reject using normalized evidence;
+7. persist source, diff, logs, metrics, and trajectory through the existing control plane.
+
+### Language Backend Contract
+
+Introduce a `LanguageBackend` protocol with explicit capabilities instead of a universal mutable AST:
+
+```python
+class LanguageBackend(Protocol):
+    language_id: str
+    file_extensions: frozenset[str]
+
+    def detect(self, repository: Path) -> LanguageDetection: ...
+    def analyze(self, source: str, path: Path) -> SourceAnalysis: ...
+    def select_targets(
+        self,
+        source: str,
+        issue_text: str,
+        failure_feedback: str | None,
+    ) -> list[TargetRegion]: ...
+    def validate_and_rewrite(
+        self,
+        original: str,
+        candidate: str,
+        allowed_targets: list[TargetRegion],
+    ) -> ControlledRewriteResult: ...
+    def format(self, workspace: Path, changed_files: list[Path]) -> CommandResult: ...
+    def compile(self, workspace: Path, control: ExecutionControl) -> CommandResult: ...
+    def test(self, workspace: Path, test_selector: str, control: ExecutionControl) -> SandboxResult: ...
+    def adversarial_test(self, workspace: Path, request: RefactorRequest) -> AdversarialTestResult: ...
+    def mutation_test(self, workspace: Path, request: RefactorRequest) -> MutationTestResult: ...
+```
+
+Normalized result types may share fields such as symbol name, source range, complexity, diagnostics, command exit code, runtime, and mutation score. The source tree itself remains backend-specific; converting all languages into one writable AST would discard semantics and create unsafe rewrites.
+
+### Parser Strategy
+
+Use two parser layers where the language requires them:
+
+- Tree-sitter or another lossless CST parser for file discovery, source ranges, comments, formatting preservation, and structural diffing.
+- A compiler or language-native semantic API for symbols, signatures, visibility, imports, types, overloads, macros, and compile diagnostics.
+
+Initial backend choices:
+
+| Language | Structural parser | Semantic/compiler layer | Build/test |
+| --- | --- | --- | --- |
+| Python | Python `ast` plus source ranges | Python import/signature guards | pytest |
+| Java | Tree-sitter Java or JavaParser lexical preservation | JavaParser symbol solver or Eclipse JDT | Gradle/Maven/JUnit |
+| TypeScript | TypeScript compiler AST | TypeScript type checker | npm/pnpm + configured tests |
+| Go | `go/parser` and `go/ast` | `go/types` | `go test` |
+| Rust | `syn` or rust-analyzer syntax | rust-analyzer/rustc diagnostics | Cargo test |
+
+### Repository Detection and Admission
+
+Language detection uses repository manifests, file extensions, build files, and explicit user selection. A repository is accepted only when exactly one installed backend can satisfy its parser, formatter, compiler, test runner, and sandbox requirements. Mixed-language repositories require an explicit target backend and target path; the system must not guess across unrelated languages.
+
+Unsupported repositories fail before LLM invocation with a clear `UNSUPPORTED_LANGUAGE` category. For example, `cabaletta/baritone` requires a Java backend and must not be sent through the Python AST/pytest backend.
+
+Repository URL allowlisting, canonical clone rules, credentials, Docker isolation, deadlines, and local-only/publish boundaries remain independent of language detection and cannot be weakened by a backend plugin.
+
+### Sandbox and Toolchain Contract
+
+Each backend declares a pinned container image and an allowlisted set of commands. User prompts and repository files cannot supply arbitrary commands, images, package registries, or network settings. Runtime containers remain non-root, read-only where possible, network-disabled, resource-limited, and credential-free.
+
+Dependency installation policy is backend-specific and fail-closed. Java must distinguish Gradle and Maven wrappers, JavaScript must use a pinned package-manager policy, Go must control module downloads, and Rust must control Cargo registry access. A backend is not production-ready until its offline/reproducible dependency strategy is documented and tested.
+
+### Delivery Sequence
+
+1. Extract the current Python implementation behind `PythonLanguageBackend` without changing behavior.
+2. Add backend registry, language detection, `UNSUPPORTED_LANGUAGE`, and capability reporting in API/Dashboard.
+3. Make Dashboard reject unsupported repositories before creating an LLM run when detection evidence is available.
+4. Implement Java first for the Baritone use case using JavaParser/JDT, Gradle/Maven detection, JUnit execution, and a pinned JDK sandbox.
+5. Add cross-language contract tests proving the shared LangGraph workflow is backend-independent.
+6. Add TypeScript, Go, or Rust only as separately designed and benchmarked backends.
+
+“Any language” means any explicitly installed and verified backend, not arbitrary source accepted without a parser, semantic validator, test runner, and sandbox toolchain.
+
+### Multi-Language Acceptance
+
+- Python behavior and all current security boundaries remain unchanged after extraction.
+- The same deterministic shared workflow can execute Python and Java backend fixtures.
+- A Java candidate cannot modify symbols outside selected targets, change public signatures, add undeclared dependencies, or bypass Gradle/Maven tests.
+- Unsupported and ambiguous mixed-language repositories fail before LLM invocation.
+- Backend containers receive no host credentials and cannot enable network access.
+- Benchmarks report results separately by language, backend version, toolchain image, and repository commit; aggregate claims cannot combine incomparable language suites without disclosure.
+
 ## Tests and Acceptance
 
 ### Graph Tests
@@ -139,6 +244,7 @@ Add `.github/workflows/ci.yml` with no external secrets:
 ## Out of Scope
 
 - No new LLM provider.
+- The implemented Python remediation phase does not itself deliver Java, TypeScript, Go, Rust, or arbitrary-language support; those require the proposed backend sequence above.
 - No production deployment.
 - No merge or push.
 - No changes to Codex/OpenAI authentication files.

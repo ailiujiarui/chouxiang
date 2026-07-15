@@ -8,7 +8,7 @@ import httpx
 from pydantic import ValidationError
 
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary, select_target_regions
-from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest
+from refactor_agent.models import LLMRefactorResult, LLMUsage, MetricsSnapshot, RefactorRequest
 
 
 class LLMError(RuntimeError):
@@ -78,11 +78,24 @@ class DeepSeekClient:
             raise LLMError(f"DeepSeek request failed: {exc}") from exc
 
         try:
-            content = response.json()["choices"][0]["message"]["content"]
+            payload = response.json()
+            content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("DeepSeek response did not contain choices[0].message.content.") from exc
 
-        return parse_llm_result(content)
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        return parse_llm_result(content).model_copy(
+            update={
+                "usage": LLMUsage(
+                    provider="deepseek",
+                    model=self.model,
+                    prompt_tokens=_usage_int(usage, "prompt_tokens"),
+                    completion_tokens=_usage_int(usage, "completion_tokens"),
+                    total_tokens=_usage_int(usage, "total_tokens"),
+                    cost_usd=_usage_float(usage, "cost_usd"),
+                )
+            }
+        )
 
 
 class MockRefactorClient:
@@ -108,6 +121,14 @@ class MockRefactorClient:
             thought="保留公开 API，把绕远路的分支压成测试能证明的最小表达式。",
             fixed_code=code,
             insult_review=review,
+            usage=LLMUsage(
+                provider="mock",
+                model="deterministic-local",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cost_usd=0,
+            ),
         )
 
     def _candidate_for(self, current_code: str, baseline_metrics: MetricsSnapshot) -> tuple[str, str]:
@@ -162,6 +183,20 @@ def parse_llm_result(content: str) -> LLMRefactorResult:
         return LLMRefactorResult.model_validate(raw)
     except ValidationError as exc:
         raise LLMError(f"LLM JSON failed schema validation: {exc}") from exc
+
+
+def _usage_int(usage: object, key: str) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get(key)
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _usage_float(usage: object, key: str) -> float | None:
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get(key)
+    return float(value) if isinstance(value, (int, float)) and value >= 0 else None
 
 
 def build_system_prompt() -> str:

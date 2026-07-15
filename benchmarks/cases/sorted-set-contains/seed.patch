@@ -1,0 +1,12 @@
+diff --git a/src/sortedcontainers/sortedset.py b/src/sortedcontainers/sortedset.py
+--- a/src/sortedcontainers/sortedset.py
++++ b/src/sortedcontainers/sortedset.py
+@@ -192,7 +192,7 @@ class SortedSet(MutableSet, Sequence):
+         :return: true if `value` in sorted set
+ 
+         """
+-        return value in self._set
++        return value in self._list[1:]
+ 
+     def __getitem__(self, index):
+         """Lookup value at `index` in sorted set.

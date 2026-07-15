@@ -1,7 +1,7 @@
 # Reliability, Cross-Repository Benchmark, and Operations Dashboard Design
 
 Date: 2026-07-14
-Status: Awaiting written specification approval
+Status: Implemented, verified, self-reviewed, and approved for integration on 2026-07-15
 
 ## Objective
 
@@ -221,14 +221,20 @@ Streamlit remains the UI framework and binds to `127.0.0.1` by default. Read vie
 
 The token is never written to URL parameters, logs, SQLite, browser persistent storage, or run artifacts. The Dashboard never updates SQLite directly.
 
+Admin users can submit an allowlisted canonical GitHub URL through `POST /jobs/url`. The Dashboard sends structured input to the API and never invokes Git, the CLI, Docker, or repository code directly. Repository allowlist management is specified by `repository-allowlist-dashboard-design.md`; it is the only Dashboard configuration mutation added to this phase.
+
 ### Views
 
-The Dashboard uses four dense, work-focused tabs:
+The Dashboard uses Simplified Chinese for fixed user-facing copy and contains four dense, work-focused tabs:
 
-1. **Tasks**: status, deadline, remaining time, lease owner, attempts, events, cancel, and retry.
-2. **Execution**: actual node timeline, Judge verdict, retry feedback, pytest/adversary/mutation summaries, and bounded logs.
-3. **Code**: original source, candidate source, unified diff, selected AST targets with reasons, changed regions, and admitted imports.
-4. **Benchmarks**: repository, manifest, provider, model, failure category, tokens, cost, metrics, and two-run comparison.
+1. **任务**: status, deadline, remaining time, lease owner, attempts, events, cancel, and retry.
+2. **执行过程**: actual node timeline, Judge verdict, retry feedback, pytest/adversary/mutation summaries, and bounded logs.
+3. **代码变更**: original source, candidate source, unified diff, selected AST targets with reasons, changed regions, and admitted imports.
+4. **基准测试**: repository, manifest, provider, model, failure category, tokens, cost, metrics, and two-run comparison.
+
+Known statuses render as `中文（RAW_ENUM）`; control availability continues to use the raw enum. API URLs, identifiers, source, diffs, and diagnostic logs are never translated.
+
+The Tasks tab includes a Chinese URL submission form for repository URL, optional ref, optional target, test path, and refactor request. Repository URL jobs use the same durable queue but are dispatched to `LocalRepositoryRefactorService`, which has no GitHub write API dependency and always returns local `DRY_RUN` evidence on success. It never creates a branch, writes back to the checkout, pushes, opens a PR, or comments on an Issue.
 
 Control buttons follow server state:
 
@@ -245,6 +251,7 @@ Keep Streamlit rendering thin. Add pure functions that convert job, event, traje
 
 - Invalid state transitions return `409` and append no event.
 - Missing jobs return `404`; invalid Admin authentication returns `401`.
+- URL submission authenticates before body parsing, enforces body limits, accepts only canonical GitHub HTTPS URLs, rechecks the repository allowlist in the Worker, and rejects unsafe refs or repository paths.
 - Deadline and cancellation terminal results preserve the last completed node and reason.
 - Artifact reads reject path traversal and symlink escape.
 - Log redaction covers GitHub, DeepSeek, webhook, admin, bearer, and common high-entropy token patterns.
@@ -277,6 +284,8 @@ Keep Streamlit rendering thin. Add pure functions that convert job, event, traje
 - Unit-test view models, filters, button availability, diff rendering, artifact path validation, and redaction.
 - Test Admin API success, authentication failure, conflict, and stale-state behavior.
 - Use Streamlit AppTest for all four tabs and read-only/admin states.
+- Prove URL form submission sends the Admin header only on the control request and displays the created Job ID.
+- Prove local-only URL jobs cannot enter any GitHub write path even when global dry-run is disabled.
 - Launch a local headless Streamlit smoke test and verify HTTP 200.
 
 ### Final Gate
@@ -293,6 +302,16 @@ Keep Streamlit rendering thin. Add pure functions that convert job, event, traje
 
 - Immediate process or container kill for manual cancellation.
 - Dynamic GitHub repository or Issue sampling.
-- Dashboard-based configuration editing, arbitrary command execution, repository creation, or benchmark manifest editing.
+- Dashboard-based configuration editing other than the repository allowlist, arbitrary command execution, repository creation, or benchmark manifest editing.
 - Distributed queues, Redis, PostgreSQL, Kubernetes, or multi-host workers.
 - Production deployment, PR merge, or external webhook replay without separate approval.
+
+## Implementation Evidence
+
+- Automated unit and integration suite: 233 passed on Python 3.12 after the repository allowlist Dashboard extension review.
+- Focused coverage includes state transitions/events, cancellation/retry APIs, lease ownership, graph deadlines, bounded artifacts, manifest/cache validation, benchmark persistence, API view models, and Streamlit AppTest.
+- The operations Dashboard uses Simplified Chinese fixed copy, preserves raw identifiers and diagnostic content, and renders known statuses with their original enum values.
+- Allowlisted Dashboard URL jobs enter the durable queue and execute through a separate local-only service that has no GitHub write API dependency.
+- Eight seed patches were checked against their exact pinned public-repository commits with `git apply --reverse --check` after generation from clean fixed-commit checkouts.
+- Real Docker external execution and real DeepSeek execution were not run during implementation. They remain explicit acceptance steps and are not claimed as completed evidence.
+- No implementation commit, push, merge, deployment, or credential-bearing acceptance action was performed.

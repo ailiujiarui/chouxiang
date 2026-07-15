@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.models import PerformanceProfile, SandboxResult
 
 
@@ -86,7 +87,10 @@ def run_pytest_with_backend(
     docker_image: str = "refactor-agent-sandbox:py312",
     memory: str = "256m",
     cpus: float = 1.0,
+    execution_control: ExecutionControl | None = None,
 ) -> SandboxResult:
+    if execution_control is not None:
+        timeout_seconds = execution_control.bounded_timeout(timeout_seconds, "pytest")
     resolved_backend, docker = resolve_sandbox_backend(backend)
     if resolved_backend == "docker":
         return _run_pytest_docker(
@@ -155,7 +159,10 @@ def run_performance_profile_with_backend(
     docker_image: str = "refactor-agent-sandbox:py312",
     memory: str = "256m",
     cpus: float = 1.0,
+    execution_control: ExecutionControl | None = None,
 ) -> PerformanceProfile:
+    if execution_control is not None:
+        timeout_seconds = execution_control.bounded_timeout(timeout_seconds, "performance-profile")
     resolved_backend, docker = resolve_sandbox_backend(backend)
     if resolved_backend == "docker":
         return _run_performance_profile_docker(

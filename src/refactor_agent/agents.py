@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from refactor_agent.adversary import critique_candidate, run_adversarial_tests
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.llm import RefactorClient
 from refactor_agent.models import (
     AdversarialCritique,
@@ -63,6 +64,7 @@ class AdversaryAgent:
         docker_image: str = "refactor-agent-sandbox:py312",
         memory: str = "256m",
         cpus: float = 1.0,
+        execution_control: ExecutionControl | None = None,
     ) -> MutationTestResult:
         return run_mutation_tests(
             candidate_source=candidate_source,
@@ -75,6 +77,7 @@ class AdversaryAgent:
             docker_image=docker_image,
             memory=memory,
             cpus=cpus,
+            execution_control=execution_control,
         )
 
     def generate_tests(
@@ -88,6 +91,7 @@ class AdversaryAgent:
         docker_image: str = "refactor-agent-sandbox:py312",
         memory: str = "256m",
         cpus: float = 1.0,
+        execution_control: ExecutionControl | None = None,
     ) -> AdversarialTestResult:
         return run_adversarial_tests(
             candidate_source=candidate_source,
@@ -99,6 +103,7 @@ class AdversaryAgent:
             docker_image=docker_image,
             memory=memory,
             cpus=cpus,
+            execution_control=execution_control,
         )
 
 

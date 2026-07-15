@@ -25,6 +25,20 @@ jobs:
       - run: git diff --check
       - run: python -m refactor_agent.cli --help
       - run: pytest -q
+      - run: refactor-agent benchmark --output-dir benchmark-results/quick
+      - name: Dashboard smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m streamlit run tests/streamlit_dashboard_app.py --server.headless true --server.address 127.0.0.1 --server.port 8501 &
+          dashboard_pid=$!
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:8501/_stcore/health; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail http://127.0.0.1:8501/
+          kill $dashboard_pid
 
   docker-demo:
     runs-on: ubuntu-latest
@@ -37,8 +51,19 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
       - run: docker build -f docker/sandbox.Dockerfile -t refactor-agent-sandbox:py312 .
+      - run: docker build -f docker/Dockerfile.benchmark -t refactor-agent-benchmark:py312 .
       - run: >-
           python -m refactor_agent.cli demo
           --case leap-year
           --sandbox-backend docker
           --run-root .runs/ci-docker
+      - run: >-
+          refactor-agent benchmark
+          --manifest benchmarks/manifest.toml
+          --provider mock
+          --case more-take-off-by-one
+          --run-root .runs/ci-external
+          --database .runs/ci-external/benchmark.sqlite
+          --cache-root .benchmark-cache
+          --output-dir benchmark-results/external
+          --timeout 120

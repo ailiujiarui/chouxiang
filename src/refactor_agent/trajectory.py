@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from refactor_agent.artifacts import sanitize_data
 from refactor_agent.models import AdversarialTestResult, MetricsSnapshot, MutationTestResult, RewardBreakdown, TrajectoryStep
 
 
@@ -32,4 +33,4 @@ def calculate_reward(
 def append_trajectory(path: Path, step: TrajectoryStep) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(step.model_dump(mode="json"), ensure_ascii=False) + "\n")
+        handle.write(json.dumps(sanitize_data(step.model_dump(mode="json")), ensure_ascii=False) + "\n")

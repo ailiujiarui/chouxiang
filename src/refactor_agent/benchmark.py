@@ -5,10 +5,19 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 
+from refactor_agent.benchmark_manifest import load_manifest
+from refactor_agent.benchmark_runner import ExternalBenchmarkRunner
 from refactor_agent.llm import RefactorClient
 from refactor_agent.metrics import analyze_file
-from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest
+from refactor_agent.models import (
+    BenchmarkCaseRecord,
+    BenchmarkRunRecord,
+    LLMRefactorResult,
+    MetricsSnapshot,
+    RefactorRequest,
+)
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.store import SQLiteRunStore
 
@@ -310,6 +319,94 @@ def render_benchmark_markdown(observations: list[BenchmarkObservation]) -> str:
         )
     lines.extend(["", "## Runtime", ""])
     lines.extend(f"- {item.case}: {item.runtime_seconds:.3f}s" for item in observations)
+    return "\n".join(lines)
+
+
+def run_manifest_benchmark(
+    manifest_path: Path,
+    provider: str,
+    run_root: Path,
+    cache_root: Path,
+    database_path: Path,
+    case_names: set[str] | None = None,
+    timeout_seconds: float = 120.0,
+) -> tuple[BenchmarkRunRecord, list[BenchmarkCaseRecord]]:
+    manifest = load_manifest(manifest_path)
+    selected = [case for case in manifest.cases if not case_names or case.name in case_names]
+    if not selected:
+        raise ValueError("no benchmark cases matched the requested names")
+    runner = ExternalBenchmarkRunner(
+        run_root=run_root,
+        cache_root=cache_root,
+        database_path=database_path,
+        timeout_seconds=timeout_seconds,
+    )
+    run_id = f"benchmark-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+    generated_at = datetime.now(timezone.utc).isoformat()
+    case_records: list[BenchmarkCaseRecord] = []
+    for case in selected:
+        result = runner.run_case(case, provider=provider)
+        case_records.append(BenchmarkCaseRecord(run_id=run_id, **result.model_dump(mode="json")))
+    successful = all(
+        item.status == item.expected_status and item.failure_category != "INFRASTRUCTURE"
+        for item in case_records
+    )
+    model = case_records[-1].model if case_records else "unknown"
+    run = BenchmarkRunRecord(
+        run_id=run_id,
+        manifest_hash=manifest.manifest_hash,
+        provider=provider,
+        model=model,
+        status="SUCCESS" if successful else "FAILED",
+        generated_at=generated_at,
+    )
+    SQLiteRunStore(database_path).save_benchmark_run(run, case_records)
+    return run, case_records
+
+
+def serialize_manifest_benchmark(
+    run: BenchmarkRunRecord,
+    cases: list[BenchmarkCaseRecord],
+) -> str:
+    return json.dumps(
+        {
+            "run": run.model_dump(mode="json"),
+            "cases": [case.model_dump(mode="json") for case in cases],
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def render_manifest_benchmark_markdown(
+    run: BenchmarkRunRecord,
+    cases: list[BenchmarkCaseRecord],
+    previous: list[BenchmarkCaseRecord] | None = None,
+) -> str:
+    lines = [
+        "# External Benchmark",
+        "",
+        f"- Run: {run.run_id}",
+        f"- Status: {run.status}",
+        f"- Manifest: {run.manifest_hash}",
+        f"- Provider/model: {run.provider}/{run.model}",
+        "",
+        "| Case | Repository | Status | Failure | Attempts | Tokens | Cost USD | Hash |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for case in cases:
+        lines.append(
+            f"| {case.case_name} | {case.repository} | {case.status} | "
+            f"{case.failure_category or 'none'} | {case.attempts} | {case.total_tokens} | "
+            f"{case.cost_usd:.6f} | {case.normalized_hash[:12]} |"
+        )
+    if previous is not None:
+        old = {item.case_name: item for item in previous}
+        lines.extend(["", "## Comparison", ""])
+        for case in cases:
+            prior = old.get(case.case_name)
+            state = "unchanged" if prior and prior.normalized_hash == case.normalized_hash else "changed"
+            lines.append(f"- {case.case_name}: {state}")
     return "\n".join(lines)
 
 

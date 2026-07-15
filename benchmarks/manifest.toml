@@ -1,0 +1,113 @@
+version = 1
+
+[[cases]]
+name = "more-take-off-by-one"
+category = "sequence-boundary"
+repository = "more-itertools/more-itertools"
+commit = "da37f9de442b69fbcaa9f54fb042c2a6999473a6"
+target = "more_itertools/recipes.py"
+tests = "tests/test_recipes.py"
+issue = "take(n, iterable) consumes one fewer item than requested; repair take in more_itertools/recipes.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/more-take-off-by-one/seed.patch"
+gold_snapshot = "cases/more-take-off-by-one/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_recipes.py"]
+
+[[cases]]
+name = "more-chunked-strict"
+category = "strict-validation"
+repository = "more-itertools/more-itertools"
+commit = "da37f9de442b69fbcaa9f54fb042c2a6999473a6"
+target = "more_itertools/more.py"
+tests = "tests/test_more.py"
+issue = "chunked(strict=True) must reject an incomplete final chunk; repair chunked in more_itertools/more.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/more-chunked-strict/seed.patch"
+gold_snapshot = "cases/more-chunked-strict/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_more.py"]
+
+[[cases]]
+name = "more-first-default"
+category = "sentinel-default"
+repository = "more-itertools/more-itertools"
+commit = "da37f9de442b69fbcaa9f54fb042c2a6999473a6"
+target = "more_itertools/more.py"
+tests = "tests/test_more.py"
+issue = "first must return the supplied default for an empty iterable; repair first in more_itertools/more.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/more-first-default/seed.patch"
+gold_snapshot = "cases/more-first-default/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_more.py"]
+
+[[cases]]
+name = "boltons-clamp-bounds"
+category = "numeric-boundary"
+repository = "mahmoud/boltons"
+commit = "979fa9b613fa8c0a455ae16ea6f2ec91c11ecafe"
+target = "boltons/mathutils.py"
+tests = "tests/test_mathutils.py"
+issue = "clamp applies the lower bound in the wrong direction; repair clamp in boltons/mathutils.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/boltons-clamp-bounds/seed.patch"
+gold_snapshot = "cases/boltons-clamp-bounds/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_mathutils.py"]
+
+[[cases]]
+name = "boltons-camel-boundary"
+category = "string-boundary"
+repository = "mahmoud/boltons"
+commit = "979fa9b613fa8c0a455ae16ea6f2ec91c11ecafe"
+target = "boltons/strutils.py"
+tests = "tests/test_strutils.py"
+issue = "camel2under mishandles acronym boundaries; repair camel2under in boltons/strutils.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/boltons-camel-boundary/seed.patch"
+gold_snapshot = "cases/boltons-camel-boundary/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_strutils.py"]
+
+[[cases]]
+name = "boltons-chunk-overlap"
+category = "range-overlap"
+repository = "mahmoud/boltons"
+commit = "979fa9b613fa8c0a455ae16ea6f2ec91c11ecafe"
+target = "boltons/iterutils.py"
+tests = "tests/test_iterutils.py"
+issue = "chunk_ranges applies overlap in the wrong direction; repair chunk_ranges in boltons/iterutils.py."
+expected_status = "SUCCESS"
+seed_patch = "cases/boltons-chunk-overlap/seed.patch"
+gold_snapshot = "cases/boltons-chunk-overlap/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_iterutils.py"]
+
+[[cases]]
+name = "sorted-list-contains"
+category = "container-boundary"
+repository = "grantjenks/python-sortedcontainers"
+commit = "3ac358631f58c1347f1d6d2d92784117db0f38ed"
+target = "src/sortedcontainers/sortedlist.py"
+tests = "tests/test_coverage_sortedlist.py"
+issue = "SortedList.__contains__ misses a boundary value; repair SortedList.__contains__."
+expected_status = "SUCCESS"
+seed_patch = "cases/sorted-list-contains/seed.patch"
+gold_snapshot = "cases/sorted-list-contains/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_coverage_sortedlist.py"]
+
+[[cases]]
+name = "sorted-set-contains"
+category = "container-delegation"
+repository = "grantjenks/python-sortedcontainers"
+commit = "3ac358631f58c1347f1d6d2d92784117db0f38ed"
+target = "src/sortedcontainers/sortedset.py"
+tests = "tests/test_coverage_sortedset.py"
+issue = "SortedSet.__contains__ delegates to the wrong backing collection; repair SortedSet.__contains__."
+expected_status = "SUCCESS"
+seed_patch = "cases/sorted-set-contains/seed.patch"
+gold_snapshot = "cases/sorted-set-contains/gold.py"
+allowed_import_roots = []
+docker_test_command = ["python", "-m", "pytest", "tests/test_coverage_sortedset.py"]
