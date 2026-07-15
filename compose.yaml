@@ -1,0 +1,44 @@
+services:
+  refactor-agent:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+    image: refactor-agent:local
+    working_dir: /workspace/repo
+    environment:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      REFACTOR_AGENT_RUN_ROOT: /data/runs
+      REFACTOR_AGENT_DATABASE: /data/refactor_agent.sqlite
+      REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT: /data/github-workspaces
+    volumes:
+      - refactor-agent-memory:/data
+      - .:/workspace/repo:ro
+    command: ["memories", "--limit", "20"]
+
+  dashboard:
+    image: refactor-agent:local
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+    working_dir: /workspace/repo
+    environment:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      REFACTOR_AGENT_RUN_ROOT: /data/runs
+      REFACTOR_AGENT_DATABASE: /data/refactor_agent.sqlite
+      REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT: /data/github-workspaces
+      REFACTOR_AGENT_DASHBOARD_DB: /data/refactor_agent.sqlite
+    volumes:
+      - refactor-agent-memory:/data
+      - .:/workspace/repo:ro
+    ports:
+      - "8501:8501"
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "8501"]
+
+volumes:
+  refactor-agent-memory:

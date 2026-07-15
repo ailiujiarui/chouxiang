@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob, RunRecord
+from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob, RunRecord, TrajectoryMemoryRecord
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -19,14 +19,48 @@ def test_store_round_trip(tmp_path: Path):
     store.save(record)
     loaded = store.get("run-1")
     assert loaded == record
+    assert store.list_runs()[0] == record
+
+
+def test_store_tracks_trajectory_memory(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    record = TrajectoryMemoryRecord(
+        memory_id="memory-1",
+        run_id="run-1",
+        repo_name="repo",
+        target_path="leap_year.py",
+        status="FAILED",
+        lesson="不要再把 1900 当闰年。",
+        error_signature="AssertionError",
+        reward=None,
+    )
+    store.save_memory(record)
+    store.save_memory(
+        TrajectoryMemoryRecord(
+            memory_id="memory-2",
+            run_id="run-2",
+            repo_name="repo",
+            target_path="other.py",
+            status="SUCCESS",
+            lesson="复用集合判断。",
+            reward=12.5,
+        )
+    )
+    memories = store.list_memory("repo", "leap_year.py")
+    assert len(memories) == 1
+    assert memories[0].memory_id == "memory-1"
+    assert memories[0].created_at is not None
+    assert len(store.list_memory(repo_name="repo")) == 2
+    assert len(store.list_memory(target_path="other.py")) == 1
+    assert len(store.list_memory()) == 2
 
 
 def test_store_tracks_github_job_lifecycle(tmp_path: Path):
     store = SQLiteRunStore(tmp_path / "runs.sqlite")
     job = GitHubRefactorJob(
         job_id="job-1",
+        delivery_id="delivery-1",
         repo_full_name="octo/demo",
-        clone_url="https://github.com/octo/demo.git",
         issue_number=42,
         issue_title="Bug",
         issue_text="target: app.py",
@@ -57,3 +91,37 @@ def test_store_tracks_github_job_lifecycle(tmp_path: Path):
     assert completed.status == "SUCCESS"
     assert completed.pr_url == "https://github.com/octo/demo/pull/1"
     assert store.list_github_jobs()[0].job_id == "job-1"
+
+
+def test_store_deduplicates_delivery_and_recovers_expired_lease(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    job = GitHubRefactorJob(
+        job_id="job-1",
+        delivery_id="delivery-1",
+        repo_full_name="octo/demo",
+        issue_number=42,
+        issue_title="Bug",
+        issue_text="target: app.py",
+        target_path="app.py",
+        tests_path="tests",
+        event_name="issues",
+        action="opened",
+    )
+    assert store.create_github_job(job).job_id == "job-1"
+    duplicate = job.model_copy(update={"job_id": "job-duplicate"})
+    assert store.create_github_job(duplicate).job_id == "job-1"
+    concurrent = job.model_copy(update={"job_id": "job-concurrent", "delivery_id": "delivery-2"})
+    assert store.create_github_job(concurrent).job_id == "job-1"
+
+    claimed = store.claim_next_github_job("worker-1", lease_seconds=30, max_attempts=3)
+    assert claimed is not None
+    assert claimed.status == "RUNNING"
+    assert claimed.attempt_count == 1
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE github_jobs SET lease_expires_at = '2000-01-01T00:00:00+00:00' WHERE job_id = 'job-1'"
+        )
+    reclaimed = store.claim_next_github_job("worker-2", lease_seconds=30, max_attempts=3)
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == 2
+    assert reclaimed.lease_owner == "worker-2"

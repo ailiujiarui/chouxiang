@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from radon.complexity import cc_visit
-
+from refactor_agent.ast_analyzer import analyze_ast
 from refactor_agent.models import MetricsSnapshot
 
 
@@ -18,19 +17,23 @@ def count_logical_loc(source: str) -> int:
 
 
 def analyze_source(source: str) -> MetricsSnapshot:
-    blocks = cc_visit(source) if source.strip() else []
-    details = [
+    analysis = analyze_ast(source) if source.strip() else None
+    details = [] if analysis is None else [
         {
-            "name": block.name,
-            "type": block.__class__.__name__,
-            "lineno": block.lineno,
-            "complexity": block.complexity,
+            "name": item.qualified_name,
+            "type": "FunctionDef",
+            "lineno": item.lineno,
+            "end_lineno": item.end_lineno,
+            "complexity": item.complexity,
         }
-        for block in blocks
+        for item in [
+            *analysis.functions,
+            *(method for class_summary in analysis.classes for method in class_summary.methods),
+        ]
     ]
     return MetricsSnapshot(
         loc=count_logical_loc(source),
-        cyclomatic_complexity=sum(item["complexity"] for item in details),
+        cyclomatic_complexity=0 if analysis is None else analysis.cyclomatic_complexity,
         details=details,
     )
 
