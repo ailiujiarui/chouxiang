@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
@@ -105,11 +106,21 @@ class AstRewriteResult(BaseModel):
         )
 
 
+class LLMUsage(BaseModel):
+    provider: str
+    model: str
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0)
+
+
 class LLMRefactorResult(BaseModel):
     thought: str
     fixed_code: str
     insult_review: str
     modified_regions: list[str] = Field(default_factory=list)
+    usage: LLMUsage | None = None
 
 
 class LLMDefenderReviewResult(BaseModel):
@@ -220,6 +231,8 @@ class TrajectoryStep(BaseModel):
         "DEBATE_CONVERGED",
         "SUCCESS",
         "FAILED",
+        "CANCELLED",
+        "TIMED_OUT",
     ]
     message: str
     agent: Literal["MINIMIZER", "DEFENDER", "ADVERSARY", "JUDGE", "SYSTEM"] | None = None
@@ -273,14 +286,21 @@ class RefactorRunResult(BaseModel):
     debate_rounds: list[DebateRound] = Field(default_factory=list)
     graph_backend: str | None = None
     graph_node_trace: list[str] = Field(default_factory=list)
+    llm_usages: list[LLMUsage] = Field(default_factory=list)
+
+
+class RepositoryJobKind(StrEnum):
+    GITHUB_WEBHOOK = "GITHUB_WEBHOOK"
+    DASHBOARD_URL = "DASHBOARD_URL"
 
 
 class GitHubRefactorJob(BaseModel):
+    job_kind: RepositoryJobKind = RepositoryJobKind.GITHUB_WEBHOOK
     job_id: str
     delivery_id: str
     repo_full_name: str
-    default_branch: str = "main"
-    issue_number: int
+    default_branch: str | None = "main"
+    issue_number: int | None
     issue_title: str
     issue_text: str
     target_path: str
@@ -293,25 +313,38 @@ class GitHubRefactorJob(BaseModel):
 class GitHubAutomationResult(BaseModel):
     job_id: str | None = None
     repo_full_name: str
-    issue_number: int
+    issue_number: int | None
     branch_name: str | None = None
     run_id: str | None = None
     status: Literal["SUCCESS", "FAILED", "DRY_RUN"]
     pr_url: str | None = None
     workspace_path: Path | None = None
     error: str | None = None
+    requires_manual_cleanup: bool = False
+
+
+class GitHubJobStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    CANCEL_REQUESTED = "CANCEL_REQUESTED"
+    CANCELLED = "CANCELLED"
+    TIMED_OUT = "TIMED_OUT"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    DRY_RUN = "DRY_RUN"
 
 
 class GitHubJobRecord(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     job_id: str
+    job_kind: RepositoryJobKind = RepositoryJobKind.GITHUB_WEBHOOK
     delivery_id: str
     repo_full_name: str
-    issue_number: int
+    issue_number: int | None
     target_path: str
     tests_path: str
-    status: Literal["QUEUED", "RUNNING", "SUCCESS", "FAILED", "DRY_RUN"]
+    status: GitHubJobStatus
     branch_name: str | None = None
     run_id: str | None = None
     pr_url: str | None = None
@@ -321,5 +354,72 @@ class GitHubJobRecord(BaseModel):
     attempt_count: int = 0
     lease_owner: str | None = None
     lease_expires_at: str | None = None
+    deadline_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class JobEventRecord(BaseModel):
+    event_id: str
+    job_id: str
+    event_type: str
+    from_status: GitHubJobStatus | None = None
+    to_status: GitHubJobStatus | None = None
+    worker_id: str | None = None
+    attempt: int = 0
+    message: str = ""
+    created_at: str
+
+
+class RepositoryAllowlistRecord(BaseModel):
+    repo_full_name: str
+    created_at: str
+
+
+class RepositoryAllowlistEventRecord(BaseModel):
+    event_id: str
+    action: Literal["ADD", "REMOVE"]
+    repo_full_name: str
+    created_at: str
+
+
+class RepositoryAllowlistEntry(BaseModel):
+    repo_full_name: str
+    source: Literal["ENVIRONMENT", "DASHBOARD"]
+    removable: bool
+    created_at: str | None = None
+
+
+class BenchmarkRunRecord(BaseModel):
+    run_id: str
+    manifest_hash: str
+    provider: str
+    model: str
+    status: Literal["SUCCESS", "FAILED"]
+    generated_at: str
+
+
+class BenchmarkCaseRecord(BaseModel):
+    run_id: str
+    case_name: str
+    repository: str
+    commit: str
+    provider: str
+    model: str
+    status: str
+    expected_status: str
+    failure_category: str | None = None
+    attempts: int = 0
+    loc_before: int | None = None
+    loc_after: int | None = None
+    cc_before: int | None = None
+    cc_after: int | None = None
+    mutation_kill_rate: float | None = None
+    adversarial_passed: bool | None = None
+    runtime_seconds: float = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0
+    normalized_hash: str
+    error: str | None = None

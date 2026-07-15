@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from difflib import SequenceMatcher
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 from uuid import uuid4
 
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
+from refactor_agent.artifacts import RunArtifactWriter
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.memory import build_memory_context, failure_memory, success_memory, target_memory_key
@@ -70,12 +72,24 @@ class RefactorOrchestrator:
         self.adversary = AdversaryAgent()
         self.judge = JudgeAgent()
 
-    def run(self, request: RefactorRequest) -> RefactorRunResult:
-        return _RefactorWorkflow(self, request).run()
+    def run(
+        self,
+        request: RefactorRequest,
+        execution_control: ExecutionControl | None = None,
+    ) -> RefactorRunResult:
+        control = execution_control or ExecutionControl(
+            deadline_at=datetime.now(timezone.utc) + timedelta(seconds=900)
+        )
+        return _RefactorWorkflow(self, request, control).run()
 
 
 class _RefactorWorkflow:
-    def __init__(self, orchestrator: RefactorOrchestrator, request: RefactorRequest) -> None:
+    def __init__(
+        self,
+        orchestrator: RefactorOrchestrator,
+        request: RefactorRequest,
+        execution_control: ExecutionControl,
+    ) -> None:
         self.orchestrator = orchestrator
         self.request = request
         self.run_id = _new_run_id()
@@ -83,6 +97,7 @@ class _RefactorWorkflow:
         self.repo_name = request.repo_name or request.target_file.resolve().parent.name
         self.memory_key = target_memory_key(request.target_file)
         self.trajectory_path = orchestrator.run_root / self.run_id / "trajectory.jsonl"
+        self.execution_control = execution_control
 
     def run(self) -> RefactorRunResult:
         final = run_execution_graph(
@@ -92,11 +107,13 @@ class _RefactorWorkflow:
                 "current_code": "",
                 "previous_error": None,
                 "debate_rounds": [],
+                "llm_usages": [],
                 "node_trace": [],
                 "next_node": "prepare",
             },
             self,
             self.orchestrator.graph_backend,
+            execution_control=self.execution_control,
         )
         result: RefactorRunResult = final["result"]
         result.graph_backend = self.orchestrator.graph_backend
@@ -143,6 +160,8 @@ class _RefactorWorkflow:
             state["next_node"] = "finalize"
             return state
         state["llm_result"] = result
+        if result.usage is not None:
+            state["llm_usages"] = [*state.get("llm_usages", []), result.usage]
         state["round_messages"] = [
             AgentDebateMessage(round=state["attempt"], agent="MINIMIZER", content=result.thought)
         ]
@@ -203,6 +222,7 @@ class _RefactorWorkflow:
             docker_image=self.orchestrator.sandbox_docker_image,
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
         )
         state["sandbox"] = result
         message = self.orchestrator.defender.review_pytest(result)
@@ -234,6 +254,7 @@ class _RefactorWorkflow:
             docker_image=self.orchestrator.sandbox_docker_image,
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
         )
         state["adversarial"] = result
         message = _summarize_adversary_pass(result)
@@ -266,6 +287,7 @@ class _RefactorWorkflow:
             docker_image=self.orchestrator.sandbox_docker_image,
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
         )
         message = _summarize_mutation(state["mutation"])
         state["round_messages"].append(
@@ -281,6 +303,7 @@ class _RefactorWorkflow:
             docker_image=self.orchestrator.sandbox_docker_image,
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
         )
         state["next_node"] = "judge"
         return state
@@ -327,7 +350,7 @@ class _RefactorWorkflow:
         return self._retry_or_finalize(state)
 
     def finalize(self, state: ExecutionState) -> ExecutionState:
-        baseline = state["baseline"]
+        baseline = state.get("baseline")
         approved = bool(state.get("approved"))
         error = None if approved else str(state.get("terminal_error") or state.get("previous_error") or "refactor failed")
         post = state.get("post") if approved else None
@@ -341,9 +364,9 @@ class _RefactorWorkflow:
             run_id=self.run_id,
             issue_id=self.request.issue_id,
             repo_name=self.repo_name,
-            pre_loc=baseline.loc,
+            pre_loc=baseline.loc if baseline else None,
             post_loc=post.loc if post else None,
-            pre_cc=baseline.cyclomatic_complexity,
+            pre_cc=baseline.cyclomatic_complexity if baseline else None,
             post_cc=post.cyclomatic_complexity if post else None,
             self_heal_count=self_heal_count,
             status="SUCCESS" if approved else "FAILED",
@@ -357,25 +380,31 @@ class _RefactorWorkflow:
             )
         else:
             self.orchestrator.store.save_memory(failure_memory(record, self.memory_key))
-            self._trajectory(state, "FAILED", error or "refactor failed")
+            self._trajectory(
+                state,
+                str(state.get("control_status") or "FAILED"),
+                error or "refactor failed",
+            )
+        report = _build_report(
+            record,
+            self.workspace,
+            llm_result.insult_review if approved and llm_result else None,
+            state.get("sandbox"),
+            error,
+            state.get("validation"),
+            state.get("adversarial"),
+            state.get("mutation"),
+            state.get("reward"),
+            state.get("performance"),
+            state["debate_rounds"],
+            state.get("rewrite"),
+            self.orchestrator.graph_backend,
+            graph_trace,
+        )
+        self._write_artifacts(state, report)
         state["result"] = RefactorRunResult(
             record=record,
-            report_markdown=_build_report(
-                record,
-                self.workspace,
-                llm_result.insult_review if approved and llm_result else None,
-                state.get("sandbox"),
-                error,
-                state.get("validation"),
-                state.get("adversarial"),
-                state.get("mutation"),
-                state.get("reward"),
-                state.get("performance"),
-                state["debate_rounds"],
-                state.get("rewrite"),
-                self.orchestrator.graph_backend,
-                graph_trace,
-            ),
+            report_markdown=report,
             workspace_path=self.workspace,
             attempts=attempts,
             last_sandbox_result=state.get("sandbox"),
@@ -388,9 +417,33 @@ class _RefactorWorkflow:
             debate_rounds=state["debate_rounds"],
             graph_backend=self.orchestrator.graph_backend,
             graph_node_trace=graph_trace,
+            llm_usages=state.get("llm_usages", []),
         )
         state["next_node"] = "finalize"
         return state
+
+    def _write_artifacts(self, state: ExecutionState, report: str) -> None:
+        writer = RunArtifactWriter(self.orchestrator.run_root / self.run_id)
+        original = str(state.get("original_code") or "")
+        candidate = str(state.get("current_code") or original)
+        writer.write_sources(original, candidate)
+        sandbox = state.get("sandbox")
+        writer.write_log(
+            "pytest.log",
+            "\n".join(part for part in [getattr(sandbox, "stdout", ""), getattr(sandbox, "stderr", "")] if part),
+        )
+        adversarial = state.get("adversarial")
+        writer.write_log(
+            "adversary.log",
+            "\n".join(
+                part
+                for part in [getattr(adversarial, "stdout", ""), getattr(adversarial, "stderr", "")]
+                if part
+            ),
+        )
+        mutation = state.get("mutation")
+        writer.write_json("mutation.json", mutation.model_dump(mode="json") if mutation else {})
+        writer.write_report(report)
 
     def _retry_or_finalize(self, state: ExecutionState) -> ExecutionState:
         state["next_node"] = "minimizer" if state["attempt"] < state["max_attempts"] else "finalize"

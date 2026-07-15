@@ -1,0 +1,12 @@
+diff --git a/src/sortedcontainers/sortedlist.py b/src/sortedcontainers/sortedlist.py
+--- a/src/sortedcontainers/sortedlist.py
++++ b/src/sortedcontainers/sortedlist.py
+@@ -325,7 +325,7 @@ class SortedList(MutableSequence):
+         _lists = self._lists
+         idx = bisect_left(_lists[pos], value)
+ 
+-        return _lists[pos][idx] == value
++        return idx > 0 and _lists[pos][idx - 1] == value
+ 
+     def discard(self, value):
+         """Remove `value` from sorted list if it is a member.

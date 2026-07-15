@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from refactor_agent.llm import LLMError, build_user_prompt, parse_llm_result
+from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient, build_user_prompt, parse_llm_result
 from refactor_agent.models import MetricsSnapshot, RefactorRequest
 
 
@@ -19,6 +21,92 @@ def test_parse_llm_result_rejects_missing_field():
 def test_parse_llm_result_rejects_invalid_json():
     with pytest.raises(LLMError):
         parse_llm_result("not json")
+
+
+def test_mock_client_reports_zero_usage(tmp_path: Path):
+    result = MockRefactorClient().refactor(
+        request=RefactorRequest(
+            target_file=tmp_path / "value.py",
+            issue_text="fix leap year",
+            tests_path=tmp_path / "tests",
+        ),
+        current_code="def is_leap_year(year):\n    return year % 4 == 0\n",
+        baseline_metrics=MetricsSnapshot(loc=2, cyclomatic_complexity=1),
+        previous_error=None,
+        attempt=1,
+    )
+
+    assert result.usage is not None
+    assert result.usage.provider == "mock"
+    assert result.usage.total_tokens == 0
+    assert result.usage.cost_usd == 0
+
+
+def test_deepseek_client_parses_usage_metadata(monkeypatch, tmp_path: Path):
+    response = _DeepSeekResponse(
+        usage={"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150}
+    )
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", lambda *args, **kwargs: response)
+
+    result = _deepseek_result(tmp_path)
+
+    assert result.usage is not None
+    assert result.usage.provider == "deepseek"
+    assert result.usage.model == "deepseek-chat"
+    assert result.usage.prompt_tokens == 120
+    assert result.usage.completion_tokens == 30
+    assert result.usage.total_tokens == 150
+
+
+def test_deepseek_client_allows_missing_usage(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "refactor_agent.llm.httpx.post",
+        lambda *args, **kwargs: _DeepSeekResponse(),
+    )
+
+    result = _deepseek_result(tmp_path)
+
+    assert result.usage is not None
+    assert result.usage.total_tokens is None
+
+
+class _DeepSeekResponse:
+    def __init__(self, usage=None):
+        self.usage = usage
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"thought":"short","fixed_code":"def f():\\n    return 1\\n",'
+                            '"insult_review":"branches"}'
+                        )
+                    }
+                }
+            ]
+        }
+        if self.usage is not None:
+            payload["usage"] = self.usage
+        return payload
+
+
+def _deepseek_result(tmp_path: Path):
+    return DeepSeekClient(api_key="test-key", model="deepseek-chat").refactor(
+        request=RefactorRequest(
+            target_file=tmp_path / "value.py",
+            issue_text="fix f",
+            tests_path=tmp_path / "tests",
+        ),
+        current_code="def f():\n    return 0\n",
+        baseline_metrics=MetricsSnapshot(loc=2, cyclomatic_complexity=1),
+        previous_error=None,
+        attempt=1,
+    )
 
 
 def test_build_user_prompt_includes_ast_hotspots(tmp_path):

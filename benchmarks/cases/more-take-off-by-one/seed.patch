@@ -1,0 +1,12 @@
+diff --git a/more_itertools/recipes.py b/more_itertools/recipes.py
+--- a/more_itertools/recipes.py
++++ b/more_itertools/recipes.py
+@@ -123,7 +123,7 @@ def take(n, iterable):
+         [0, 1, 2]
+ 
+     """
+-    return list(islice(iterable, n))
++    return list(islice(iterable, max(n - 1, 0)))
+ 
+ 
+ def tabulate(function, start=0):

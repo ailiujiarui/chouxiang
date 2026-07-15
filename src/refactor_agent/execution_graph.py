@@ -4,6 +4,12 @@ from typing import Any, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from refactor_agent.execution_control import (
+    ExecutionCancelled,
+    ExecutionControl,
+    ExecutionDeadlineExceeded,
+)
+
 
 class RefactorGraphState(TypedDict, total=False):
     active_backend: str
@@ -15,6 +21,7 @@ class RefactorGraphState(TypedDict, total=False):
     debate_rounds: list[Any]
     llm_request: Any
     llm_result: Any
+    llm_usages: list[Any]
     max_attempts: int
     mutation: Any
     current_code: str
@@ -35,6 +42,8 @@ class RefactorGraphState(TypedDict, total=False):
     node_trace: list[str]
     approved: bool
     result: Any
+    execution_control: ExecutionControl
+    control_status: str
 
 
 ExecutionState = RefactorGraphState
@@ -63,7 +72,14 @@ NODE_ROUTES = {
 }
 
 
-def run_execution_graph(initial: ExecutionState, nodes: ExecutionNodes, backend: str) -> ExecutionState:
+def run_execution_graph(
+    initial: ExecutionState,
+    nodes: ExecutionNodes,
+    backend: str,
+    execution_control: ExecutionControl | None = None,
+) -> ExecutionState:
+    if execution_control is not None:
+        initial = {**initial, "execution_control": execution_control}
     if backend == "loop":
         return _run_loop(initial, nodes)
     if backend != "langgraph":
@@ -90,9 +106,29 @@ def _run_loop(initial: ExecutionState, nodes: ExecutionNodes) -> ExecutionState:
 
 def _wrapped(name: str, node):
     def invoke(state: ExecutionState) -> ExecutionState:
-        updated = node(dict(state))
-        updated["node_trace"] = [*state.get("node_trace", []), name.upper()]
-        return updated
+        control = state.get("execution_control")
+        if name == "finalize":
+            updated = node(dict(state))
+            updated["node_trace"] = [*state.get("node_trace", []), name.upper()]
+            return updated
+        try:
+            if control is not None:
+                control.checkpoint(f"before-{name}")
+            updated = node(dict(state))
+            updated["node_trace"] = [*state.get("node_trace", []), name.upper()]
+            if control is not None:
+                control.checkpoint(f"after-{name}")
+            return updated
+        except (ExecutionCancelled, ExecutionDeadlineExceeded) as exc:
+            stopped = updated if "updated" in locals() else dict(state)
+            if "updated" in locals():
+                stopped["node_trace"] = [*state.get("node_trace", []), name.upper()]
+            stopped["control_status"] = (
+                "CANCELLED" if isinstance(exc, ExecutionCancelled) else "TIMED_OUT"
+            )
+            stopped["terminal_error"] = str(exc)
+            stopped["next_node"] = "finalize"
+            return stopped
 
     return invoke
 

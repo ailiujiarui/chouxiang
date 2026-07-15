@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -11,12 +12,20 @@ import uvicorn
 from rich.console import Console
 
 from refactor_agent.arena_export import write_arena_report
-from refactor_agent.benchmark import render_benchmark_markdown, run_benchmark, serialize_benchmark
+from refactor_agent.benchmark import (
+    render_benchmark_markdown,
+    render_manifest_benchmark_markdown,
+    run_benchmark,
+    run_manifest_benchmark,
+    serialize_benchmark,
+    serialize_manifest_benchmark,
+)
 from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.demo_cases import DEMO_CASE_NAMES, get_demo_case, materialize_demo_case
 from refactor_agent.demo_suite import DEFAULT_DEMO_SUITE_CASES, DemoSuiteRun, render_demo_suite_report
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
 from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
 from refactor_agent.models import RefactorRequest
@@ -36,6 +45,7 @@ def run(
     repo_name: str | None = typer.Option(None, "--repo-name", help="Optional name stored in SQLite reports."),
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    deadline: int = typer.Option(900, "--deadline", min=30, max=7200, help="Total execution deadline in seconds."),
     sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess, docker, or auto."),
     sandbox_docker_image: str = typer.Option("refactor-agent-sandbox:py312", "--sandbox-docker-image", help="Docker image for docker sandbox backend."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated run workspaces."),
@@ -54,7 +64,17 @@ def run(
         max_retry=max_retry,
         allowed_import_roots=set(allow_import or []),
     )
-    result = _run_request(request, run_root, database, timeout, mock, sandbox_backend, sandbox_docker_image, mock_fail_times)
+    result = _run_request(
+        request,
+        run_root,
+        database,
+        timeout,
+        mock,
+        sandbox_backend,
+        sandbox_docker_image,
+        mock_fail_times,
+        deadline_seconds=deadline,
+    )
     _print_plain(result.report_markdown)
     raise typer.Exit(code=0 if result.record.status == "SUCCESS" else 1)
 
@@ -64,6 +84,7 @@ def demo(
     case: str = typer.Option("leap-year", "--case", help=f"Demo case: {', '.join(DEMO_CASE_NAMES)}."),
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    deadline: int = typer.Option(900, "--deadline", min=30, max=7200, help="Total execution deadline in seconds."),
     sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess, docker, or auto."),
     sandbox_docker_image: str = typer.Option("refactor-agent-sandbox:py312", "--sandbox-docker-image", help="Docker image for docker sandbox backend."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated run workspaces."),
@@ -95,6 +116,7 @@ def demo(
         sandbox_backend=sandbox_backend,
         sandbox_docker_image=sandbox_docker_image,
         mock_fail_times=mock_fail_times,
+        deadline_seconds=deadline,
     )
     _print_plain(result.report_markdown)
     raise typer.Exit(code=0 if result.record.status == "SUCCESS" else 1)
@@ -110,6 +132,7 @@ def demo_suite(
     ),
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts per case."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    deadline: int = typer.Option(900, "--deadline", min=30, max=7200, help="Total execution deadline per case in seconds."),
     sandbox_backend: str = typer.Option("auto", "--sandbox-backend", help="subprocess, docker, or auto."),
     sandbox_docker_image: str = typer.Option(
         "refactor-agent-sandbox:py312",
@@ -164,6 +187,7 @@ def demo_suite(
             sandbox_backend=sandbox_backend,
             sandbox_docker_image=sandbox_docker_image,
             mock_fail_times=case_fail_times,
+            deadline_seconds=deadline,
         )
         suite_runs.append(DemoSuiteRun(case_name=selected.name, title=selected.title, result=result))
         status_text = "成功" if result.record.status == "SUCCESS" else "失败"
@@ -193,11 +217,40 @@ def benchmark(
     output_dir: Path = typer.Option(Path("benchmark-results"), "--output-dir", help="Evidence output directory."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Directory for isolated benchmark workspaces."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    deadline: int = typer.Option(900, "--deadline", min=30, max=7200, help="Total execution deadline in seconds."),
     sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess or docker."),
     graph_backend: str = typer.Option("langgraph", "--graph-backend", help="langgraph or loop."),
+    manifest: Path | None = typer.Option(None, "--manifest", help="Pinned external benchmark manifest."),
+    provider: str = typer.Option("mock", "--provider", help="mock or deepseek."),
+    compare: str | None = typer.Option(None, "--compare", help="Previous benchmark run ID."),
+    case: list[str] | None = typer.Option(None, "--case", help="External case name; repeat to filter."),
+    database: Path | None = typer.Option(None, "--database", help="SQLite evidence database."),
+    cache_root: Path = typer.Option(Path(".benchmark-cache"), "--cache-root", help="Bare clone cache root."),
 ) -> None:
     """Run the deterministic six-case benchmark and emit JSON and Markdown."""
     run_root = _resolve_run_root(run_root)
+    if manifest is not None:
+        database_path = _resolve_database(database, run_root)
+        run_record, case_records = run_manifest_benchmark(
+            manifest_path=manifest,
+            provider=provider,
+            run_root=run_root,
+            cache_root=cache_root,
+            database_path=database_path,
+            case_names=set(case or []),
+            timeout_seconds=min(timeout, float(_resolve_deadline(deadline))),
+        )
+        store = SQLiteRunStore(database_path)
+        previous = store.list_benchmark_case_results(compare) if compare else None
+        markdown = render_manifest_benchmark_markdown(run_record, case_records, previous)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "benchmark.json").write_text(
+            serialize_manifest_benchmark(run_record, case_records) + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / "benchmark.md").write_text(markdown + "\n", encoding="utf-8")
+        _print_plain(markdown)
+        raise typer.Exit(code=0 if run_record.status == "SUCCESS" else 1)
     observations = run_benchmark(
         run_root=run_root,
         sandbox_backend=sandbox_backend,
@@ -253,6 +306,7 @@ def github_url(
     repo_name: str | None = typer.Option(None, "--repo-name", help="Optional name stored in SQLite reports."),
     max_retry: int = typer.Option(3, "--max-retry", min=1, help="Maximum total LLM attempts."),
     timeout: float = typer.Option(30.0, "--timeout", help="Pytest timeout in seconds."),
+    deadline: int = typer.Option(900, "--deadline", min=30, max=7200, help="Total execution deadline in seconds."),
     sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend", help="subprocess, docker, or auto."),
     sandbox_docker_image: str = typer.Option(
         "refactor-agent-sandbox:py312",
@@ -306,6 +360,7 @@ def github_url(
         sandbox_backend,
         sandbox_docker_image,
         mock_fail_times,
+        deadline_seconds=deadline,
     )
     _print_plain(result.report_markdown)
     _print_plain(f"\n克隆仓库: {checkout.checkout_path}")
@@ -387,6 +442,7 @@ def dashboard(
     port: int = typer.Option(8501, "--port", help="Port for the Streamlit arena."),
     database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Run root containing trajectories."),
+    api_url: str = typer.Option("http://127.0.0.1:8000", "--api-url", help="FastAPI operations endpoint."),
 ) -> None:
     """Launch the live demo arena."""
     run_root = _resolve_run_root(run_root)
@@ -399,6 +455,7 @@ def dashboard(
     env = os.environ.copy()
     env["REFACTOR_AGENT_DASHBOARD_DB"] = str(database_path)
     env["REFACTOR_AGENT_RUN_ROOT"] = str(run_root)
+    env["REFACTOR_AGENT_API_URL"] = api_url
     console.print(f"Arena URL: http://{host}:{port}", markup=False)
     completed = subprocess.run(
         [
@@ -446,6 +503,7 @@ def _run_request(
     sandbox_docker_image: str = "refactor-agent-sandbox:py312",
     mock_fail_times: int = 0,
     graph_backend: str | None = None,
+    deadline_seconds: int = 900,
 ):
     run_root = _resolve_run_root(run_root)
     try:
@@ -464,7 +522,11 @@ def _run_request(
         sandbox_docker_image=sandbox_docker_image,
         graph_backend=graph_backend or os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
     )
-    return orchestrator.run(request)
+    resolved_deadline = _resolve_deadline(deadline_seconds)
+    control = ExecutionControl(
+        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=resolved_deadline)
+    )
+    return orchestrator.run(request, execution_control=control)
 
 
 def _suite_mock_fail_times(
@@ -527,6 +589,14 @@ def _resolve_github_workspace_root(github_workspace_root: Path) -> Path:
     if env_workspace and github_workspace_root == Path(".github-url-workspaces"):
         return Path(env_workspace)
     return github_workspace_root
+
+
+def _resolve_deadline(deadline_seconds: int) -> int:
+    if deadline_seconds == 900:
+        return AppSettings(
+            job_deadline_seconds=int(os.getenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "900"))
+        ).job_deadline_seconds
+    return deadline_seconds
 
 
 def _print_plain(text: str) -> None:

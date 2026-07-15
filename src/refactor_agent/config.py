@@ -33,6 +33,7 @@ class AppSettings(BaseModel):
     retain_checkouts: bool = False
     job_lease_seconds: int = Field(default=300, ge=30, le=3600)
     job_max_attempts: int = Field(default=3, ge=1, le=10)
+    job_deadline_seconds: int = Field(default=900, ge=30, le=7200)
     webhook_max_bytes: int = Field(default=1_048_576, ge=1024, le=10_485_760)
 
     @classmethod
@@ -64,6 +65,7 @@ class AppSettings(BaseModel):
             retain_checkouts=_env_bool("REFACTOR_AGENT_RETAIN_CHECKOUTS", False),
             job_lease_seconds=int(os.getenv("REFACTOR_AGENT_JOB_LEASE_SECONDS", "300")),
             job_max_attempts=int(os.getenv("REFACTOR_AGENT_JOB_MAX_ATTEMPTS", "3")),
+            job_deadline_seconds=int(os.getenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "900")),
             webhook_max_bytes=int(os.getenv("REFACTOR_AGENT_WEBHOOK_MAX_BYTES", "1048576")),
         )
 

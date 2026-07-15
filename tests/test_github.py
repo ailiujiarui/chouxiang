@@ -1,6 +1,8 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from refactor_agent.config import AppSettings
+from refactor_agent.execution_control import ExecutionCancelled, ExecutionControl
 from refactor_agent.github import GitHubAutomationService, GitRepositoryManager, _branch_name, canonical_clone_url
 from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.llm import MockRefactorClient
@@ -175,6 +177,137 @@ def test_clone_uses_ephemeral_auth_without_credentials_in_url(tmp_path: Path):
 def test_job_branch_name_is_deterministic():
     assert _branch_name(42, "job-42") == _branch_name(42, "job-42")
     assert _branch_name(42, "job-42") != _branch_name(42, "job-43")
+
+
+class StageControl:
+    def __init__(self, cancel_at: str | None = None) -> None:
+        self.stages: list[str] = []
+        self.cancel_at = cancel_at
+
+    def checkpoint(self, stage: str) -> None:
+        self.stages.append(stage)
+        if stage == self.cancel_at:
+            raise ExecutionCancelled(stage)
+
+    def bounded_timeout(self, timeout: float, stage: str) -> float:
+        self.checkpoint(f"before-{stage}")
+        return timeout
+
+
+def test_github_service_checkpoints_irreversible_side_effects(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    repo_manager = FakeRepoManager(checkout)
+    api = FakeGitHubApi()
+    control = StageControl()
+    service = GitHubAutomationService(
+        settings=AppSettings(
+            github_token="secret-token",
+            dry_run=False,
+            run_root=tmp_path / ".runs",
+            database_path=tmp_path / ".runs" / "runs.sqlite",
+            retain_checkouts=True,
+        ),
+        repo_manager=repo_manager,  # type: ignore[arg-type]
+        api_client=api,  # type: ignore[arg-type]
+        llm_factory=lambda: MockRefactorClient(),
+    )
+
+    assert service.process(_job(), execution_control=control).status == "SUCCESS"  # type: ignore[arg-type]
+    assert [
+        "before-clone",
+        "before-create-branch",
+        "before-write-candidate",
+        "before-push",
+        "before-create-pull-request",
+        "before-create-issue-comment",
+    ] == [stage for stage in control.stages if stage in {
+        "before-clone",
+        "before-create-branch",
+        "before-write-candidate",
+        "before-push",
+        "before-create-pull-request",
+        "before-create-issue-comment",
+    }]
+
+
+def test_github_service_reports_manual_cleanup_when_cancelled_after_push(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    repo_manager = FakeRepoManager(checkout)
+    api = FakeGitHubApi()
+    control = StageControl(cancel_at="before-create-pull-request")
+    service = GitHubAutomationService(
+        settings=AppSettings(
+            github_token="secret-token",
+            dry_run=False,
+            run_root=tmp_path / ".runs",
+            database_path=tmp_path / ".runs" / "runs.sqlite",
+            retain_checkouts=True,
+        ),
+        repo_manager=repo_manager,  # type: ignore[arg-type]
+        api_client=api,  # type: ignore[arg-type]
+        llm_factory=lambda: MockRefactorClient(),
+    )
+
+    result = service.process(_job(), execution_control=control)  # type: ignore[arg-type]
+
+    assert repo_manager.pushed is not None
+    assert api.pull_request is None
+    assert result.status == "FAILED"
+    assert result.requires_manual_cleanup is True
+    assert "manual cleanup" in (result.error or "").lower()
+
+
+def test_github_service_retains_pr_url_when_cancelled_after_pr_creation(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    repo_manager = FakeRepoManager(checkout)
+    api = FakeGitHubApi()
+    control = StageControl(cancel_at="after-create-pull-request")
+    service = GitHubAutomationService(
+        settings=AppSettings(
+            github_token="secret-token",
+            dry_run=False,
+            run_root=tmp_path / ".runs",
+            database_path=tmp_path / ".runs" / "runs.sqlite",
+            retain_checkouts=True,
+        ),
+        repo_manager=repo_manager,  # type: ignore[arg-type]
+        api_client=api,  # type: ignore[arg-type]
+        llm_factory=lambda: MockRefactorClient(),
+    )
+
+    result = service.process(_job(), execution_control=control)  # type: ignore[arg-type]
+
+    assert result.status == "FAILED"
+    assert result.requires_manual_cleanup is True
+    assert result.pr_url == "https://github.com/octo/demo/pull/1"
+    assert api.issue_comment is None
+
+
+def test_github_http_timeout_uses_remaining_deadline(monkeypatch):
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    control = ExecutionControl(deadline_at=now + timedelta(seconds=8), clock=lambda: now)
+    captured: dict[str, float] = {}
+
+    class Response:
+        status_code = 201
+
+        @staticmethod
+        def json():
+            return {"html_url": "https://github.com/octo/demo/pull/1"}
+
+        text = ""
+
+    def fake_post(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return Response()
+
+    monkeypatch.setattr("refactor_agent.github.httpx.post", fake_post)
+    from refactor_agent.github import GitHubApiClient
+
+    client = GitHubApiClient("token", execution_control=control)
+    client.create_pull_request("octo/demo", "title", "head", "main", "body")
+
+    assert captured["timeout"] == 8
 
 
 def _job(target_path: str = "leap_year.py") -> GitHubRefactorJob:

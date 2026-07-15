@@ -30,6 +30,7 @@ dashboard = [
 ]
 dev = [
     "pytest>=8.0",
+    "streamlit>=1.36",
 ]
 
 [project.scripts]

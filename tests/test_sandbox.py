@@ -1,4 +1,6 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -13,6 +15,7 @@ from refactor_agent.sandbox import (
     write_candidate,
     _sandbox_env,
 )
+from refactor_agent.execution_control import ExecutionControl
 
 
 def test_sandbox_detects_passing_tests(tmp_path: Path):
@@ -113,6 +116,31 @@ def test_docker_backend_fails_fast_when_docker_is_unavailable(
 def test_unknown_sandbox_backend_is_rejected(tmp_path: Path):
     with pytest.raises(ValueError):
         run_pytest_with_backend(tmp_path, tmp_path, backend="spaceship")
+
+
+def test_sandbox_timeout_is_bounded_by_execution_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
+    workspace = tmp_path / "workspace"
+    _, _, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    control = ExecutionControl(deadline_at=now + timedelta(seconds=7), clock=lambda: now)
+    captured: dict[str, float] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        return CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("refactor_agent.sandbox.subprocess.run", fake_run)
+
+    run_pytest_with_backend(
+        workspace,
+        tests,
+        timeout_seconds=30,
+        backend="subprocess",
+        execution_control=control,
+    )
+
+    assert captured["timeout"] == 7
 
 
 def _make_project(tmp_path: Path, code: str) -> Path:

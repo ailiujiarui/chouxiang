@@ -4,6 +4,7 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.models import MutationTestResult
 from refactor_agent.sandbox import run_pytest_with_backend, write_candidate
 
@@ -36,6 +37,7 @@ def run_mutation_tests(
     docker_image: str = "refactor-agent-sandbox:py312",
     memory: str = "256m",
     cpus: float = 1.0,
+    execution_control: ExecutionControl | None = None,
 ) -> MutationTestResult:
     mutants = generate_mutants(candidate_source, max_mutants=max_mutants)
     killed = 0
@@ -50,6 +52,7 @@ def run_mutation_tests(
             docker_image=docker_image,
             memory=memory,
             cpus=cpus,
+            execution_control=execution_control,
         )
         if result.passed:
             survived.append(mutant.description)

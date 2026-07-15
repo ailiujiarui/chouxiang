@@ -1,0 +1,12 @@
+diff --git a/boltons/mathutils.py b/boltons/mathutils.py
+--- a/boltons/mathutils.py
++++ b/boltons/mathutils.py
+@@ -66,7 +66,7 @@ def clamp(x, lower=float('-inf'), upper=float('inf')):
+     if upper < lower:
+         raise ValueError('expected upper bound (%r) >= lower bound (%r)'
+                          % (upper, lower))
+-    return min(max(x, lower), upper)
++    return min(min(x, lower), upper)
+ 
+ 
+ def ceil(x, options=None):
