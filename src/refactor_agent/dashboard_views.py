@@ -14,6 +14,7 @@ STATUS_LABELS = {
     "SUCCESS": "成功",
     "FAILED": "失败",
     "DRY_RUN": "试运行完成",
+    "REVIEWED": "只读审查完成",
     "MINIMIZER_PROPOSED": "精简者已提交方案",
     "DEFENDER_REVIEWED": "防御者已完成审查",
     "AST_REJECTED": "AST 守卫已拒绝",
@@ -75,6 +76,14 @@ def localize_status(status: object) -> str:
     return f"{label}（{raw}）" if label else f"未知状态（{raw}）"
 
 
+def localize_job_status(status: object, job_kind: object) -> str:
+    raw = str(status or "UNKNOWN")
+    kind = str(job_kind or "")
+    if raw == "DRY_RUN" and kind in {"SNIPPET", "DASHBOARD_URL"}:
+        return "本地验证完成（DRY_RUN）"
+    return localize_status(raw)
+
+
 def format_dashboard_error(status_code: int | None, detail: str) -> str:
     summaries = {
         400: "提交内容格式错误。",
@@ -99,6 +108,9 @@ def build_task_rows(
         status = str(job.get("status") or "UNKNOWN")
         pr_url = str(job["pr_url"]) if job.get("pr_url") else None
         can_cancel, can_retry = job_actions(status, pr_url)
+        if str(job.get("job_kind")) == "GITHUB_WEBHOOK":
+            can_cancel = False
+            can_retry = False
         deadline_at = str(job["deadline_at"]) if job.get("deadline_at") else None
         rows.append(
             TaskRow(
@@ -142,14 +154,13 @@ def build_task_table_rows(rows: list[TaskRow]) -> list[dict[str, Any]]:
         {
             "任务 ID": row.job_id,
             "来源": _localize_job_kind(row.job_kind),
-            "状态": localize_status(row.status),
+            "状态": localize_job_status(row.status, row.job_kind),
             "仓库": row.repository,
             "Issue 编号": row.issue_number if row.issue_number is not None else "-",
             "尝试次数": row.attempts,
             "租约所有者": row.lease_owner,
             "截止时间": row.deadline_at,
             "剩余时间（秒）": row.remaining_seconds,
-            "PR URL": row.pr_url,
         }
         for row in rows
     ]
@@ -224,7 +235,7 @@ def _localize_failure_category(category: object) -> str:
 
 def _localize_job_kind(job_kind: str) -> str:
     return {
-        "GITHUB_WEBHOOK": "GitHub Webhook",
+        "GITHUB_WEBHOOK": "遗留任务（已禁用）",
         "DASHBOARD_URL": "仪表盘 URL",
     }.get(job_kind, f"未知来源（{job_kind}）")
 

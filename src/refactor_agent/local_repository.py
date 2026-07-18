@@ -77,7 +77,7 @@ class LocalRepositoryRefactorService:
             checkout_path = repo_manager.clone_repository(
                 repo_full_name=job.repo_full_name,
                 ref=job.default_branch,
-                token=self.settings.github_token,
+                token=None,
                 checkout_label=job.job_id,
             )
             control.checkpoint("after-local-clone")

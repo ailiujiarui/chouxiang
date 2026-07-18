@@ -29,9 +29,11 @@ from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
 from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
 from refactor_agent.models import RefactorRequest
+from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
 from refactor_agent.orchestrator import RefactorOrchestrator
+from refactor_agent.snippet import SnippetRefactorService
 from refactor_agent.store import SQLiteRunStore
-from refactor_agent.webhook import validate_webhook_settings
+from refactor_agent.control_api import validate_control_api_settings
 
 app = typer.Typer(help="Local closed-loop code refactoring agent.")
 console = Console()
@@ -77,6 +79,67 @@ def run(
     )
     _print_plain(result.report_markdown)
     raise typer.Exit(code=0 if result.record.status == "SUCCESS" else 1)
+
+
+@app.command("snippet")
+def snippet(
+    source: str = typer.Option(..., "--source", help="Python source file, or - for stdin."),
+    request: str = typer.Option("精简并审查这段代码", "--request", help="Review/refactor request."),
+    tests: Path | None = typer.Option(
+        None,
+        "--tests",
+        help="Pytest source file for verified mode; import the target as snippet.",
+    ),
+    mode: str = typer.Option("review", "--mode", help="review or verified-refactor."),
+    persona: str = typer.Option("strict", "--persona", help="strict or tsundere."),
+    run_root: Path = typer.Option(Path(".runs"), "--run-root"),
+    database: Path | None = typer.Option(None, "--database"),
+    sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend"),
+    mock: bool = typer.Option(False, "--mock", help="Use deterministic mock in verified mode."),
+) -> None:
+    """Review pasted Python or run the verified refactor pipeline."""
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"review", "verified-refactor"}:
+        raise typer.BadParameter("--mode must be review or verified-refactor")
+    normalized_persona = persona.strip().lower()
+    if normalized_persona not in {"strict", "tsundere"}:
+        raise typer.BadParameter("--persona must be strict or tsundere")
+    source_text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+    tests_text = tests.read_text(encoding="utf-8") if tests else None
+    if normalized_mode == "verified-refactor" and not tests_text:
+        raise typer.BadParameter("--tests is required in verified-refactor mode")
+    settings = AppSettings.from_env().model_copy(
+        update={
+            "run_root": run_root,
+            "database_path": database,
+            "sandbox_backend": sandbox_backend,
+            "mock_llm": mock,
+        }
+    )
+    job = GitHubRefactorJob(
+        job_kind=RepositoryJobKind.SNIPPET,
+        job_id=f"snippet-cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
+        delivery_id=f"snippet-cli:{datetime.now(timezone.utc).timestamp()}",
+        repo_full_name="local/snippet",
+        default_branch=None,
+        issue_number=None,
+        issue_title="CLI snippet code review",
+        issue_text=request.strip(),
+        target_path="snippet.py",
+        tests_path="test_snippet.py",
+        event_name="snippet_cli",
+        action="submitted",
+        snippet_source=source_text,
+        snippet_tests=tests_text,
+        snippet_mode="REVIEW" if normalized_mode == "review" else "VERIFIED_REFACTOR",
+        persona="STRICT" if normalized_persona == "strict" else "TSUNDERE",
+    )
+    result = SnippetRefactorService(settings).process(job)
+    if not result.run_id:
+        raise typer.Exit(code=1)
+    report = (settings.run_root / result.run_id / "artifacts" / "report.md").read_text(encoding="utf-8")
+    _print_plain(report)
+    raise typer.Exit(code=0 if result.status == "DRY_RUN" else 1)
 
 
 @app.command()
@@ -371,18 +434,18 @@ def github_url(
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", "--host", help="Host for the FastAPI webhook server."),
-    port: int = typer.Option(8000, "--port", help="Port for the FastAPI webhook server."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host for the local control API."),
+    port: int = typer.Option(8000, "--port", help="Port for the local control API."),
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn auto-reload."),
 ) -> None:
-    """Serve the GitHub Webhook gateway."""
+    """Serve the local control API."""
     settings = AppSettings.from_env()
     try:
-        validate_webhook_settings(settings, require_docker=True)
+        validate_control_api_settings(settings, require_docker=True)
     except RuntimeError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
-    uvicorn.run("refactor_agent.webhook:app", host=host, port=port, reload=reload)
+    uvicorn.run("refactor_agent.control_api:app", host=host, port=port, reload=reload)
 
 
 @app.command()
@@ -391,7 +454,7 @@ def jobs(
     database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Run root used to infer the default database."),
 ) -> None:
-    """List recent GitHub Webhook jobs."""
+    """List recent local jobs, including readable legacy records."""
     run_root = _resolve_run_root(run_root)
     store = SQLiteRunStore(_resolve_database(database, run_root))
     records = store.list_github_jobs(limit)

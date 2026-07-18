@@ -31,8 +31,6 @@ def test_local_repository_service_never_writes_back_or_publishes(tmp_path: Path)
     checkout = tmp_path / "checkout"
     manager = FakeReadOnlyRepoManager(checkout)
     settings = AppSettings(
-        dry_run=False,
-        github_token="read-token",
         allowed_repositories={"octo/demo"},
         run_root=tmp_path / ".runs",
         database_path=tmp_path / ".runs" / "runs.sqlite",
@@ -50,7 +48,7 @@ def test_local_repository_service_never_writes_back_or_publishes(tmp_path: Path)
     assert result.branch_name is None
     assert result.pr_url is None
     assert result.run_id is not None
-    assert manager.clone_call == ("octo/demo", None, "read-token", "url-job-1")
+    assert manager.clone_call == ("octo/demo", None, None, "url-job-1")
     assert "if year % 4" in (checkout / "leap_year.py").read_text(encoding="utf-8")
     candidate = settings.run_root / result.run_id / "artifacts" / "candidate.py"
     assert candidate.is_file()

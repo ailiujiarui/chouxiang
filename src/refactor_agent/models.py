@@ -249,7 +249,7 @@ class RunRecord(BaseModel):
     pre_cc: int | None = None
     post_cc: int | None = None
     self_heal_count: int
-    status: Literal["SUCCESS", "FAILED"]
+    status: Literal["SUCCESS", "FAILED", "REVIEWED"]
     error: str | None = None
     pytest_duration_seconds: float | None = None
     profiled_pytest_duration_seconds: float | None = None
@@ -292,6 +292,7 @@ class RefactorRunResult(BaseModel):
 class RepositoryJobKind(StrEnum):
     GITHUB_WEBHOOK = "GITHUB_WEBHOOK"
     DASHBOARD_URL = "DASHBOARD_URL"
+    SNIPPET = "SNIPPET"
 
 
 class GitHubRefactorJob(BaseModel):
@@ -308,6 +309,10 @@ class GitHubRefactorJob(BaseModel):
     sender_login: str | None = None
     event_name: str
     action: str
+    snippet_source: str | None = None
+    snippet_tests: str | None = None
+    snippet_mode: Literal["REVIEW", "VERIFIED_REFACTOR"] | None = None
+    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 class GitHubAutomationResult(BaseModel):

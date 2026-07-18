@@ -195,6 +195,31 @@ def test_dashboard_api_submits_url_job_with_admin_header_only():
     assert "admin-secret" not in requests[1].content.decode("utf-8")
 
 
+def test_dashboard_api_submits_snippet_with_admin_header():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(202, json={"job_id": "snippet-1", "status": "QUEUED"})
+
+    client = DashboardApiClient(
+        "http://testserver",
+        admin_token="admin-secret",
+        transport=httpx.MockTransport(handler),
+    )
+    result = client.submit_snippet_job(
+        source="def add(a, b):\n    return a + b\n",
+        refactor_request="审查",
+        tests=None,
+        mode="REVIEW",
+        persona="TSUNDERE",
+    )
+    assert result["job_id"] == "snippet-1"
+    assert requests[0].url.path == "/jobs/snippet"
+    assert requests[0].headers["Authorization"] == "Bearer admin-secret"
+    assert json.loads(requests[0].content)["persona"] == "TSUNDERE"
+
+
 def test_dashboard_api_manages_repository_allowlist_with_admin_header():
     requests: list[httpx.Request] = []
 
@@ -234,6 +259,15 @@ def test_dashboard_status_labels_keep_raw_values():
         == "精简者已提交方案（MINIMIZER_PROPOSED）"
     )
     assert dashboard_views.localize_status("CUSTOM") == "未知状态（CUSTOM）"
+    assert dashboard_views.localize_status("REVIEWED") == "只读审查完成（REVIEWED）"
+    assert (
+        dashboard_views.localize_job_status("DRY_RUN", "SNIPPET")
+        == "本地验证完成（DRY_RUN）"
+    )
+    assert (
+        dashboard_views.localize_job_status("DRY_RUN", "DASHBOARD_URL")
+        == "本地验证完成（DRY_RUN）"
+    )
 
 
 def test_dashboard_tables_use_chinese_columns_without_translating_identifiers():

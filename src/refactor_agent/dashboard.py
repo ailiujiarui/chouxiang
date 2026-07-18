@@ -19,6 +19,7 @@ from refactor_agent.dashboard_views import (
     build_timeline_rows,
     format_dashboard_error,
     localize_status,
+    localize_job_status,
 )
 from refactor_agent.models import RunRecord
 from refactor_agent.store import SQLiteRunStore
@@ -181,6 +182,7 @@ def _render_tasks_tab(
     capabilities: dict[str, Any],
 ) -> None:
     _render_repository_allowlist_manager(st, client, admin_enabled)
+    _render_snippet_submission_form(st, client, admin_enabled, capabilities)
     _render_url_submission_form(st, client, admin_enabled, capabilities)
     rows = build_task_rows(jobs)
     if not rows:
@@ -191,7 +193,7 @@ def _render_tasks_tab(
     selected = next(row for row in rows if row.job_id == selected_id)
     raw = next(job for job in jobs if str(job.get("job_id")) == selected_id)
     metrics = st.columns(6)
-    metrics[0].metric("状态", localize_status(selected.status))
+    metrics[0].metric("状态", localize_job_status(selected.status, selected.job_kind))
     metrics[1].metric("尝试次数", selected.attempts)
     metrics[2].metric("租约所有者", selected.lease_owner or "-")
     metrics[3].metric("截止时间", str(raw.get("deadline_at") or "-"))
@@ -357,6 +359,71 @@ def _render_url_submission_form(
             else:
                 job_id = str(result.get("job_id") or "")
                 st.session_state["url_submission_success"] = job_id
+                st.session_state["tasks_job"] = job_id
+                st.rerun()
+
+
+def _render_snippet_submission_form(
+    st,
+    client: DashboardApiClient,
+    admin_enabled: bool,
+    capabilities: dict[str, Any],
+) -> None:
+    success_job_id = st.session_state.pop("snippet_submission_success", None)
+    if success_job_id:
+        st.success(f"代码审判任务已创建：{success_job_id}")
+    enabled = bool(capabilities.get("snippet_submission"))
+    with st.expander("粘贴 Python 代码进行审判"):
+        st.caption("代码和测试会保存在本地任务与运行产物中；只读审查不会执行代码。")
+        if not admin_enabled:
+            st.info("填写管理员令牌后才能创建任务。")
+        if not enabled:
+            st.warning("Worker 当前未启用 Docker 或可用模型，暂时不能提交代码任务。")
+        with st.form("snippet_job_form", clear_on_submit=False):
+            mode_label = st.segmented_control(
+                "模式",
+                ["只读审查", "验证后精简"],
+                default="只读审查",
+            )
+            persona_label = st.segmented_control(
+                "报告人格",
+                ["严格评审", "傲娇审判"],
+                default="严格评审",
+            )
+            source = st.text_area("Python 源码", height=260, placeholder="def example():\n    pass")
+            requirement = st.text_area("审查或精简要求", height=100)
+            tests = st.text_area(
+                "Pytest 测试源码（验证后精简必填）",
+                height=180,
+                placeholder="固定使用 from snippet import example\n\ndef test_example():\n    ...",
+            )
+            submitted = st.form_submit_button(
+                "创建代码审判任务",
+                disabled=not admin_enabled or not enabled,
+                width="stretch",
+            )
+        if submitted:
+            mode = "VERIFIED_REFACTOR" if mode_label == "验证后精简" else "REVIEW"
+            persona = "TSUNDERE" if persona_label == "傲娇审判" else "STRICT"
+            if not source.strip() or not requirement.strip():
+                st.error("请填写 Python 源码和审查要求。")
+                return
+            if mode == "VERIFIED_REFACTOR" and not tests.strip():
+                st.error("验证后精简模式必须填写 pytest 测试源码。")
+                return
+            try:
+                result = client.submit_snippet_job(
+                    source=source,
+                    refactor_request=requirement.strip(),
+                    tests=tests or None,
+                    mode=mode,
+                    persona=persona,
+                )
+            except DashboardApiError as exc:
+                _show_dashboard_error(st, exc)
+            else:
+                job_id = str(result.get("job_id") or "")
+                st.session_state["snippet_submission_success"] = job_id
                 st.session_state["tasks_job"] = job_id
                 st.rerun()
 

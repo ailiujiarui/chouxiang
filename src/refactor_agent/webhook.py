@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
+import ast
 import json
 import os
 import re
@@ -9,7 +8,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -18,7 +17,6 @@ from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
 from refactor_agent.config import AppSettings
-from refactor_agent.github import GitHubAutomationService
 from refactor_agent.job_worker import GitHubJobWorker
 from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
@@ -48,26 +46,31 @@ class RepositoryAllowlistRequest(BaseModel):
     repository: str
 
 
+class SnippetJobRequest(BaseModel):
+    source: str
+    refactor_request: str
+    tests: str | None = None
+    mode: Literal["REVIEW", "VERIFIED_REFACTOR"] = "REVIEW"
+    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
+
+
 def create_app(
     settings: AppSettings | None = None,
-    service: GitHubAutomationService | None = None,
     store: SQLiteRunStore | None = None,
     start_worker: bool = True,
 ) -> FastAPI:
     settings = settings or AppSettings.from_env()
-    service = service or GitHubAutomationService(settings)
     store = store or SQLiteRunStore(settings.resolved_database_path)
     repository_policy = RepositoryAllowlistPolicy(settings, store)
     worker = GitHubJobWorker(
         settings,
-        service,
         store,
         repository_policy=repository_policy,
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        validate_webhook_settings(
+        validate_control_api_settings(
             settings,
             require_docker=start_worker,
             repository_policy=repository_policy,
@@ -79,7 +82,7 @@ def create_app(
         finally:
             worker.stop()
 
-    app = FastAPI(title="Refactor Agent Webhook", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Refactor Agent Control API", version="0.1.0", lifespan=lifespan)
     app.state.worker = worker
 
     @app.get("/health")
@@ -94,6 +97,10 @@ def create_app(
             "graph_backend": settings.graph_backend,
             "llm_mode": "mock" if settings.mock_llm else settings.llm_provider,
             "url_submission": settings.sandbox_backend == "docker" and llm_ready,
+            "snippet_submission": True,
+            "snippet_verified_refactor": settings.sandbox_backend == "docker" and llm_ready,
+            "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
+            "personas": ["STRICT", "TSUNDERE"],
         }
 
     @app.get("/admin/repository-allowlist")
@@ -110,7 +117,7 @@ def create_app(
         _require_admin(request, settings)
         payload = await _read_bounded_model(
             request,
-            settings.webhook_max_bytes,
+            settings.request_max_bytes,
             RepositoryAllowlistRequest,
             "Invalid repository allowlist payload.",
         )
@@ -175,6 +182,12 @@ def create_app(
     @app.post("/jobs/{job_id}/retry")
     def retry_job(job_id: str, request: Request):
         _require_admin(request, settings)
+        existing = store.get_github_job(job_id)
+        if existing is not None and existing.job_kind == RepositoryJobKind.GITHUB_WEBHOOK:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="GitHub Webhook delivery has been removed; legacy jobs cannot retry.",
+            )
         try:
             job = store.retry_github_job(job_id)
         except JobTransitionError as exc:
@@ -192,10 +205,10 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid Content-Length.",
             ) from exc
-        if content_length > settings.webhook_max_bytes:
+        if content_length > settings.request_max_bytes:
             raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Request body too large.")
         body = await request.body()
-        if len(body) > settings.webhook_max_bytes:
+        if len(body) > settings.request_max_bytes:
             raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Request body too large.")
         try:
             raw_payload = json.loads(body)
@@ -247,6 +260,62 @@ def create_app(
             tests_path=tests_path,
             event_name="dashboard_url",
             action="submitted",
+        )
+        record = store.create_github_job(job)
+        return _job_response(record, status.HTTP_202_ACCEPTED)
+
+    @app.post("/jobs/snippet", status_code=status.HTTP_202_ACCEPTED)
+    async def submit_snippet_job(request: Request):
+        _require_admin(request, settings)
+        payload = await _read_bounded_model(
+            request,
+            settings.request_max_bytes,
+            SnippetJobRequest,
+            "Invalid snippet submission payload.",
+        )
+        source = payload.source.strip()
+        tests = payload.tests.strip() if payload.tests else None
+        requirement = payload.refactor_request.strip()
+        try:
+            if not source or len(source.encode("utf-8")) > 128 * 1024:
+                raise ValueError("Source must contain 1 to 131072 UTF-8 bytes.")
+            if tests and len(tests.encode("utf-8")) > 128 * 1024:
+                raise ValueError("Tests must contain at most 131072 UTF-8 bytes.")
+            if not requirement or len(requirement) > 32768:
+                raise ValueError("Refactor request must contain 1 to 32768 characters.")
+            if payload.mode == "VERIFIED_REFACTOR" and not tests:
+                raise ValueError("Verified refactor mode requires pytest source.")
+            ast.parse(source, filename="snippet.py")
+            if tests:
+                ast.parse(tests, filename="test_snippet.py")
+        except (SyntaxError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if payload.mode == "VERIFIED_REFACTOR" and (
+            settings.sandbox_backend != "docker"
+            or (not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY"))
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Snippet submission requires Docker and an available configured LLM.",
+            )
+        job_id = f"snippet-{uuid4().hex}"
+        job = GitHubRefactorJob(
+            job_kind=RepositoryJobKind.SNIPPET,
+            job_id=job_id,
+            delivery_id=f"snippet:{uuid4().hex}",
+            repo_full_name="local/snippet",
+            default_branch=None,
+            issue_number=None,
+            issue_title="Snippet code review",
+            issue_text=requirement,
+            target_path="snippet.py",
+            tests_path="test_snippet.py",
+            event_name="snippet",
+            action="submitted",
+            snippet_source=source + ("\n" if not source.endswith("\n") else ""),
+            snippet_tests=(tests + ("\n" if not tests.endswith("\n") else "")) if tests else None,
+            snippet_mode=payload.mode,
+            persona=payload.persona,
         )
         record = store.create_github_job(job)
         return _job_response(record, status.HTTP_202_ACCEPTED)
@@ -310,138 +379,10 @@ def create_app(
             ],
         }
 
-    @app.post("/webhook/github", status_code=status.HTTP_202_ACCEPTED)
-    @app.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED)
-    async def github_webhook(request: Request) -> dict[str, Any]:
-        try:
-            content_length = int(request.headers.get("Content-Length", "0") or 0)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Content-Length.") from exc
-        if content_length > settings.webhook_max_bytes:
-            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Webhook payload too large.")
-        body = await request.body()
-        if len(body) > settings.webhook_max_bytes:
-            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Webhook payload too large.")
-        signature = request.headers.get("X-Hub-Signature-256")
-        if not settings.github_webhook_secret or not verify_github_signature(
-            body,
-            signature,
-            settings.github_webhook_secret,
-        ):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid GitHub signature.")
-
-        event_name = request.headers.get("X-GitHub-Event", "")
-        if event_name not in {"issues", "issue_comment"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported GitHub event.")
-        delivery_id = request.headers.get("X-GitHub-Delivery", "").strip()
-        if not delivery_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing GitHub delivery ID.")
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload.") from exc
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Webhook payload must be an object.")
-
-        parsed = parse_github_payload(event_name, payload, settings.default_tests_path, delivery_id)
-        if parsed is None:
-            return {"status": "ignored", "event": event_name, "action": payload.get("action")}
-
-        allowed_senders = {item.lower() for item in settings.allowed_senders}
-        if not repository_policy.is_allowed(parsed.repo_full_name):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Repository is not allowlisted.")
-        if not parsed.sender_login or parsed.sender_login.lower() not in allowed_senders:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="GitHub sender is not authorized.")
-        record = store.create_github_job(parsed)
-        return {
-            "status": "accepted" if record.job_id == parsed.job_id else "duplicate",
-            "job_id": record.job_id,
-            "repo": parsed.repo_full_name,
-            "issue": parsed.issue_number,
-            "target": parsed.target_path,
-            "tests": parsed.tests_path,
-        }
-
     return app
 
 
 app = create_app()
-
-
-def verify_github_signature(body: bytes, signature_header: str | None, secret: str) -> bool:
-    if not signature_header or not signature_header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
-
-
-def parse_github_payload(
-    event_name: str,
-    payload: dict[str, Any],
-    default_tests_path: str = "tests",
-    delivery_id: str = "local-test-delivery",
-) -> GitHubRefactorJob | None:
-    if not isinstance(payload, dict):
-        return None
-    action = str(payload.get("action", ""))
-    if event_name == "issues" and action == "opened":
-        issue = payload.get("issue") or {}
-        if not isinstance(issue, dict):
-            return None
-        if issue.get("pull_request"):
-            return None
-        issue_text = _join_text(issue.get("title"), issue.get("body"))
-    elif event_name == "issue_comment" and action == "created":
-        issue = payload.get("issue") or {}
-        if not isinstance(issue, dict):
-            return None
-        if issue.get("pull_request"):
-            return None
-        comment = payload.get("comment") or {}
-        if not isinstance(comment, dict):
-            return None
-        issue_text = _join_text(issue.get("title"), issue.get("body"), comment.get("body"))
-    else:
-        return None
-
-    repo = payload.get("repository") or {}
-    if not isinstance(repo, dict):
-        return None
-    repo_full_name = str(repo.get("full_name") or "")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo_full_name):
-        return None
-    target_path = extract_directive(issue_text, ("target", "file", "path"))
-    tests_path = extract_directive(issue_text, ("tests", "test")) or default_tests_path
-    try:
-        target_path = normalize_repo_path(target_path) if target_path else AUTO_TARGET_PATH
-        tests_path = normalize_repo_path(tests_path)
-    except ValueError:
-        return None
-
-    try:
-        issue_number = int(issue["number"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    return GitHubRefactorJob(
-        job_id=build_job_id(repo_full_name, issue_number),
-        delivery_id=delivery_id,
-        repo_full_name=repo_full_name,
-        default_branch=str(repo.get("default_branch") or "main"),
-        issue_number=issue_number,
-        issue_title=str(issue.get("title") or f"Issue #{issue['number']}"),
-        issue_text=issue_text,
-        target_path=target_path,
-        tests_path=tests_path,
-        sender_login=(payload.get("sender") or {}).get("login"),
-        event_name=event_name,
-        action=action,
-    )
-
-
-def build_job_id(repo_full_name: str, issue_number: int) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_full_name).strip("_") or "repo"
-    return f"{safe_repo}__issue-{issue_number}__{stamp}-{uuid4().hex[:8]}"
 
 
 def build_dashboard_job_id(repo_full_name: str) -> str:
@@ -450,14 +391,12 @@ def build_dashboard_job_id(repo_full_name: str) -> str:
     return f"{safe_repo}__url__{stamp}-{uuid4().hex[:8]}"
 
 
-def validate_webhook_settings(
+def validate_control_api_settings(
     settings: AppSettings,
     require_docker: bool = False,
     repository_policy: RepositoryAllowlistPolicy | None = None,
 ) -> None:
     missing = []
-    if not settings.github_webhook_secret:
-        missing.append("GITHUB_WEBHOOK_SECRET")
     if not settings.admin_token:
         missing.append("REFACTOR_AGENT_ADMIN_TOKEN")
     if not (
@@ -466,20 +405,16 @@ def validate_webhook_settings(
         else settings.allowed_repositories
     ):
         missing.append("REFACTOR_AGENT_ALLOWED_REPOSITORIES")
-    if not settings.allowed_senders:
-        missing.append("REFACTOR_AGENT_ALLOWED_SENDERS")
-    if not settings.dry_run and not settings.github_token:
-        missing.append("GITHUB_TOKEN")
     if not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY"):
         missing.append("DEEPSEEK_API_KEY")
     if missing:
-        raise RuntimeError("Webhook configuration is fail-closed; missing: " + ", ".join(missing))
+        raise RuntimeError("Control API configuration is fail-closed; missing: " + ", ".join(missing))
     if settings.sandbox_backend != "docker":
-        raise RuntimeError("Webhook mode requires REFACTOR_AGENT_SANDBOX_BACKEND=docker.")
+        raise RuntimeError("Control API requires REFACTOR_AGENT_SANDBOX_BACKEND=docker.")
     if require_docker:
         docker = docker_status()
         if not docker.available:
-            raise RuntimeError(f"Webhook mode requires an available Docker daemon: {docker.error}")
+            raise RuntimeError(f"Control API requires an available Docker daemon: {docker.error}")
 
 
 def _require_admin(request: Request, settings: AppSettings) -> None:
@@ -545,19 +480,6 @@ def _sanitize_payload(value):
     return value
 
 
-def extract_directive(text: str, names: tuple[str, ...]) -> str | None:
-    names_pattern = "|".join(re.escape(name) for name in names)
-    patterns = [
-        rf"(?im)^\s*(?:{names_pattern})\s*[:=]\s*`?([^`\s]+)`?\s*$",
-        rf"(?im)\[(?:{names_pattern})\s*:\s*([^\]\s]+)\]",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip()
-    return None
-
-
 def normalize_repo_path(value: str) -> str:
     path = PurePosixPath(value.strip().replace("\\", "/"))
     if path.is_absolute() or ".." in path.parts or not str(path):
@@ -580,7 +502,3 @@ def normalize_git_ref(value: str | None) -> str | None:
     ):
         raise ValueError("Branch or tag is invalid.")
     return ref
-
-
-def _join_text(*parts: str | None) -> str:
-    return "\n\n".join(part.strip() for part in parts if part and part.strip())

@@ -48,6 +48,18 @@ def test_settings_read_default_and_configured_job_deadline(monkeypatch):
     assert AppSettings.from_env().job_deadline_seconds == 1200
 
 
+def test_removed_github_delivery_environment_has_no_runtime_settings(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "legacy-token")
+    monkeypatch.setenv("GITHUB_WEBHOOK_SECRET", "legacy-secret")
+    monkeypatch.setenv("REFACTOR_AGENT_ALLOWED_SENDERS", "legacy-user")
+    monkeypatch.setenv("REFACTOR_AGENT_DRY_RUN", "false")
+    settings = AppSettings.from_env()
+    assert not hasattr(settings, "github_token")
+    assert not hasattr(settings, "github_webhook_secret")
+    assert not hasattr(settings, "allowed_senders")
+    assert not hasattr(settings, "dry_run")
+
+
 def test_resolve_deadline_uses_env_only_for_default(monkeypatch):
     monkeypatch.setenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "1200")
     assert _resolve_deadline(900) == 1200
@@ -62,3 +74,26 @@ def test_run_cli_exposes_bounded_deadline_option():
     invalid = runner.invoke(app, ["run", "--deadline", "29"])
     assert invalid.exit_code == 2
     assert "30" in invalid.stderr
+
+
+def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path):
+    result = runner.invoke(
+        app,
+        [
+            "snippet",
+            "--source",
+            "-",
+            "--mode",
+            "review",
+            "--persona",
+            "tsundere",
+            "--run-root",
+            str(tmp_path / "runs"),
+            "--database",
+            str(tmp_path / "runs.sqlite"),
+        ],
+        input="def add(a, b):\n    return a + b\n",
+    )
+    assert result.exit_code == 0
+    assert "REVIEWED" in result.stdout
+    assert "未执行、未验证" in result.stdout

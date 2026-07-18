@@ -1,35 +1,26 @@
-# Reliability, Cross-Repository Benchmark, and Operations Dashboard Design
+# 本地可靠性、基准测试与 Dashboard 设计
 
-Date: 2026-07-14
-Status: Implemented, verified, self-reviewed, and approved for integration on 2026-07-15
+日期：2026-07-18
+状态：当前实现
 
-## Objective
+## 系统边界
 
-Deliver three sequential, independently reviewable phases:
+系统是本地 Python 审查与安全精简工具，只接受 Snippet 或用户主动提交的 GitHub 仓库 URL。GitHub Webhook 自动交付流程已删除。
 
-1. production-grade cooperative cancellation, deadlines, lease ownership, and safe retry controls;
-2. a reproducible cross-repository benchmark with token, cost, and failure evidence;
-3. a read-mostly Streamlit operations dashboard that consumes the reliability and benchmark data.
+```text
+Snippet / allowlist URL
+  -> Admin API
+  -> SQLite queue and lease
+  -> Local Worker
+  -> Docker sandbox
+  -> artifacts and Dashboard
+```
 
-The implementation builds on the real LangGraph execution workflow, controlled AST rewrite, hardened Docker sandbox, SQLite worker, and PR #3 branch. It does not weaken any existing webhook, Git credential, AST, or Docker boundary.
+不存在 branch、commit、push、Pull Request 或 Issue 评论路径。
 
-## Delivery Sequence
+## 控制面
 
-The phases are implemented in dependency order:
-
-1. **Reliability control plane** defines job states, events, deadlines, cancellation, and retry APIs.
-2. **Benchmark evidence** stores run and case results through the same SQLite boundary.
-3. **Operations dashboard** reads those records and invokes only authenticated control APIs.
-
-Each phase receives focused tests and a code-review gate before the next phase starts. Implementation work uses a new branch based on `feat/langgraph-controlled-ast-refactor`; no commit, push, merge, or deployment occurs without a separate approval after implementation review.
-
-## Shared Control Plane
-
-SQLite remains the system of record. Files under the configured run root remain the store for bounded source, diff, and log artifacts.
-
-### Job States
-
-`GitHubJobRecord.status` supports:
+SQLite 保存任务、事件、租约、截止时间、运行、benchmark 和 allowlist。任务状态包括：
 
 - `QUEUED`
 - `RUNNING`
@@ -38,280 +29,69 @@ SQLite remains the system of record. Files under the configured run root remain 
 - `TIMED_OUT`
 - `SUCCESS`
 - `FAILED`
-- `DRY_RUN`
+- `DRY_RUN`（旧 schema 兼容；本地任务显示为“本地验证完成”）
 
-Legal transitions are:
+状态变更与事件在同一事务提交。Worker 使用租约和 heartbeat；失去租约的 Worker 不能写终态。取消和 deadline 在图节点、clone 和 sandbox 边界协作生效。
 
-| Source | Targets |
-| --- | --- |
-| `QUEUED` | `RUNNING`, `CANCELLED` |
-| `RUNNING` | `CANCEL_REQUESTED`, `TIMED_OUT`, `SUCCESS`, `FAILED`, `DRY_RUN` |
-| `CANCEL_REQUESTED` | `CANCELLED`, `TIMED_OUT`, `FAILED` |
-| `FAILED` | `QUEUED` through authenticated manual retry |
-| `CANCELLED` | `QUEUED` through authenticated manual retry |
-| `TIMED_OUT` | `QUEUED` through authenticated manual retry |
+旧数据库的 `GITHUB_WEBHOOK` 任务保持可读，但 Worker 直接标记失败，API 拒绝 retry。
 
-`SUCCESS` and `DRY_RUN` are terminal. Any record with a non-empty PR URL is terminal and cannot be retried.
+## Snippet
 
-### Job Events
+### REVIEW
 
-Add an append-only `job_events` table:
+- 只执行语法、AST、复杂度和静态安全分析。
+- 不执行代码、pytest、对抗测试或变异测试。
+- 保存 `REVIEWED` 报告，不产生 Reward。
 
-| Column | Type | Meaning |
-| --- | --- | --- |
-| `event_id` | text primary key | UUID-based event identity |
-| `job_id` | text indexed | Parent job |
-| `event_type` | text | State transition or control event |
-| `from_status` | nullable text | Previous state |
-| `to_status` | nullable text | New state |
-| `worker_id` | nullable text | Lease owner involved |
-| `attempt` | integer | Current automatic attempt |
-| `message` | text | Bounded, sanitized reason |
-| `created_at` | text | UTC timestamp |
+### VERIFIED_REFACTOR
 
-State updates and their event insert execute in one `BEGIN IMMEDIATE` transaction.
+- 输入源码、pytest、要求和人格。
+- 固定物化为 `snippet.py` 与 `test_snippet.py`。
+- 执行完整 LangGraph、AST Guard、pytest、对抗测试、变异测试和 Judge。
+- 结果仅保存到本地。
 
-### Run Artifacts
+## GitHub URL
 
-For each refactor run, write bounded artifacts under `<run_root>/<run_id>/artifacts`:
+- API 只接受 canonical `https://github.com/owner/repository`。
+- 仓库必须在环境或 SQLite allowlist 中。
+- Worker 在 clone 前重新检查 allowlist。
+- clone origin 必须保持 canonical URL，认证信息不写入命令、日志或 `.git/config`。
+- checkout 只作为输入；候选写入独立运行 workspace，结束后按配置清理 checkout。
 
-- `original.py`
-- `candidate.py`
-- `change.diff`
-- `pytest.log`
-- `adversary.log`
-- `mutation.json`
-- `report.md`
+## 安全执行
 
-Text logs are UTF-8, redacted using credential-pattern filters, and capped at 256 KiB each. Source and diff artifacts are local-only and are not copied into SQLite, GitHub comments, or benchmark JSON by default.
+- API Worker 强制 Docker backend。
+- sandbox 禁用网络，使用非 root、只读根文件系统、capability 清空、`no-new-privileges` 和资源限制。
+- AST Guard 拒绝危险调用、未授权 import、公开 API 变化和目标区域外修改。
+- 日志、事件和产物有大小限制、路径检查与凭据脱敏。
 
-## Phase 1: Production Reliability
+## Dashboard
 
-### Execution Control
+Dashboard 是薄 API 客户端，不直接访问 SQLite 或执行 Git/Docker。界面包含：
 
-Add `ExecutionControl` as a runtime dependency with:
+1. 任务、Snippet/URL 提交、allowlist、取消和重试；
+2. 节点轨迹与日志；
+3. 原始代码、候选、diff 和 AST 证据；
+4. benchmark 结果与比较。
 
-- `deadline_at: datetime`
-- `remaining_seconds() -> float`
-- `cancel_requested() -> bool`
-- `checkpoint(stage: str) -> None`
+Snippet 和 URL 的 `DRY_RUN` 显示为“本地验证完成”。旧 Webhook 记录显示为“遗留任务（已禁用）”，不能取消或重试。
 
-`checkpoint` raises a typed `ExecutionCancelled` or `ExecutionDeadlineExceeded` exception. The LangGraph wrapper calls it before and after every real node. The orchestrator routes either exception to `finalize`, writes terminal trajectory evidence, and does not invoke another node.
+## Benchmark
 
-The Webhook default deadline is 900 seconds through `REFACTOR_AGENT_JOB_DEADLINE_SECONDS`. Local CLI commands expose `--deadline` with the same default and allow values from 30 to 7200 seconds.
+外部 benchmark 使用固定 manifest、完整 commit SHA、匿名 canonical clone、缓存 hash 和 Docker-only runner。结果保存 provider、model、token、cost、失败分类、指标和 normalized hash。真实 provider 结果不能由 mock 结果替代声明。
 
-Every sandbox, Git subprocess, and GitHub HTTP operation receives `min(component_timeout, remaining_seconds)` as its timeout. A non-positive remaining time fails before the operation begins.
+## API
 
-### Cooperative Cancellation
+只读：`/health`、`/capabilities`、`/jobs`、`/runs`、trajectory、artifacts 和 benchmarks。
 
-Cancellation is cooperative:
+Admin：`/jobs/snippet`、`/jobs/url`、cancel、retry 和 repository allowlist。
 
-- queued jobs transition directly to `CANCELLED`;
-- running jobs transition to `CANCEL_REQUESTED`;
-- the active graph stops at the next node boundary;
-- a running pytest, Docker, Git, or HTTP call may finish only until its bounded timeout;
-- after the operation returns, the next checkpoint finalizes the task as `CANCELLED`.
+API 不提供 `/webhook/github` 或 `/webhooks/github`。
 
-GitHub automation checks cancellation before clone, branch creation, candidate application, push, PR creation, and Issue comment creation. Cancellation after push but before PR creation produces `FAILED` with explicit manual-cleanup evidence rather than silently retrying.
+## 验收
 
-### Lease Ownership
-
-Completion, failure, timeout, and cancellation updates require both `job_id` and the current `lease_owner`. A stale worker that lost its lease cannot overwrite a reclaimed job. Heartbeat failure sets a local cancellation flag so the stale worker stops at its next checkpoint.
-
-### Admin APIs
-
-Add authenticated endpoints guarded by the existing Admin Token:
-
-- `POST /jobs/{job_id}/cancel`
-- `POST /jobs/{job_id}/retry`
-- `GET /jobs/{job_id}/events`
-
-Cancel returns `202` for a newly accepted request, `200` for an already requested cancellation, and `409` for terminal jobs. Retry accepts only `FAILED`, `CANCELLED`, or `TIMED_OUT`, resets the automatic attempt counter, clears lease fields, preserves all events, and returns `409` when a PR URL exists.
-
-## Phase 2: Cross-Repository Benchmark
-
-### Manifest Contract
-
-Create `benchmarks/manifest.toml`, parsed with Python `tomllib`. Each case contains:
-
-- stable case name and category;
-- canonical `owner/repo` identity;
-- exact 40-character commit SHA;
-- target file and pytest path;
-- Issue text and expected terminal status;
-- seed patch path and gold target-region snapshot;
-- allowed import roots;
-- Docker test command.
-
-The first manifest pins:
-
-| Repository | Commit |
-| --- | --- |
-| `more-itertools/more-itertools` | `da37f9de442b69fbcaa9f54fb042c2a6999473a6` |
-| `mahmoud/boltons` | `979fa9b613fa8c0a455ae16ea6f2ec91c11ecafe` |
-| `grantjenks/python-sortedcontainers` | `3ac358631f58c1347f1d6d2d92784117db0f38ed` |
-
-The eight initial cases are:
-
-| Case | Target | Tests | Seeded defect |
-| --- | --- | --- | --- |
-| `more-take-off-by-one` | `more_itertools/recipes.py::take` | `tests/test_recipes.py` | consumes one fewer item |
-| `more-chunked-strict` | `more_itertools/more.py::chunked` | `tests/test_more.py` | ignores incomplete strict chunk |
-| `more-first-default` | `more_itertools/more.py::first` | `tests/test_more.py` | returns marker instead of supplied default |
-| `boltons-clamp-bounds` | `boltons/mathutils.py::clamp` | `tests/test_mathutils.py` | inverts lower-bound comparison |
-| `boltons-camel-boundary` | `boltons/strutils.py::camel2under` | `tests/test_strutils.py` | mishandles acronym boundary |
-| `boltons-chunk-overlap` | `boltons/iterutils.py::chunk_ranges` | `tests/test_iterutils.py` | applies overlap in the wrong direction |
-| `sorted-list-contains` | `src/sortedcontainers/sortedlist.py::SortedList.__contains__` | `tests/test_coverage_sortedlist.py` | misses a boundary value |
-| `sorted-set-contains` | `src/sortedcontainers/sortedset.py::SortedSet.__contains__` | `tests/test_coverage_sortedset.py` | delegates to the wrong backing collection |
-
-Seed patches and gold snapshots live under `benchmarks/cases/<case-name>/`. The deterministic provider returns the pinned gold target region; DeepSeek receives the seeded repository and Issue text.
-
-### Repository and Container Safety
-
-External benchmark repositories use anonymous canonical GitHub HTTPS clones only. Bare clones are cached under `.benchmark-cache/<owner>/<repo>`, origin is verified, and each run checks out the exact manifest commit into an ephemeral directory.
-
-External cases require Docker. The benchmark image uses Python 3.12 and `pytest==9.1.1`; `benchmarks/requirements.lock` pins hashes for the test toolchain. Repositories install with `python -m pip install --no-deps -e .` inside the container, so repository dependency resolution cannot reach the network. Runtime networking is disabled. Repository installation and tests execute in a container-only writable temporary directory; the host checkout remains read-only. No GitHub, DeepSeek, webhook, or admin credential enters the container.
-
-### Usage and Cost Evidence
-
-Extend LLM results with optional usage metadata:
-
-- prompt tokens;
-- completion tokens;
-- total tokens;
-- provider-reported or locally estimated USD cost;
-- provider and model name.
-
-Mock usage is zero. DeepSeek usage comes from the API response. API keys are never persisted or rendered.
-
-Add `benchmark_runs` and `benchmark_case_results` tables. Store manifest hash, repository, commit, provider, model, status, failure category, attempts, LOC/CC, mutation result, adversarial result, runtime, token usage, cost, and normalized result hash.
-
-Failure categories are fixed to:
-
-- `TARGETING`
-- `AST_GUARD`
-- `PYTEST`
-- `ADVERSARY`
-- `MUTATION`
-- `TIMEOUT`
-- `PROVIDER`
-- `INFRASTRUCTURE`
-
-### Benchmark CLI
-
-Preserve the current built-in quick benchmark. Add manifest mode:
-
-```powershell
-refactor-agent benchmark --manifest benchmarks/manifest.toml --provider mock
-refactor-agent benchmark --manifest benchmarks/manifest.toml --provider deepseek
-refactor-agent benchmark --compare <previous-run-id>
-```
-
-Manifest mode emits JSON and Markdown, writes SQLite evidence, and returns non-zero only for infrastructure failure or when an actual status differs from the manifest expectation.
-
-## Phase 3: Operations Dashboard
-
-### Access Model
-
-Streamlit remains the UI framework and binds to `127.0.0.1` by default. Read views require no Admin Token. Control actions require:
-
-- configured `REFACTOR_AGENT_API_URL`;
-- an Admin Token entered through a password input;
-- token storage only in Streamlit session state.
-
-The token is never written to URL parameters, logs, SQLite, browser persistent storage, or run artifacts. The Dashboard never updates SQLite directly.
-
-Admin users can submit an allowlisted canonical GitHub URL through `POST /jobs/url`. The Dashboard sends structured input to the API and never invokes Git, the CLI, Docker, or repository code directly. Repository allowlist management is specified by `repository-allowlist-dashboard-design.md`; it is the only Dashboard configuration mutation added to this phase.
-
-### Views
-
-The Dashboard uses Simplified Chinese for fixed user-facing copy and contains four dense, work-focused tabs:
-
-1. **任务**: status, deadline, remaining time, lease owner, attempts, events, cancel, and retry.
-2. **执行过程**: actual node timeline, Judge verdict, retry feedback, pytest/adversary/mutation summaries, and bounded logs.
-3. **代码变更**: original source, candidate source, unified diff, selected AST targets with reasons, changed regions, and admitted imports.
-4. **基准测试**: repository, manifest, provider, model, failure category, tokens, cost, metrics, and two-run comparison.
-
-Known statuses render as `中文（RAW_ENUM）`; control availability continues to use the raw enum. API URLs, identifiers, source, diffs, and diagnostic logs are never translated.
-
-The Tasks tab includes a Chinese URL submission form for repository URL, optional ref, optional target, test path, and refactor request. Repository URL jobs use the same durable queue but are dispatched to `LocalRepositoryRefactorService`, which has no GitHub write API dependency and always returns local `DRY_RUN` evidence on success. It never creates a branch, writes back to the checkout, pushes, opens a PR, or comments on an Issue.
-
-Control buttons follow server state:
-
-- cancel enabled only for `QUEUED` and `RUNNING`;
-- retry enabled only for `FAILED`, `CANCELLED`, and `TIMED_OUT` without a PR URL;
-- conflicts and authorization failures are displayed explicitly;
-- successful controls refresh the selected job and event timeline.
-
-### View Models
-
-Keep Streamlit rendering thin. Add pure functions that convert job, event, trajectory, artifact, and benchmark records into table rows and timeline entries. Artifact loading validates paths under the configured run root and never follows a symlink outside it.
-
-## Error Handling and Security
-
-- Invalid state transitions return `409` and append no event.
-- Missing jobs return `404`; invalid Admin authentication returns `401`.
-- URL submission authenticates before body parsing, enforces body limits, accepts only canonical GitHub HTTPS URLs, rechecks the repository allowlist in the Worker, and rejects unsafe refs or repository paths.
-- Deadline and cancellation terminal results preserve the last completed node and reason.
-- Artifact reads reject path traversal and symlink escape.
-- Log redaction covers GitHub, DeepSeek, webhook, admin, bearer, and common high-entropy token patterns.
-- Benchmark clone, setup, and test failures use bounded error messages and the fixed failure taxonomy.
-- A stale worker cannot complete, fail, cancel, or time out a job it no longer owns.
-
-## Testing and Acceptance
-
-### Reliability
-
-- Cover every legal and illegal job transition.
-- Prove queued cancellation, running cancellation, node-boundary cancellation, deadline before node, deadline during sandbox, and timeout finalization.
-- Prove stale lease owners cannot write terminal state.
-- Prove heartbeat loss requests local cancellation.
-- Prove manual retry preserves events, resets automatic attempts, and rejects jobs with PR URLs.
-- Prove cancellation checks run before every irreversible GitHub side effect.
-
-### Benchmark
-
-- Validate manifest schema, canonical repositories, full SHA pins, paths, expected statuses, and manifest hash stability.
-- Run the built-in six-case suite in CI.
-- Run one external manifest case in the Docker CI job with mock provider.
-- Verify all eight curated cases locally in mock mode.
-- Verify normalized results are identical across two mock runs except timestamps and durations.
-- Verify DeepSeek usage parsing with mocked API responses; no real provider secret is required in CI.
-- Verify external subprocess mode is rejected.
-
-### Dashboard
-
-- Unit-test view models, filters, button availability, diff rendering, artifact path validation, and redaction.
-- Test Admin API success, authentication failure, conflict, and stale-state behavior.
-- Use Streamlit AppTest for all four tabs and read-only/admin states.
-- Prove URL form submission sends the Admin header only on the control request and displays the created Job ID.
-- Prove local-only URL jobs cannot enter any GitHub write path even when global dry-run is disabled.
-- Launch a local headless Streamlit smoke test and verify HTTP 200.
-
-### Final Gate
-
-- Full unit suite passes.
-- Hardened Docker Demo passes.
-- External benchmark mock run matches manifest expectations.
-- Two benchmark runs match after removing timestamps and durations.
-- Dashboard smoke test passes in read-only and Admin-enabled configurations.
-- `git diff --check` and credential-pattern scan pass.
-- Complete code review finds no unresolved Critical or High issue.
-
-## Out of Scope
-
-- Immediate process or container kill for manual cancellation.
-- Dynamic GitHub repository or Issue sampling.
-- Dashboard-based configuration editing other than the repository allowlist, arbitrary command execution, repository creation, or benchmark manifest editing.
-- Distributed queues, Redis, PostgreSQL, Kubernetes, or multi-host workers.
-- Production deployment, PR merge, or external webhook replay without separate approval.
-
-## Implementation Evidence
-
-- Automated unit and integration suite: 233 passed on Python 3.12 after the repository allowlist Dashboard extension review.
-- Focused coverage includes state transitions/events, cancellation/retry APIs, lease ownership, graph deadlines, bounded artifacts, manifest/cache validation, benchmark persistence, API view models, and Streamlit AppTest.
-- The operations Dashboard uses Simplified Chinese fixed copy, preserves raw identifiers and diagnostic content, and renders known statuses with their original enum values.
-- Allowlisted Dashboard URL jobs enter the durable queue and execute through a separate local-only service that has no GitHub write API dependency.
-- Eight seed patches were checked against their exact pinned public-repository commits with `git apply --reverse --check` after generation from clean fixed-commit checkouts.
-- Real Docker external execution and real DeepSeek execution were not run during implementation. They remain explicit acceptance steps and are not claimed as completed evidence.
-- No implementation commit, push, merge, deployment, or credential-bearing acceptance action was performed.
+- Snippet REVIEW 永不执行代码。
+- VERIFIED 与 URL 使用 Docker 和完整验证链。
+- allowlist、body/path limit、租约、取消、deadline 和 artifact 防逃逸测试通过。
+- 生产代码扫描不存在 GitHub 写操作或 Webhook 路由。
+- 完整测试、compileall、Compose config、Docker health 和 `git diff --check` 通过。

@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-import hashlib
-import re
 import os
+import re
 import stat
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
-import httpx
-
-from refactor_agent.config import AppSettings
-from refactor_agent.execution_control import ExecutionCancelled, ExecutionControl
-from refactor_agent.locator import AUTO_TARGET_PATH, locate_source_file
-from refactor_agent.llm import DeepSeekClient, MockRefactorClient, RefactorClient
-from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob, RefactorRequest
-from refactor_agent.orchestrator import RefactorOrchestrator
-from refactor_agent.store import SQLiteRunStore
+from refactor_agent.execution_control import ExecutionControl
+from refactor_agent.repository_allowlist import normalize_repository_identity
 
 
 class GitHubAutomationError(RuntimeError):
@@ -28,10 +19,11 @@ class GitHubAutomationError(RuntimeError):
 
 
 CommandRunner = Callable[[list[str], Path, dict[str, str] | None], subprocess.CompletedProcess[str]]
-LLMFactory = Callable[[], RefactorClient]
 
 
 class GitRepositoryManager:
+    """Read-only canonical GitHub checkout manager."""
+
     def __init__(
         self,
         workspace_root: Path,
@@ -42,20 +34,6 @@ class GitRepositoryManager:
         self.runner = runner or self._run
         self.execution_control = execution_control
         self.workspace_root.mkdir(parents=True, exist_ok=True)
-
-    def clone_for_issue(
-        self,
-        repo_full_name: str,
-        base_branch: str,
-        issue_number: int,
-        token: str | None = None,
-    ) -> Path:
-        return self.clone_repository(
-            repo_full_name=repo_full_name,
-            ref=base_branch,
-            token=token,
-            checkout_label=f"{_safe_name(repo_full_name)}__issue-{issue_number}",
-        )
 
     def clone_repository(
         self,
@@ -73,36 +51,11 @@ class GitRepositoryManager:
             command.extend(["--branch", ref])
         command.extend([clone_url, str(checkout_path)])
         with _git_auth_environment(token) as auth_env:
-            self.runner(
-                command,
-                self.workspace_root,
-                auth_env,
-            )
+            self.runner(command, self.workspace_root, auth_env)
         origin = self.runner(["git", "remote", "get-url", "origin"], checkout_path, None).stdout.strip()
         if origin != clone_url or "@" in origin:
             raise GitHubAutomationError("Cloned repository origin failed canonical URL validation.")
         return checkout_path
-
-    def create_branch(self, checkout_path: Path, branch_name: str) -> None:
-        self.runner(["git", "checkout", "-b", branch_name], checkout_path, None)
-
-    def commit_and_push(
-        self,
-        checkout_path: Path,
-        file_path: str,
-        branch_name: str,
-        message: str,
-        token: str,
-    ) -> None:
-        self.runner(["git", "config", "user.name", "Refactor Agent Bot"], checkout_path, None)
-        self.runner(["git", "config", "user.email", "refactor-agent@users.noreply.github.com"], checkout_path, None)
-        self.runner(["git", "add", file_path], checkout_path, None)
-        status = self.runner(["git", "status", "--porcelain", "--", file_path], checkout_path, None)
-        if not status.stdout.strip():
-            raise GitHubAutomationError("No file changes detected; refusing to create an empty PR.")
-        self.runner(["git", "commit", "-m", message], checkout_path, None)
-        with _git_auth_environment(token) as auth_env:
-            self.runner(["git", "push", "--set-upstream", "origin", branch_name], checkout_path, auth_env)
 
     def cleanup(self, checkout_path: Path) -> None:
         self._assert_inside_workspace(checkout_path)
@@ -146,248 +99,6 @@ class GitRepositoryManager:
             raise GitHubAutomationError(f"git command failed: {' '.join(command)}\n{detail}") from exc
 
 
-class GitHubApiClient:
-    def __init__(
-        self,
-        token: str,
-        api_url: str = "https://api.github.com",
-        execution_control: ExecutionControl | None = None,
-    ) -> None:
-        self.token = token
-        self.api_url = api_url.rstrip("/")
-        self.execution_control = execution_control
-
-    def create_pull_request(self, repo_full_name: str, title: str, head: str, base: str, body: str) -> str:
-        response = httpx.post(
-            f"{self.api_url}/repos/{repo_full_name}/pulls",
-            headers=self._headers(),
-            json={"title": title, "head": head, "base": base, "body": body},
-            timeout=self._timeout("github-create-pull-request"),
-        )
-        if response.status_code not in {200, 201}:
-            raise GitHubAutomationError(f"GitHub PR creation failed: {response.status_code} {response.text}")
-        return str(response.json()["html_url"])
-
-    def create_issue_comment(self, repo_full_name: str, issue_number: int, body: str) -> None:
-        response = httpx.post(
-            f"{self.api_url}/repos/{repo_full_name}/issues/{issue_number}/comments",
-            headers=self._headers(),
-            json={"body": body},
-            timeout=self._timeout("github-create-issue-comment"),
-        )
-        if response.status_code not in {200, 201}:
-            raise GitHubAutomationError(f"GitHub issue comment failed: {response.status_code} {response.text}")
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-
-    def _timeout(self, stage: str) -> float:
-        if self.execution_control is None:
-            return 30.0
-        return self.execution_control.bounded_timeout(30.0, stage)
-
-
-class GitHubAutomationService:
-    def __init__(
-        self,
-        settings: AppSettings,
-        repo_manager: GitRepositoryManager | None = None,
-        api_client: GitHubApiClient | None = None,
-        llm_factory: LLMFactory | None = None,
-    ) -> None:
-        self.settings = settings
-        self.repo_manager = repo_manager
-        self.api_client = api_client
-        self.llm_factory = llm_factory or self._default_llm_factory
-
-    def process(
-        self,
-        job: GitHubRefactorJob,
-        execution_control: ExecutionControl | None = None,
-    ) -> GitHubAutomationResult:
-        branch_name = _branch_name(job.issue_number, job.job_id)
-        control = execution_control or ExecutionControl(
-            deadline_at=datetime.now(timezone.utc) + timedelta(seconds=self.settings.job_deadline_seconds)
-        )
-        repo_manager = self.repo_manager or GitRepositoryManager(
-            self.settings.github_workspace_root,
-            execution_control=control,
-        )
-        checkout_path: Path | None = None
-        pushed = False
-        pr_url: str | None = None
-        try:
-            token = self.settings.github_token
-            control.checkpoint("before-clone")
-            checkout_path = repo_manager.clone_for_issue(
-                repo_full_name=job.repo_full_name,
-                base_branch=job.default_branch,
-                issue_number=job.issue_number,
-                token=token,
-            )
-            control.checkpoint("after-clone")
-            control.checkpoint("before-create-branch")
-            repo_manager.create_branch(checkout_path, branch_name)
-            control.checkpoint("after-create-branch")
-            target_path = self._resolve_target_path(job, checkout_path)
-            target_file = _repo_relative_path(checkout_path, target_path)
-            tests_path = _repo_relative_path(checkout_path, job.tests_path)
-            if not target_file.is_file():
-                raise GitHubAutomationError(f"Target file does not exist in checkout: {target_path}")
-            if not tests_path.exists():
-                raise GitHubAutomationError(f"Tests path does not exist in checkout: {job.tests_path}")
-
-            orchestrator = RefactorOrchestrator(
-                llm_client=self.llm_factory(),
-                run_root=self.settings.run_root,
-                store=SQLiteRunStore(self.settings.resolved_database_path),
-                pytest_timeout_seconds=self.settings.pytest_timeout_seconds,
-                sandbox_backend=self.settings.sandbox_backend,
-                sandbox_docker_image=self.settings.sandbox_docker_image,
-                sandbox_memory=self.settings.sandbox_memory,
-                sandbox_cpus=self.settings.sandbox_cpus,
-                graph_backend=self.settings.graph_backend,
-            )
-            run_result = orchestrator.run(
-                RefactorRequest(
-                    target_file=target_file,
-                    issue_text=job.issue_text,
-                    tests_path=tests_path,
-                    repo_name=job.repo_full_name,
-                    issue_id=str(job.issue_number),
-                    max_retry=self.settings.max_retry,
-                    allowed_import_roots=self.settings.allowed_import_roots,
-                ),
-                execution_control=control,
-            )
-            if run_result.record.status != "SUCCESS" or run_result.candidate_file is None:
-                self._comment_if_enabled(job, run_result.report_markdown, control)
-                return GitHubAutomationResult(
-                    job_id=job.job_id,
-                    repo_full_name=job.repo_full_name,
-                    issue_number=job.issue_number,
-                    branch_name=branch_name,
-                    run_id=run_result.record.run_id,
-                    status="FAILED",
-                    workspace_path=checkout_path,
-                    error=run_result.record.error or "refactor run failed",
-                )
-
-            control.checkpoint("before-write-candidate")
-            target_file.write_text(run_result.candidate_file.read_text(encoding="utf-8"), encoding="utf-8")
-            control.checkpoint("after-write-candidate")
-            if self.settings.dry_run:
-                return GitHubAutomationResult(
-                    job_id=job.job_id,
-                    repo_full_name=job.repo_full_name,
-                    issue_number=job.issue_number,
-                    branch_name=branch_name,
-                    run_id=run_result.record.run_id,
-                    status="DRY_RUN",
-                    workspace_path=checkout_path,
-                )
-
-            if not token:
-                raise GitHubAutomationError("GITHUB_TOKEN is required when dry_run is disabled.")
-            api_client = self.api_client or GitHubApiClient(
-                token,
-                self.settings.github_api_url,
-                execution_control=control,
-            )
-            commit_message = f"fix: refactor issue #{job.issue_number}"
-            control.checkpoint("before-push")
-            repo_manager.commit_and_push(checkout_path, target_path, branch_name, commit_message, token)
-            pushed = True
-            control.checkpoint("after-push")
-            control.checkpoint("before-create-pull-request")
-            pr_url = api_client.create_pull_request(
-                repo_full_name=job.repo_full_name,
-                title=f"Refactor Agent fix for #{job.issue_number}: {job.issue_title}",
-                head=branch_name,
-                base=job.default_branch,
-                body=run_result.report_markdown,
-            )
-            control.checkpoint("after-create-pull-request")
-            control.checkpoint("before-create-issue-comment")
-            api_client.create_issue_comment(
-                job.repo_full_name,
-                job.issue_number,
-                f"Refactor Agent completed the signed webhook run.\n\nPull request: {pr_url}\n\n{run_result.report_markdown}",
-            )
-            control.checkpoint("after-create-issue-comment")
-            return GitHubAutomationResult(
-                job_id=job.job_id,
-                repo_full_name=job.repo_full_name,
-                issue_number=job.issue_number,
-                branch_name=branch_name,
-                run_id=run_result.record.run_id,
-                status="SUCCESS",
-                pr_url=pr_url,
-                workspace_path=checkout_path,
-            )
-        except ExecutionCancelled as exc:
-            if pushed:
-                return GitHubAutomationResult(
-                    job_id=job.job_id,
-                    repo_full_name=job.repo_full_name,
-                    issue_number=job.issue_number,
-                    branch_name=branch_name,
-                    status="FAILED",
-                    pr_url=pr_url,
-                    workspace_path=checkout_path,
-                    error=f"Cancellation occurred after push; manual cleanup required: {exc}",
-                    requires_manual_cleanup=True,
-                )
-            raise
-        except Exception as exc:
-            return GitHubAutomationResult(
-                job_id=job.job_id,
-                repo_full_name=job.repo_full_name,
-                issue_number=job.issue_number,
-                branch_name=branch_name,
-                status="FAILED",
-                error=str(exc),
-            )
-        finally:
-            if checkout_path is not None and not self.settings.retain_checkouts:
-                repo_manager.cleanup(checkout_path)
-
-    def _resolve_target_path(self, job: GitHubRefactorJob, checkout_path: Path) -> str:
-        if job.target_path != AUTO_TARGET_PATH:
-            return job.target_path
-        located = locate_source_file(checkout_path, job.issue_text)
-        if located is None:
-            raise GitHubAutomationError(
-                "Could not auto-locate a Python source file from the issue text. "
-                "Add 'target: path/to/file.py' to the issue."
-            )
-        return located.path
-
-    def _comment_if_enabled(
-        self,
-        job: GitHubRefactorJob,
-        body: str,
-        execution_control: ExecutionControl,
-    ) -> None:
-        if self.settings.dry_run or not self.settings.github_token:
-            return
-        execution_control.checkpoint("before-create-issue-comment")
-        api_client = self.api_client or GitHubApiClient(
-            self.settings.github_token,
-            self.settings.github_api_url,
-            execution_control=execution_control,
-        )
-        api_client.create_issue_comment(job.repo_full_name, job.issue_number, body)
-        execution_control.checkpoint("after-create-issue-comment")
-
-    def _default_llm_factory(self) -> RefactorClient:
-        return MockRefactorClient() if self.settings.mock_llm else DeepSeekClient()
-
-
 def _repo_relative_path(checkout_path: Path, relative_path: str) -> Path:
     posix = PurePosixPath(relative_path.replace("\\", "/"))
     if posix.is_absolute() or ".." in posix.parts:
@@ -399,19 +110,18 @@ def _repo_relative_path(checkout_path: Path, relative_path: str) -> Path:
     return resolved
 
 
-def _branch_name(issue_number: int, job_id: str) -> str:
-    suffix = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:12]
-    return f"refactor-agent/issue-{issue_number}-{suffix}"
-
-
 def _safe_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "__", value).strip("_") or "repo"
 
 
 def canonical_clone_url(repo_full_name: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo_full_name):
+    try:
+        if "://" in repo_full_name:
+            raise ValueError("repository identity must not be a URL")
+        normalized = normalize_repository_identity(repo_full_name)
+    except ValueError as exc:
         raise GitHubAutomationError(f"Invalid GitHub repository name: {repo_full_name!r}")
-    return f"https://github.com/{repo_full_name}.git"
+    return f"https://github.com/{normalized}.git"
 
 
 class _git_auth_environment:
@@ -426,10 +136,19 @@ class _git_auth_environment:
         root = Path(self.directory.name)
         if os.name == "nt":
             helper = root / "askpass.cmd"
-            helper.write_text("@echo off\r\necho %~1 | findstr /I \"Username\" >nul && (echo %GIT_ASKPASS_USERNAME%) || (echo %GIT_ASKPASS_PASSWORD%)\r\n", encoding="ascii")
+            helper.write_text(
+                '@echo off\r\necho %~1 | findstr /I "Username" >nul && '
+                '(echo %GIT_ASKPASS_USERNAME%) || (echo %GIT_ASKPASS_PASSWORD%)\r\n',
+                encoding="ascii",
+            )
         else:
             helper = root / "askpass.sh"
-            helper.write_text("#!/bin/sh\ncase \"$1\" in *Username*) printf '%s\\n' \"$GIT_ASKPASS_USERNAME\";; *) printf '%s\\n' \"$GIT_ASKPASS_PASSWORD\";; esac\n", encoding="ascii")
+            helper.write_text(
+                '#!/bin/sh\ncase "$1" in *Username*) printf \'%s\\n\' '
+                '"$GIT_ASKPASS_USERNAME";; *) printf \'%s\\n\' '
+                '"$GIT_ASKPASS_PASSWORD";; esac\n',
+                encoding="ascii",
+            )
             helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
         allowed = {"PATH", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE", "TMP", "TEMP"}
         env = {key: value for key, value in os.environ.items() if key.upper() in allowed}

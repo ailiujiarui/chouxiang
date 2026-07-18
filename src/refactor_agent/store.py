@@ -885,17 +885,18 @@ class SQLiteRunStore:
                     pre_cc INTEGER,
                     post_cc INTEGER,
                     self_heal_count INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED')),
+                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
                     error TEXT
                 )
                 """
             )
+            _migrate_runs_status(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS github_jobs (
                     job_id TEXT PRIMARY KEY,
                     job_kind TEXT NOT NULL DEFAULT 'GITHUB_WEBHOOK' CHECK(job_kind IN (
-                        'GITHUB_WEBHOOK', 'DASHBOARD_URL'
+                        'GITHUB_WEBHOOK', 'DASHBOARD_URL', 'SNIPPET'
                     )),
                     delivery_id TEXT NOT NULL UNIQUE,
                     repo_full_name TEXT NOT NULL,
@@ -1042,6 +1043,33 @@ def _job_record_from_row(row: sqlite3.Row) -> GitHubJobRecord:
     return GitHubJobRecord(**data)
 
 
+def _migrate_runs_status(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+    ).fetchone()
+    if row is None or "REVIEWED" in (row["sql"] or ""):
+        return
+    connection.execute("ALTER TABLE runs RENAME TO runs_legacy")
+    connection.execute(
+        """
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            issue_id TEXT,
+            repo_name TEXT NOT NULL,
+            pre_loc INTEGER,
+            post_loc INTEGER,
+            pre_cc INTEGER,
+            post_cc INTEGER,
+            self_heal_count INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
+            error TEXT
+        )
+        """
+    )
+    connection.execute("INSERT INTO runs SELECT * FROM runs_legacy")
+    connection.execute("DROP TABLE runs_legacy")
+
+
 def _migrate_github_jobs(connection: sqlite3.Connection) -> None:
     table_sql_row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'github_jobs'"
@@ -1050,7 +1078,12 @@ def _migrate_github_jobs(connection: sqlite3.Connection) -> None:
     table_info = connection.execute("PRAGMA table_info(github_jobs)").fetchall()
     columns = {row["name"]: row for row in table_info}
     issue_number_required = bool(columns.get("issue_number") and columns["issue_number"]["notnull"])
-    if "CANCEL_REQUESTED" not in table_sql or "job_kind" not in columns or issue_number_required:
+    if (
+        "CANCEL_REQUESTED" not in table_sql
+        or "SNIPPET" not in table_sql
+        or "job_kind" not in columns
+        or issue_number_required
+    ):
         _rebuild_github_jobs_with_control_states(connection)
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(github_jobs)").fetchall()}
     additions = {
@@ -1090,7 +1123,7 @@ def _rebuild_github_jobs_with_control_states(connection: sqlite3.Connection) -> 
         CREATE TABLE github_jobs_new (
             job_id TEXT PRIMARY KEY,
             job_kind TEXT NOT NULL DEFAULT 'GITHUB_WEBHOOK' CHECK(job_kind IN (
-                'GITHUB_WEBHOOK', 'DASHBOARD_URL'
+                'GITHUB_WEBHOOK', 'DASHBOARD_URL', 'SNIPPET'
             )),
             delivery_id TEXT NOT NULL UNIQUE,
             repo_full_name TEXT NOT NULL,

@@ -94,6 +94,27 @@ class DashboardApiClient:
             },
         )
 
+    def submit_snippet_job(
+        self,
+        *,
+        source: str,
+        refactor_request: str,
+        tests: str | None,
+        mode: str,
+        persona: str,
+    ) -> dict[str, Any]:
+        return self._control(
+            "POST",
+            "/jobs/snippet",
+            json={
+                "source": source,
+                "refactor_request": refactor_request,
+                "tests": tests,
+                "mode": mode,
+                "persona": persona,
+            },
+        )
+
     def _control(
         self,
         method: str,

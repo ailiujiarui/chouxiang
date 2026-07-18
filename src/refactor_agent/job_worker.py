@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from refactor_agent.config import AppSettings
 from refactor_agent.execution_control import ExecutionCancelled, ExecutionControl, ExecutionDeadlineExceeded
-from refactor_agent.github import GitHubAutomationService
 from refactor_agent.local_repository import LocalRepositoryRefactorService
 from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
 from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
+from refactor_agent.snippet import SnippetRefactorService
 from refactor_agent.store import JobTransitionError, SQLiteRunStore
 
 
@@ -21,20 +21,20 @@ class GitHubJobWorker:
     def __init__(
         self,
         settings: AppSettings,
-        service: GitHubAutomationService,
         store: SQLiteRunStore,
         poll_seconds: float = 1.0,
         local_service: LocalRepositoryRefactorService | None = None,
         repository_policy: RepositoryAllowlistPolicy | None = None,
+        snippet_service: SnippetRefactorService | None = None,
     ) -> None:
         self.settings = settings
-        self.service = service
         self.store = store
         self.repository_policy = repository_policy or RepositoryAllowlistPolicy(settings, store)
         self.local_service = local_service or LocalRepositoryRefactorService(
             settings,
             repository_policy=self.repository_policy,
         )
+        self.snippet_service = snippet_service or SnippetRefactorService(settings)
         self.poll_seconds = poll_seconds
         self.worker_id = f"worker-{uuid4().hex}"
         self._stop = threading.Event()
@@ -77,6 +77,13 @@ class GitHubJobWorker:
                 worker_id=self.worker_id,
             )
             return True
+        if job.job_kind == RepositoryJobKind.GITHUB_WEBHOOK:
+            self.store.mark_github_job_failed(
+                record.job_id,
+                "GitHub Webhook delivery has been removed; legacy jobs cannot execute.",
+                worker_id=self.worker_id,
+            )
+            return True
         heartbeat_stop = threading.Event()
         lease_lost = threading.Event()
         control = ExecutionControl(
@@ -95,15 +102,14 @@ class GitHubJobWorker:
         )
         heartbeat.start()
         try:
-            self.repository_policy.require_allowed(job.repo_full_name)
-            processor = (
-                self.local_service
-                if job.job_kind == RepositoryJobKind.DASHBOARD_URL
-                else self.service
-            )
+            if job.job_kind == RepositoryJobKind.DASHBOARD_URL:
+                self.repository_policy.require_allowed(job.repo_full_name)
+                processor = self.local_service
+            else:
+                processor = self.snippet_service
             result = processor.process(job, execution_control=control)
             if not result.requires_manual_cleanup:
-                control.checkpoint("after-github-service")
+                control.checkpoint("after-local-service")
         except ExecutionCancelled:
             try:
                 self.store.transition_github_job(
