@@ -190,3 +190,21 @@ Webhook 作业会写入 SQLite。可以用 HTTP 或 CLI 查询：
 Invoke-RestMethod http://127.0.0.1:8000/jobs -Headers @{Authorization="Bearer $env:REFACTOR_AGENT_ADMIN_TOKEN"}
 refactor-agent jobs --limit 10
 ```
+
+## Nailong Desktop Skeleton
+
+The desktop pet is an independent package and does not enter the Python refactor workflow. Install the optional PySide6 dependency to launch the transparent pet window:
+
+```powershell
+python -m pip install -e .[desktop]
+python -m nailong_agent
+```
+
+Run the process shell without a GUI for smoke tests or CI:
+
+```powershell
+python -m nailong_agent --headless --lock-path .runs/nailong-agent.lock
+python -m pytest -q tests/test_nailong_scaffold.py
+```
+
+The first scaffold provides the event envelope, bounded event bus, process lock, tray/pet renderer adapter, and headless renderer. Windows activity collectors, classification, personality decisions, and popup policy are separate follow-up modules.
