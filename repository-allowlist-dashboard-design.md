@@ -151,7 +151,7 @@ Update `phase4-reliability-benchmark-dashboard-design.md` after implementation t
 - Per-user roles beyond the existing single Admin Token.
 - Removing environment-managed entries through the API.
 - Automatically cancelling a repository job that is already executing.
-- Commit, push, deployment, or modification of `plan.md` and `plan2.md`.
+- Commit, push, deployment, or modification of historical planning documents.
 
 ## Implementation Evidence
 
@@ -162,4 +162,4 @@ Update `phase4-reliability-benchmark-dashboard-design.md` after implementation t
 - Capacity enforcement and insertion execute in one `BEGIN IMMEDIATE` transaction.
 - `compileall`, `git diff --check`, and production credential-pattern scans passed.
 - Self-review found no unresolved Critical or High issue. The concurrent capacity check and repeated-path-separator validation found during review were fixed before the final suite.
-- No commit, push, deployment, or changes to `plan.md` and `plan2.md` were performed.
+- No commit, push, deployment, or changes outside the allowlist implementation were performed.
