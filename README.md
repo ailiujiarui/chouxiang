@@ -242,3 +242,21 @@ Invoke-RestMethod -Method Delete http://127.0.0.1:8000/admin/repository-allowlis
 `POST /jobs/url` accepts a canonical GitHub URL, optional ref/target, test path, and refactor request. It stores only canonical repository identity in the durable payload and always executes through the local-only service.
 
 Queued jobs cancel immediately. Running jobs enter `CANCEL_REQUESTED` and stop cooperatively at the next graph or side-effect checkpoint. Failed, cancelled, and timed-out jobs can be retried only when no PR URL exists. Job state changes and append-only events commit in one SQLite transaction; stale lease owners cannot write terminal state.
+
+## Nailong Desktop Skeleton
+
+The desktop pet is an independent package and does not enter the Python refactor workflow. Install the optional PySide6 dependency to launch the transparent pet window:
+
+```powershell
+python -m pip install -e .[desktop]
+python -m nailong_agent
+```
+
+Run the process shell without a GUI for smoke tests or CI:
+
+```powershell
+python -m nailong_agent --headless --lock-path .runs/nailong-agent.lock
+python -m pytest -q tests/test_nailong_scaffold.py
+```
+
+The first scaffold provides the event envelope, bounded event bus, process lock, tray/pet renderer adapter, and headless renderer. Windows activity collectors, classification, personality decisions, and popup policy are separate follow-up modules.
