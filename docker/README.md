@@ -12,6 +12,24 @@
 docker compose build refactor-agent
 ```
 
+## External Benchmark Image
+
+The external benchmark image is separate from the normal sandbox image:
+
+```powershell
+docker build -f docker\Dockerfile.benchmark -t refactor-agent-benchmark:py312 .
+refactor-agent benchmark --manifest benchmarks\manifest.toml --provider mock --case more-take-off-by-one
+```
+
+`benchmarks/requirements.lock` pins `pytest==9.1.1` and its toolchain with SHA-256 hashes. Each repository is mounted read-only, copied into a container-only temporary directory for `pip install --no-deps -e`, and executed with networking disabled, all capabilities dropped, `no-new-privileges`, a non-root user, PID limits, CPU limits, and memory limits. GitHub, provider, webhook, and Admin credentials are removed from subprocess and container environments.
+
+The Streamlit dashboard does not write SQLite directly. Start the FastAPI service first, then point the dashboard at it:
+
+```powershell
+refactor-agent serve --host 127.0.0.1 --port 8000
+refactor-agent dashboard --host 127.0.0.1 --port 8501 --api-url http://127.0.0.1:8000
+```
+
 ## 在 Docker 记忆库里跑一次 demo
 
 ```powershell

@@ -1,0 +1,12 @@
+diff --git a/boltons/strutils.py b/boltons/strutils.py
+--- a/boltons/strutils.py
++++ b/boltons/strutils.py
+@@ -73,7 +73,7 @@ def camel2under(camel_string):
+     >>> camel2under('BasicParseTest')
+     'basic_parse_test'
+     """
+-    return _camel2under_re.sub(r'_\1', camel_string).lower()
++    return camel_string.lower()
+ 
+ 
+ def under2camel(under_string):

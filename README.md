@@ -71,6 +71,17 @@ refactor-agent state-machine
 
 ## Reproducible Benchmark
 
+The built-in benchmark remains the fast, host-compatible regression suite. The external benchmark is defined by `benchmarks/manifest.toml`, pins eight cases across three public repositories to full commit SHAs, and requires Docker:
+
+```powershell
+docker build -f docker\Dockerfile.benchmark -t refactor-agent-benchmark:py312 .
+refactor-agent benchmark --manifest benchmarks\manifest.toml --provider mock --output-dir benchmark-results\external
+refactor-agent benchmark --manifest benchmarks\manifest.toml --provider deepseek --output-dir benchmark-results\deepseek
+refactor-agent benchmark --manifest benchmarks\manifest.toml --provider mock --compare <previous-run-id>
+```
+
+External runs use anonymous canonical GitHub clone URLs, a local bare cache under `.benchmark-cache`, exact detached commits, no container network, and a hash-pinned `pytest==9.1.1` toolchain. JSON, Markdown, token use, cost, failure category, and normalized result hashes are persisted to SQLite. Provider keys are never stored in benchmark evidence.
+
 六案例 mock 基准覆盖普通函数、低复杂度命名目标、类方法、模块语句、弱测试对抗自愈和不安全候选拒绝：
 
 ```powershell
@@ -135,13 +146,35 @@ refactor-agent state-machine
 
 `demo-suite` 会按路演顺序连续运行内置案例，写入同一个 SQLite，并输出中文总战报。跑完后直接打开竞技场就能看到对抗回合和指标图表。
 
-The arena is an optional Streamlit extra:
+竞技场和运维仪表盘使用可选的 Streamlit 依赖：
 
 ```powershell
 python -m pip install -e .[dashboard]
-refactor-agent dashboard --host 127.0.0.1 --port 8501
+refactor-agent dashboard --host 127.0.0.1 --port 8501 --api-url http://127.0.0.1:8000
 refactor-agent arena-export --output arena-report.md
 ```
+
+运维仪表盘包含“任务”“执行过程”“代码变更”和“基准测试”四个页签。读取任务与运行视图无需凭据，通过本地 FastAPI 服务获取数据；仓库白名单、取消和重试操作需要在密码输入框中填写管理员令牌。令牌只保存在 Streamlit 会话状态中，并且只通过管理或控制请求头发送。状态展示使用“中文（原始枚举）”格式，Job ID、Run ID、源码、diff 和日志正文保持原样，便于复制和排障。
+
+“任务”页签顶部可以从 GitHub URL 创建本地简化任务。填写白名单仓库 URL、简化要求、可选分支和目标文件后，任务进入同一个 SQLite Worker 队列；目标文件留空时自动定位，测试路径默认 `tests`。该入口固定为 local-only：即使服务端关闭 `REFACTOR_AGENT_DRY_RUN`，也不会创建分支、推送、创建 PR 或评论 Issue。模型模式由 Worker 的 `REFACTOR_AGENT_MOCK_LLM` 和 `DEEPSEEK_API_KEY` 配置决定，并显示在表单上。
+
+同一页签的“仓库白名单”区域用于查看、添加和移除运行期仓库授权。`REFACTOR_AGENT_ALLOWED_REPOSITORIES` 是部署时的只读基线，仪表盘不能删除；界面新增项写入当前 `REFACTOR_AGENT_DATABASE` 指向的 SQLite。实际白名单是两者并集，空集合表示拒绝所有仓库。移除仪表盘条目会立即阻止新的提交和尚未分派的队列任务，但不会强制终止已经进入克隆或沙箱执行的任务。
+
+使用前必须把仓库加入白名单并以 Docker 后端启动 Worker，例如：
+
+```powershell
+$env:GITHUB_WEBHOOK_SECRET="local-webhook-secret"
+$env:REFACTOR_AGENT_ADMIN_TOKEN="local-admin-secret"
+$env:REFACTOR_AGENT_ALLOWED_REPOSITORIES="owner/repository"
+$env:REFACTOR_AGENT_ALLOWED_SENDERS="trusted-github-login"
+$env:REFACTOR_AGENT_SANDBOX_BACKEND="docker"
+$env:REFACTOR_AGENT_DRY_RUN="true"
+$env:REFACTOR_AGENT_MOCK_LLM="false"
+$env:DEEPSEEK_API_KEY="<set-in-environment>"
+refactor-agent serve --host 127.0.0.1 --port 8000
+```
+
+URL 仅接受 `https://github.com/owner/repository`。Admin Token、GitHub Token 和 DeepSeek Key 不得填写到 URL 或简化要求中。
 
 ## GitHub Webhook Mode
 
@@ -176,10 +209,10 @@ tests: tests
 - `REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT=.github-workspaces`：GitHub 克隆目录。
 - `REFACTOR_AGENT_RUN_ROOT=.runs`：沙箱运行目录。
 - `REFACTOR_AGENT_MAX_RETRY=3`：最大自愈尝试次数。
-- `REFACTOR_AGENT_ALLOWED_REPOSITORIES=owner/repo`：Webhook 仓库 allowlist，必填。
+- `REFACTOR_AGENT_ALLOWED_REPOSITORIES=owner/repo`：部署控制的只读仓库白名单基线；首次启动且 SQLite 中没有动态条目时必填。
 - `REFACTOR_AGENT_ALLOWED_IMPORTS=math,decimal`：Webhook 可新增导入根；Issue 文本不能授予该权限。
 - `REFACTOR_AGENT_ALLOWED_SENDERS=login`：允许触发自动改码的 GitHub 用户 allowlist，必填。
-- `REFACTOR_AGENT_ADMIN_TOKEN=...`：查询 `/jobs` 时使用的独立 Bearer Token，必填。
+- `REFACTOR_AGENT_ADMIN_TOKEN=...`：创建、取消和重试任务时使用的独立 Bearer Token，必填。
 - `REFACTOR_AGENT_RETAIN_CHECKOUTS=false`：默认在作业结束后删除 Git clone。
 - `REFACTOR_AGENT_JOB_LEASE_SECONDS=300`：持久 worker 租约时间。
 - `REFACTOR_AGENT_JOB_MAX_ATTEMPTS=3`：租约恢复最大次数。
@@ -187,9 +220,28 @@ tests: tests
 Webhook 作业会写入 SQLite。可以用 HTTP 或 CLI 查询：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8000/jobs -Headers @{Authorization="Bearer $env:REFACTOR_AGENT_ADMIN_TOKEN"}
+Invoke-RestMethod http://127.0.0.1:8000/jobs
 refactor-agent jobs --limit 10
 ```
+
+## Operations Control Plane
+
+`REFACTOR_AGENT_JOB_DEADLINE_SECONDS` defaults to 900 seconds and accepts 30 through 7200. Local execution commands expose the same limit through `--deadline`.
+
+Read-only endpoints are `/capabilities`, `/jobs`, `/jobs/{id}`, `/jobs/{id}/events`, `/runs`, `/runs/{id}/trajectory`, `/runs/{id}/artifacts/{name}`, `/benchmarks`, and `/benchmarks/{id}`. URL submission, repository allowlist management, and control endpoints require `Authorization: Bearer <Admin Token>`:
+
+```powershell
+$headers = @{Authorization="Bearer $env:REFACTOR_AGENT_ADMIN_TOKEN"}
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/jobs/<job-id>/cancel -Headers $headers
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/jobs/<job-id>/retry -Headers $headers
+Invoke-RestMethod http://127.0.0.1:8000/admin/repository-allowlist -Headers $headers
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/admin/repository-allowlist -Headers $headers -ContentType "application/json" -Body '{"repository":"owner/repository"}'
+Invoke-RestMethod -Method Delete http://127.0.0.1:8000/admin/repository-allowlist/owner/repository -Headers $headers
+```
+
+`POST /jobs/url` accepts a canonical GitHub URL, optional ref/target, test path, and refactor request. It stores only canonical repository identity in the durable payload and always executes through the local-only service.
+
+Queued jobs cancel immediately. Running jobs enter `CANCEL_REQUESTED` and stop cooperatively at the next graph or side-effect checkpoint. Failed, cancelled, and timed-out jobs can be retried only when no PR URL exists. Job state changes and append-only events commit in one SQLite transaction; stale lease owners cannot write terminal state.
 
 ## Nailong Desktop Skeleton
 

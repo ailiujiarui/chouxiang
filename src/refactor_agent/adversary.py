@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from refactor_agent.ast_analyzer import analyze_ast
+from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.models import AdversarialCritique, AdversarialTestResult
 from refactor_agent.sandbox import run_pytest_with_backend
 
@@ -78,6 +79,7 @@ def run_adversarial_tests(
     docker_image: str = "refactor-agent-sandbox:py312",
     memory: str = "256m",
     cpus: float = 1.0,
+    execution_control: ExecutionControl | None = None,
 ) -> AdversarialTestResult:
     module_name = ".".join(target_file.relative_to(workspace).with_suffix("").parts)
     if module_name.endswith(".__init__"):
@@ -98,6 +100,7 @@ def run_adversarial_tests(
         docker_image=docker_image,
         memory=memory,
         cpus=cpus,
+        execution_control=execution_control,
     )
     return AdversarialTestResult(
         generated=_count_tests(generated_source),

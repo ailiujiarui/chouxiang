@@ -1,0 +1,12 @@
+diff --git a/boltons/iterutils.py b/boltons/iterutils.py
+--- a/boltons/iterutils.py
++++ b/boltons/iterutils.py
+@@ -405,7 +405,7 @@ def chunk_ranges(input_size, chunk_size, input_offset=0, overlap_size=0, align=F
+                 return
+             input_offset = input_offset + initial_chunk_len - overlap_size
+ 
+-    for i in range(input_offset, input_stop, chunk_size - overlap_size):
++    for i in range(input_offset, input_stop, chunk_size + overlap_size):
+         yield (i, min(i + chunk_size, input_stop))
+ 
+         if i + chunk_size >= input_stop:

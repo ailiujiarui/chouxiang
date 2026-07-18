@@ -118,6 +118,16 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     assert "| AST 守卫 (AST guard) |" in result.report_markdown
     assert "Selected AST targets" in result.report_markdown
     assert "Executed graph nodes" in result.report_markdown
+    artifact_root = tmp_path / ".runs" / result.record.run_id / "artifacts"
+    assert {path.name for path in artifact_root.iterdir()} == {
+        "original.py",
+        "candidate.py",
+        "change.diff",
+        "pytest.log",
+        "adversary.log",
+        "mutation.json",
+        "report.md",
+    }
     assert "PREPARE -> MINIMIZER -> AST_GUARD" in result.report_markdown
     assert result.ast_rewrite is not None
     assert result.ast_rewrite.allowed_regions == ["is_leap_year"]

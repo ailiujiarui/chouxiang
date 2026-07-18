@@ -8,6 +8,18 @@ from pathlib import Path
 from typing import Any
 
 from refactor_agent.debate_state import render_mermaid_state_diagram
+from refactor_agent.dashboard_api import DashboardApiClient, DashboardApiError
+from refactor_agent.dashboard_views import (
+    build_benchmark_run_rows,
+    build_benchmark_rows,
+    build_event_timeline,
+    build_execution_rows,
+    build_task_table_rows,
+    build_task_rows,
+    build_timeline_rows,
+    format_dashboard_error,
+    localize_status,
+)
 from refactor_agent.models import RunRecord
 from refactor_agent.store import SQLiteRunStore
 
@@ -120,9 +132,322 @@ def build_before_after_rows(item: DashboardRun) -> list[dict[str, Any]]:
 
 
 def dashboard_main() -> None:
-    database_path = Path(os.getenv("REFACTOR_AGENT_DASHBOARD_DB", ".runs/refactor_agent.sqlite"))
-    run_root = Path(os.getenv("REFACTOR_AGENT_RUN_ROOT", ".runs"))
-    render_dashboard(database_path, run_root)
+    import streamlit as st
+
+    st.set_page_config(page_title="重构 Agent 运维仪表盘", layout="wide")
+    st.title("重构 Agent 运维仪表盘")
+
+    with st.sidebar:
+        api_url = st.text_input(
+            "API 地址",
+            value=os.getenv("REFACTOR_AGENT_API_URL", "http://127.0.0.1:8000"),
+        )
+        admin_token = st.text_input("管理员令牌", type="password", value="")
+        limit = st.number_input("记录数量上限", min_value=5, max_value=100, value=50, step=5)
+        if st.button("刷新数据", width="stretch"):
+            st.rerun()
+
+    client = DashboardApiClient(api_url, admin_token=admin_token or None, timeout_seconds=1.0)
+    jobs: list[dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
+    benchmarks: list[dict[str, Any]] = []
+    capabilities: dict[str, Any] = {}
+    try:
+        capabilities = client.get_capabilities()
+        jobs = client.list_jobs(int(limit))
+        runs = client.list_runs(int(limit))
+        benchmarks = client.list_benchmarks(int(limit))
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+
+    tasks_tab, execution_tab, code_tab, benchmark_tab = st.tabs(
+        ["任务", "执行过程", "代码变更", "基准测试"]
+    )
+    with tasks_tab:
+        _render_tasks_tab(st, client, jobs, bool(admin_token), capabilities)
+    with execution_tab:
+        _render_execution_tab(st, client, jobs, runs)
+    with code_tab:
+        _render_code_tab(st, client, jobs, runs)
+    with benchmark_tab:
+        _render_benchmarks_tab(st, client, benchmarks)
+
+
+def _render_tasks_tab(
+    st,
+    client: DashboardApiClient,
+    jobs: list[dict[str, Any]],
+    admin_enabled: bool,
+    capabilities: dict[str, Any],
+) -> None:
+    _render_repository_allowlist_manager(st, client, admin_enabled)
+    _render_url_submission_form(st, client, admin_enabled, capabilities)
+    rows = build_task_rows(jobs)
+    if not rows:
+        st.info("暂无任务。")
+        return
+    st.dataframe(build_task_table_rows(rows), width="stretch", hide_index=True)
+    selected_id = st.selectbox("选择任务", [row.job_id for row in rows], key="tasks_job")
+    selected = next(row for row in rows if row.job_id == selected_id)
+    raw = next(job for job in jobs if str(job.get("job_id")) == selected_id)
+    metrics = st.columns(6)
+    metrics[0].metric("状态", localize_status(selected.status))
+    metrics[1].metric("尝试次数", selected.attempts)
+    metrics[2].metric("租约所有者", selected.lease_owner or "-")
+    metrics[3].metric("截止时间", str(raw.get("deadline_at") or "-"))
+    metrics[4].metric(
+        "剩余时间",
+        f"{selected.remaining_seconds} 秒" if selected.remaining_seconds is not None else "-",
+    )
+    metrics[5].metric("运行 ID", str(raw.get("run_id") or "-"))
+    try:
+        timeline = build_event_timeline(client.list_events(selected_id))
+        st.dataframe(build_timeline_rows(timeline), width="stretch", hide_index=True)
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+    controls = st.columns(2)
+    if controls[0].button(
+        "取消任务",
+        disabled=not (admin_enabled and selected.can_cancel),
+        width="stretch",
+    ):
+        _run_control(st, lambda: client.cancel_job(selected_id))
+    if controls[1].button(
+        "重新执行",
+        disabled=not (admin_enabled and selected.can_retry),
+        width="stretch",
+    ):
+        _run_control(st, lambda: client.retry_job(selected_id))
+
+
+def _render_repository_allowlist_manager(
+    st,
+    client: DashboardApiClient,
+    admin_enabled: bool,
+) -> None:
+    success_message = st.session_state.pop("allowlist_success", None)
+    if success_message:
+        st.success(success_message)
+    with st.expander("仓库白名单"):
+        if not admin_enabled:
+            st.info("填写管理员令牌后才能查看和管理仓库白名单。")
+            return
+        try:
+            entries = client.list_repository_allowlist()
+        except DashboardApiError as exc:
+            _show_dashboard_error(st, exc)
+            return
+
+        if entries:
+            st.dataframe(
+                [
+                    {
+                        "仓库": entry.get("repo_full_name"),
+                        "来源": (
+                            "环境变量"
+                            if entry.get("source") == "ENVIRONMENT"
+                            else "仪表盘"
+                        ),
+                        "添加时间": entry.get("created_at") or "-",
+                        "可移除": "是" if entry.get("removable") else "否",
+                    }
+                    for entry in entries
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.warning("当前白名单为空，所有仓库任务都会被拒绝。")
+
+        with st.form("allowlist_add_form", clear_on_submit=False):
+            repository = st.text_input(
+                "仓库名称或 URL",
+                placeholder="owner/repository 或 https://github.com/owner/repository",
+            )
+            add_submitted = st.form_submit_button("添加仓库", width="stretch")
+        if add_submitted:
+            if not repository.strip():
+                st.error("请输入仓库名称或 GitHub URL。")
+            else:
+                try:
+                    result = client.add_repository_allowlist(repository.strip())
+                except DashboardApiError as exc:
+                    _show_dashboard_error(st, exc)
+                else:
+                    st.session_state["allowlist_success"] = (
+                        f"仓库已加入白名单：{result.get('repo_full_name', repository.strip())}"
+                    )
+                    st.rerun()
+
+        removable = [
+            str(entry.get("repo_full_name"))
+            for entry in entries
+            if entry.get("removable") and entry.get("repo_full_name")
+        ]
+        selected_repository = st.selectbox(
+            "选择要移除的仓库",
+            removable,
+            disabled=not removable,
+        )
+        if st.button("移除仓库", disabled=not removable, width="stretch"):
+            try:
+                result = client.remove_repository_allowlist(str(selected_repository))
+            except DashboardApiError as exc:
+                _show_dashboard_error(st, exc)
+            else:
+                removed = bool(result.get("removed"))
+                st.session_state["allowlist_success"] = (
+                    f"仓库已移出白名单：{selected_repository}"
+                    if removed
+                    else f"仓库原本不在仪表盘白名单中：{selected_repository}"
+                )
+                st.rerun()
+
+
+def _render_url_submission_form(
+    st,
+    client: DashboardApiClient,
+    admin_enabled: bool,
+    capabilities: dict[str, Any],
+) -> None:
+    success_job_id = st.session_state.pop("url_submission_success", None)
+    if success_job_id:
+        st.success(f"本地简化任务已创建：{success_job_id}")
+    llm_mode = capabilities.get("llm_mode")
+    if llm_mode == "deepseek":
+        llm_label = "真实 DeepSeek"
+    elif llm_mode == "mock":
+        llm_label = "本地 Mock"
+    else:
+        llm_label = "未知"
+    sandbox = str(capabilities.get("sandbox_backend") or "-")
+    graph = str(capabilities.get("graph_backend") or "-")
+    submission_enabled = bool(capabilities.get("url_submission"))
+    with st.expander("从 GitHub URL 创建本地简化任务"):
+        st.caption(f"模型：{llm_label} | 沙箱：{sandbox} | 图后端：{graph} | 结果仅保存在本地")
+        if not admin_enabled:
+            st.info("填写管理员令牌后才能创建任务。")
+        if not submission_enabled:
+            st.warning("Worker 当前未启用 Docker 或可用模型，暂时不能提交 URL 任务。")
+        with st.form("url_job_form", clear_on_submit=False):
+            repository_url = st.text_input("GitHub 仓库 URL", placeholder="https://github.com/owner/repo")
+            branch = st.text_input("分支或标签（可选）", placeholder="留空时使用默认分支")
+            target_path = st.text_input("目标文件（可选）", placeholder="留空时自动定位")
+            tests_path = st.text_input("测试路径", value="tests")
+            refactor_request = st.text_area("简化要求", height=150)
+            submitted = st.form_submit_button(
+                "创建本地简化任务",
+                disabled=not admin_enabled or not submission_enabled,
+                width="stretch",
+            )
+        if submitted:
+            if not repository_url.strip() or not tests_path.strip() or not refactor_request.strip():
+                st.error("请填写仓库 URL、测试路径和简化要求。")
+                return
+            try:
+                result = client.submit_url_job(
+                    repository_url=repository_url.strip(),
+                    refactor_request=refactor_request.strip(),
+                    branch=branch.strip() or None,
+                    target_path=target_path.strip() or None,
+                    tests_path=tests_path.strip(),
+                )
+            except DashboardApiError as exc:
+                _show_dashboard_error(st, exc)
+            else:
+                job_id = str(result.get("job_id") or "")
+                st.session_state["url_submission_success"] = job_id
+                st.session_state["tasks_job"] = job_id
+                st.rerun()
+
+
+def _render_execution_tab(
+    st,
+    client: DashboardApiClient,
+    jobs: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> None:
+    run_ids = _available_run_ids(jobs, runs)
+    if not run_ids:
+        st.info("暂无执行记录。")
+        return
+    run_id = st.selectbox("选择执行记录", run_ids, key="execution_run")
+    try:
+        trajectory = client.get_trajectory(run_id)
+        st.dataframe(build_execution_rows(trajectory), width="stretch", hide_index=True)
+        left, right = st.columns(2)
+        left.text_area("Pytest 日志", client.get_artifact(run_id, "pytest.log"), height=260, disabled=True)
+        right.text_area("对抗测试日志", client.get_artifact(run_id, "adversary.log"), height=260, disabled=True)
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+
+
+def _render_code_tab(
+    st,
+    client: DashboardApiClient,
+    jobs: list[dict[str, Any]],
+    runs: list[dict[str, Any]],
+) -> None:
+    run_ids = _available_run_ids(jobs, runs)
+    if not run_ids:
+        st.info("暂无代码产物。")
+        return
+    run_id = st.selectbox("选择代码运行记录", run_ids, key="code_run")
+    try:
+        original = client.get_artifact(run_id, "original.py")
+        candidate = client.get_artifact(run_id, "candidate.py")
+        diff = client.get_artifact(run_id, "change.diff")
+        before, after = st.columns(2)
+        before.subheader("原始代码")
+        before.code(original, language="python", line_numbers=True)
+        after.subheader("候选代码")
+        after.code(candidate, language="python", line_numbers=True)
+        st.subheader("代码差异")
+        st.code(diff, language="diff", line_numbers=True)
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+
+
+def _render_benchmarks_tab(st, client: DashboardApiClient, benchmarks: list[dict[str, Any]]) -> None:
+    if not benchmarks:
+        st.info("暂无基准测试记录。")
+        return
+    st.dataframe(build_benchmark_run_rows(benchmarks), width="stretch", hide_index=True)
+    run_id = st.selectbox(
+        "选择基准测试记录",
+        [str(item.get("run_id")) for item in benchmarks],
+        key="benchmark_run",
+    )
+    try:
+        detail = client.get_benchmark(run_id)
+        st.dataframe(build_benchmark_rows(detail.get("cases", [])), width="stretch", hide_index=True)
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+
+
+def _available_run_ids(jobs: list[dict[str, Any]], runs: list[dict[str, Any]]) -> list[str]:
+    values = {
+        str(value)
+        for value in [
+            *(job.get("run_id") for job in jobs),
+            *(run.get("run_id") for run in runs),
+        ]
+        if value
+    }
+    return sorted(values, reverse=True)
+
+
+def _run_control(st, action) -> None:
+    try:
+        action()
+    except DashboardApiError as exc:
+        _show_dashboard_error(st, exc)
+        return
+    st.rerun()
+
+
+def _show_dashboard_error(st, error: DashboardApiError) -> None:
+    st.error(format_dashboard_error(error.status_code, str(error)))
 
 
 def render_dashboard(database_path: Path, run_root: Path) -> None:
@@ -255,7 +580,7 @@ def _format_percent(value: float | None) -> str:
 
 
 def _status_label(status: str) -> str:
-    return {"SUCCESS": "成功", "FAILED": "失败"}.get(status, status)
+    return localize_status(status)
 
 
 def _phase_label(status: str | None) -> str:
