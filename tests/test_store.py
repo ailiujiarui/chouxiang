@@ -33,6 +33,32 @@ def test_store_round_trip(tmp_path: Path):
     assert store.list_runs()[0] == record
 
 
+def test_store_migrates_legacy_run_metadata_with_safe_defaults(tmp_path: Path):
+    database = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY, issue_id TEXT, repo_name TEXT NOT NULL,
+                pre_loc INTEGER, post_loc INTEGER, pre_cc INTEGER, post_cc INTEGER,
+                self_heal_count INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED')),
+                error TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy-1", None, "repo", 10, 8, 4, 2, 0, "SUCCESS", None),
+        )
+
+    record = SQLiteRunStore(database).get("legacy-1")
+
+    assert record is not None
+    assert record.evidence_level.value == "REPOSITORY_TESTS"
+    assert record.report_persona.value == "STRICT"
+
+
 def test_store_tracks_trajectory_memory(tmp_path: Path):
     store = SQLiteRunStore(tmp_path / "runs.sqlite")
     record = TrajectoryMemoryRecord(

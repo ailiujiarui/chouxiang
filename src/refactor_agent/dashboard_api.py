@@ -81,6 +81,7 @@ class DashboardApiClient:
         branch: str | None,
         target_path: str | None,
         tests_path: str,
+        persona: str = "STRICT",
     ) -> dict[str, Any]:
         return self._control(
             "POST",
@@ -91,6 +92,7 @@ class DashboardApiClient:
                 "branch": branch,
                 "target_path": target_path,
                 "tests_path": tests_path,
+                "persona": persona,
             },
         )
 
@@ -114,6 +116,9 @@ class DashboardApiClient:
                 "persona": persona,
             },
         )
+
+    def submit_analysis(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._control("POST", "/analysis", json=payload)
 
     def _control(
         self,

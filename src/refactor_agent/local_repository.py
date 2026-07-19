@@ -17,10 +17,13 @@ from refactor_agent.locator import AUTO_TARGET_PATH, locate_source_file
 from refactor_agent.models import (
     GitHubAutomationResult,
     GitHubRefactorJob,
+    EvidenceLevel,
     RefactorRequest,
+    ReportPersona,
     RepositoryJobKind,
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
+from refactor_agent.persona import build_persona_report, render_persona_markdown
 from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
 from refactor_agent.store import SQLiteRunStore
 
@@ -109,9 +112,18 @@ class LocalRepositoryRefactorService:
                     issue_id=job.job_id,
                     max_retry=self.settings.max_retry,
                     allowed_import_roots=self.settings.allowed_import_roots,
+                    evidence_level=EvidenceLevel.REPOSITORY_TESTS,
+                    persona=ReportPersona(job.persona),
                 ),
                 execution_control=control,
             )
+            report_path = self.settings.run_root / run_result.record.run_id / "artifacts" / "report.md"
+            with report_path.open("a", encoding="utf-8", newline="") as report:
+                report.write(
+                    render_persona_markdown(
+                        build_persona_report(run_result, ReportPersona(job.persona))
+                    )
+                )
             status = "DRY_RUN" if run_result.record.status == "SUCCESS" else "FAILED"
             return GitHubAutomationResult(
                 job_id=job.job_id,

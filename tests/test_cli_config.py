@@ -95,5 +95,5 @@ def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path):
         input="def add(a, b):\n    return a + b\n",
     )
     assert result.exit_code == 0
-    assert "REVIEWED" in result.stdout
-    assert "未执行、未验证" in result.stdout
+    assert "成功" in result.stdout
+    assert "GENERATED_TESTS" in result.stdout or "STATIC" in result.stdout

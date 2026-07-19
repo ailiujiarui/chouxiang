@@ -22,11 +22,13 @@ from refactor_agent.models import (
     AstRewriteResult,
     CandidateValidationResult,
     DebateRound,
+    EvidenceLevel,
     MutationTestResult,
     PerformanceProfile,
     RefactorRequest,
     RefactorRunResult,
     RewardBreakdown,
+    ReportPersona,
     RunRecord,
     SandboxResult,
     TrajectoryStep,
@@ -371,6 +373,8 @@ class _RefactorWorkflow:
             self_heal_count=self_heal_count,
             status="SUCCESS" if approved else "FAILED",
             error=error,
+            evidence_level=self.request.evidence_level,
+            report_persona=self.request.persona,
         )
         self.orchestrator.store.save(record)
         llm_result = state.get("llm_result")
@@ -400,6 +404,8 @@ class _RefactorWorkflow:
             state.get("rewrite"),
             self.orchestrator.graph_backend,
             graph_trace,
+            self.request.evidence_level,
+            self.request.persona,
         )
         self._write_artifacts(state, report)
         state["result"] = RefactorRunResult(
@@ -418,6 +424,8 @@ class _RefactorWorkflow:
             graph_backend=self.orchestrator.graph_backend,
             graph_node_trace=graph_trace,
             llm_usages=state.get("llm_usages", []),
+            evidence_level=self.request.evidence_level,
+            report_persona=self.request.persona,
         )
         state["next_node"] = "finalize"
         return state
@@ -611,6 +619,8 @@ def _build_report(
     ast_rewrite: AstRewriteResult | None = None,
     graph_backend: str | None = None,
     graph_node_trace: list[str] | None = None,
+    evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
+    report_persona: ReportPersona = ReportPersona.STRICT,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -631,8 +641,14 @@ def _build_report(
         "",
         f"- 状态 (Status): **{_report_status_cn(record.status)}**",
         f"- 运行 ID (Run ID): `{record.run_id}`",
+        f"- 证据等级 (Evidence Level): **{evidence_level.value}**",
+        f"- 报告人格 (Persona): **{report_persona.value}**",
         f"- 沙箱工作区 (Workspace): `{workspace}`",
         f"- 毒舌结论: {_report_verdict(record, mutation_result, reward)}",
+        "",
+        "#### 证据边界",
+        "",
+        f"- {_evidence_boundary(evidence_level)}",
         "",
         "#### 指标对比表",
         "",
@@ -755,6 +771,15 @@ def _build_report(
     if error:
         lines.extend(["", "#### 错误详情 (Error)", "", "```text", error[-4000:], "```"])
     return "\n".join(lines)
+
+
+def _evidence_boundary(level: EvidenceLevel) -> str:
+    return {
+        EvidenceLevel.STATIC: "仅有静态分析和导入 smoke；候选没有获得行为验证。",
+        EvidenceLevel.GENERATED_TESTS: "候选只通过系统自动推导的测试，不能等同用户或仓库回归测试。",
+        EvidenceLevel.USER_TESTS: "候选通过用户提供的 pytest 与自动攻击测试。",
+        EvidenceLevel.REPOSITORY_TESTS: "候选通过仓库测试与自动攻击测试。",
+    }[level]
 
 
 def _report_markdown_table(headers: list[object], rows: list[list[object]]) -> list[str]:

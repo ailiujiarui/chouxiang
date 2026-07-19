@@ -135,8 +135,8 @@ def build_before_after_rows(item: DashboardRun) -> list[dict[str, Any]]:
 def dashboard_main() -> None:
     import streamlit as st
 
-    st.set_page_config(page_title="重构 Agent 运维仪表盘", layout="wide")
-    st.title("重构 Agent 运维仪表盘")
+    st.set_page_config(page_title="代码审判助手", layout="wide")
+    st.title("代码审判助手")
 
     with st.sidebar:
         api_url = st.text_input(
@@ -181,9 +181,9 @@ def _render_tasks_tab(
     admin_enabled: bool,
     capabilities: dict[str, Any],
 ) -> None:
-    _render_repository_allowlist_manager(st, client, admin_enabled)
     _render_snippet_submission_form(st, client, admin_enabled, capabilities)
     _render_url_submission_form(st, client, admin_enabled, capabilities)
+    _render_repository_allowlist_manager(st, client, admin_enabled)
     rows = build_task_rows(jobs)
     if not rows:
         st.info("暂无任务。")
@@ -336,6 +336,12 @@ def _render_url_submission_form(
             branch = st.text_input("分支或标签（可选）", placeholder="留空时使用默认分支")
             target_path = st.text_input("目标文件（可选）", placeholder="留空时自动定位")
             tests_path = st.text_input("测试路径", value="tests")
+            persona_label = st.segmented_control(
+                "报告人格",
+                ["严格评审", "傲娇审判"],
+                default="严格评审",
+                key="url_persona",
+            )
             refactor_request = st.text_area("简化要求", height=150)
             submitted = st.form_submit_button(
                 "创建本地简化任务",
@@ -353,6 +359,7 @@ def _render_url_submission_form(
                     branch=branch.strip() or None,
                     target_path=target_path.strip() or None,
                     tests_path=tests_path.strip(),
+                    persona="TSUNDERE" if persona_label == "傲娇审判" else "STRICT",
                 )
             except DashboardApiError as exc:
                 _show_dashboard_error(st, exc)
@@ -373,8 +380,12 @@ def _render_snippet_submission_form(
     if success_job_id:
         st.success(f"代码审判任务已创建：{success_job_id}")
     enabled = bool(capabilities.get("snippet_submission"))
-    with st.expander("粘贴 Python 代码进行审判"):
-        st.caption("代码和测试会保存在本地任务与运行产物中；只读审查不会执行代码。")
+    product_mode = str(capabilities.get("product_mode") or "demo")
+    with st.expander("粘贴 Python 代码进行审判", expanded=True):
+        if product_mode == "demo":
+            st.warning("当前是演示模式，只支持内置函数模式；任意代码需要配置 DeepSeek。")
+        else:
+            st.caption("当前使用真实 DeepSeek；代码和测试会保存在本地任务与运行产物中。")
         if not admin_enabled:
             st.info("填写管理员令牌后才能创建任务。")
         if not enabled:
@@ -382,8 +393,8 @@ def _render_snippet_submission_form(
         with st.form("snippet_job_form", clear_on_submit=False):
             mode_label = st.segmented_control(
                 "模式",
-                ["只读审查", "验证后精简"],
-                default="只读审查",
+                ["自动生成测试", "使用我的测试"],
+                default="自动生成测试",
             )
             persona_label = st.segmented_control(
                 "报告人格",
@@ -393,7 +404,7 @@ def _render_snippet_submission_form(
             source = st.text_area("Python 源码", height=260, placeholder="def example():\n    pass")
             requirement = st.text_area("审查或精简要求", height=100)
             tests = st.text_area(
-                "Pytest 测试源码（验证后精简必填）",
+                "Pytest 测试源码（使用我的测试时必填）",
                 height=180,
                 placeholder="固定使用 from snippet import example\n\ndef test_example():\n    ...",
             )
@@ -403,13 +414,13 @@ def _render_snippet_submission_form(
                 width="stretch",
             )
         if submitted:
-            mode = "VERIFIED_REFACTOR" if mode_label == "验证后精简" else "REVIEW"
+            mode = "VERIFIED_REFACTOR" if mode_label == "使用我的测试" else "REVIEW"
             persona = "TSUNDERE" if persona_label == "傲娇审判" else "STRICT"
             if not source.strip() or not requirement.strip():
                 st.error("请填写 Python 源码和审查要求。")
                 return
             if mode == "VERIFIED_REFACTOR" and not tests.strip():
-                st.error("验证后精简模式必须填写 pytest 测试源码。")
+                st.error("使用我的测试模式必须填写 pytest 测试源码。")
                 return
             try:
                 result = client.submit_snippet_job(
@@ -440,11 +451,17 @@ def _render_execution_tab(
         return
     run_id = st.selectbox("选择执行记录", run_ids, key="execution_run")
     try:
+        selected_run = next((run for run in runs if run.get("run_id") == run_id), {})
+        evidence = str(selected_run.get("evidence_level") or "-")
+        persona = str(selected_run.get("report_persona") or "-")
+        st.caption(f"证据等级：{evidence} | 报告人格：{persona}")
         trajectory = client.get_trajectory(run_id)
         st.dataframe(build_execution_rows(trajectory), width="stretch", hide_index=True)
         left, right = st.columns(2)
         left.text_area("Pytest 日志", client.get_artifact(run_id, "pytest.log"), height=260, disabled=True)
         right.text_area("对抗测试日志", client.get_artifact(run_id, "adversary.log"), height=260, disabled=True)
+        st.subheader("最终审判报告")
+        st.markdown(client.get_artifact(run_id, "report.md"))
     except DashboardApiError as exc:
         _show_dashboard_error(st, exc)
 

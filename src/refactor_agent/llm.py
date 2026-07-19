@@ -97,6 +97,57 @@ class DeepSeekClient:
             }
         )
 
+    def generate_tests(
+        self,
+        source: str,
+        instruction: str,
+        module_name: str = "snippet",
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是代码对抗测试 Agent。只输出 JSON，字段 pytest_code。"
+                        "为公开函数生成有界、确定性 pytest；测试必须从指定模块导入，"
+                        "不得访问网络、文件系统、环境变量、子进程或第三方依赖。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"模块名: {module_name}\n要求: {instruction}\n\nPython 源码:\n{source}"
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+        }
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+            tests = str(parsed.get("pytest_code") or "")
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise LLMError(f"DeepSeek adversarial test generation failed: {exc}") from exc
+        if len(tests.encode("utf-8")) > 65536:
+            raise LLMError("DeepSeek adversarial tests exceeded 65536 bytes.")
+        try:
+            compile(tests, "generated_tests.py", "exec")
+        except SyntaxError as exc:
+            raise LLMError(f"DeepSeek adversarial tests contain invalid Python: {exc}") from exc
+        return tests
+
 
 class MockRefactorClient:
     """Deterministic local client used by tests and offline demos."""

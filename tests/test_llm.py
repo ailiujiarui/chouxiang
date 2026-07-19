@@ -70,6 +70,34 @@ def test_deepseek_client_allows_missing_usage(monkeypatch, tmp_path: Path):
     assert result.usage.total_tokens is None
 
 
+def test_deepseek_client_generates_bounded_pytest(monkeypatch):
+    class TestResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"pytest_code":"from snippet import value\\n\\n'
+                                'def test_value():\\n    assert value() == 1\\n"}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", lambda *args, **kwargs: TestResponse())
+    tests = DeepSeekClient(api_key="test-key").generate_tests(
+        "def value():\n    return 1\n",
+        "simplify value",
+    )
+    assert "from snippet import value" in tests
+    assert "def test_value" in tests
+
+
 class _DeepSeekResponse:
     def __init__(self, usage=None):
         self.usage = usage

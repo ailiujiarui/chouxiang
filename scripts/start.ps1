@@ -31,6 +31,9 @@ $compose = @("compose", "--project-name", "refactor-agent-local")
 $env:REFACTOR_AGENT_API_PORT = $ApiPort
 $env:REFACTOR_AGENT_DASHBOARD_PORT = $DashboardPort
 $env:PYTHON_BASE_IMAGE = $PythonBaseImage
+if (-not $env:REFACTOR_AGENT_MOCK_LLM) {
+    $env:REFACTOR_AGENT_MOCK_LLM = if ($env:DEEPSEEK_API_KEY) { "false" } else { "true" }
+}
 
 if ($Down) {
     & docker @compose down
@@ -87,7 +90,12 @@ if ($api.StatusCode -ne 200 -or $dashboard.StatusCode -ne 200) {
 Write-Host "Refactor Agent API:       http://127.0.0.1:$ApiPort"
 Write-Host "Refactor Agent Dashboard: http://127.0.0.1:$DashboardPort"
 Write-Host "Local Admin Token:         local-admin-secret"
-Write-Host "Mode: mock + local-only; no remote writes or real provider calls."
+$productMode = if ($env:REFACTOR_AGENT_MOCK_LLM -eq "true") { "demo" } else { "deepseek" }
+Write-Host "Product Mode:              $productMode"
+if ($productMode -eq "demo") {
+    Write-Host "Demo limitation: only built-in deterministic patterns are supported."
+}
+Write-Host "All analysis is local-only; no remote repository writes."
 
 if ($Follow) {
     & docker @compose logs -f api dashboard

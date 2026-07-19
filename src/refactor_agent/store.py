@@ -59,9 +59,9 @@ class SQLiteRunStore:
                 """
                 INSERT OR REPLACE INTO runs (
                     run_id, issue_id, repo_name, pre_loc, post_loc, pre_cc, post_cc,
-                    self_heal_count, status, error
+                    self_heal_count, status, error, evidence_level, report_persona
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.run_id,
@@ -74,6 +74,8 @@ class SQLiteRunStore:
                     record.self_heal_count,
                     record.status,
                     sanitize_text(record.error) if record.error else None,
+                    record.evidence_level.value,
+                    record.report_persona.value,
                 ),
             )
 
@@ -887,10 +889,13 @@ class SQLiteRunStore:
                     self_heal_count INTEGER NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
                     error TEXT
+                    ,evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS'
+                    ,report_persona TEXT NOT NULL DEFAULT 'STRICT'
                 )
                 """
             )
             _migrate_runs_status(connection)
+            _migrate_runs_metadata(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS github_jobs (
@@ -1062,12 +1067,40 @@ def _migrate_runs_status(connection: sqlite3.Connection) -> None:
             post_cc INTEGER,
             self_heal_count INTEGER NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
-            error TEXT
+            error TEXT,
+            evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS',
+            report_persona TEXT NOT NULL DEFAULT 'STRICT'
         )
         """
     )
-    connection.execute("INSERT INTO runs SELECT * FROM runs_legacy")
+    legacy_columns = {
+        column["name"] for column in connection.execute("PRAGMA table_info(runs_legacy)")
+    }
+    common_columns = [
+        column
+        for column in (
+            "run_id", "issue_id", "repo_name", "pre_loc", "post_loc", "pre_cc", "post_cc",
+            "self_heal_count", "status", "error", "evidence_level", "report_persona",
+        )
+        if column in legacy_columns
+    ]
+    column_list = ", ".join(common_columns)
+    connection.execute(
+        f"INSERT INTO runs ({column_list}) SELECT {column_list} FROM runs_legacy"
+    )
     connection.execute("DROP TABLE runs_legacy")
+
+
+def _migrate_runs_metadata(connection: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+    if "evidence_level" not in columns:
+        connection.execute(
+            "ALTER TABLE runs ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS'"
+        )
+    if "report_persona" not in columns:
+        connection.execute(
+            "ALTER TABLE runs ADD COLUMN report_persona TEXT NOT NULL DEFAULT 'STRICT'"
+        )
 
 
 def _migrate_github_jobs(connection: sqlite3.Connection) -> None:

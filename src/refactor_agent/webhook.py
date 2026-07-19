@@ -12,14 +12,20 @@ from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
 from refactor_agent.config import AppSettings
 from refactor_agent.job_worker import GitHubJobWorker
 from refactor_agent.locator import AUTO_TARGET_PATH
-from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
+from refactor_agent.models import (
+    AnalysisInputKind,
+    AnalysisRequest,
+    EvidenceLevel,
+    GitHubRefactorJob,
+    RepositoryJobKind,
+)
 from refactor_agent.repository_allowlist import (
     EnvironmentRepositoryRemovalError,
     RepositoryAllowlistLimitError,
@@ -40,6 +46,7 @@ class DashboardUrlJobRequest(BaseModel):
     branch: str | None = None
     target_path: str | None = None
     tests_path: str = "tests"
+    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 class RepositoryAllowlistRequest(BaseModel):
@@ -92,10 +99,17 @@ def create_app(
     @app.get("/capabilities")
     def capabilities() -> dict[str, Any]:
         llm_ready = settings.mock_llm or bool(os.getenv("DEEPSEEK_API_KEY"))
+        product_mode = "demo" if settings.mock_llm else "deepseek"
         return {
             "sandbox_backend": settings.sandbox_backend,
             "graph_backend": settings.graph_backend,
             "llm_mode": "mock" if settings.mock_llm else settings.llm_provider,
+            "product_mode": product_mode,
+            "demo_limitations": (
+                "Deterministic demo supports only built-in patterns; arbitrary code requires DeepSeek."
+                if product_mode == "demo"
+                else None
+            ),
             "url_submission": settings.sandbox_backend == "docker" and llm_ready,
             "snippet_submission": True,
             "snippet_verified_refactor": settings.sandbox_backend == "docker" and llm_ready,
@@ -260,6 +274,7 @@ def create_app(
             tests_path=tests_path,
             event_name="dashboard_url",
             action="submitted",
+            persona=payload.persona,
         )
         record = store.create_github_job(job)
         return _job_response(record, status.HTTP_202_ACCEPTED)
@@ -319,6 +334,100 @@ def create_app(
         )
         record = store.create_github_job(job)
         return _job_response(record, status.HTTP_202_ACCEPTED)
+
+    @app.post("/analysis", status_code=status.HTTP_202_ACCEPTED)
+    async def submit_analysis(request: Request):
+        """Unified product entry point; legacy job routes remain compatibility adapters."""
+        _require_admin(request, settings)
+        payload = await _read_bounded_model(
+            request,
+            settings.request_max_bytes,
+            AnalysisRequest,
+            "Invalid analysis payload.",
+        )
+        instruction = payload.instruction.strip()
+        if not instruction:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Analysis instruction must contain non-whitespace characters.",
+            )
+        if payload.input_kind == AnalysisInputKind.SNIPPET:
+            source = (payload.source or "").strip()
+            tests = payload.tests.strip() if payload.tests else None
+            try:
+                if not source or len(source.encode("utf-8")) > 128 * 1024:
+                    raise ValueError("Source must contain 1 to 131072 UTF-8 bytes.")
+                if tests and len(tests.encode("utf-8")) > 128 * 1024:
+                    raise ValueError("Tests must contain at most 131072 UTF-8 bytes.")
+                ast.parse(source, filename="snippet.py")
+                if tests:
+                    ast.parse(tests, filename="test_snippet.py")
+            except (SyntaxError, ValueError) as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            job = GitHubRefactorJob(
+                job_kind=RepositoryJobKind.SNIPPET,
+                job_id=f"snippet-{uuid4().hex}",
+                delivery_id=f"snippet:{uuid4().hex}",
+                repo_full_name="local/snippet",
+                issue_number=None,
+                issue_title="Snippet code analysis",
+                issue_text=instruction,
+                target_path="snippet.py",
+                tests_path="test_snippet.py",
+                event_name="analysis",
+                action="submitted",
+                snippet_source=source + ("\n" if not source.endswith("\n") else ""),
+                snippet_tests=(tests + ("\n" if not tests.endswith("\n") else "")) if tests else None,
+                snippet_mode="VERIFIED_REFACTOR" if tests else "REVIEW",
+                persona=payload.persona,
+            )
+            evidence = EvidenceLevel.USER_TESTS if tests else EvidenceLevel.STATIC
+        else:
+            try:
+                repository_url = payload.repository_url or ""
+                repo_full_name = repository_policy.require_allowed(
+                    parse_github_repository_url(repository_url)
+                )
+                target_path = normalize_repo_path(payload.target_path) if payload.target_path else AUTO_TARGET_PATH
+                if target_path != AUTO_TARGET_PATH and not target_path.lower().endswith(".py"):
+                    raise ValueError("Target path must reference a Python file.")
+                tests_path = normalize_repo_path(payload.tests_path or "tests")
+                branch = normalize_git_ref(payload.ref)
+            except RepositoryNotAllowlistedError as exc:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            if settings.sandbox_backend != "docker" or (
+                not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Repository analysis requires Docker and an available configured LLM.",
+                )
+            job = GitHubRefactorJob(
+                job_kind=RepositoryJobKind.DASHBOARD_URL,
+                job_id=build_dashboard_job_id(repo_full_name),
+                delivery_id=f"dashboard:{uuid4().hex}",
+                repo_full_name=repo_full_name,
+                default_branch=branch,
+                issue_number=None,
+                issue_title="Repository code analysis",
+                issue_text=instruction,
+                target_path=target_path,
+                tests_path=tests_path,
+                event_name="analysis",
+                action="submitted",
+                persona=payload.persona,
+            )
+            evidence = EvidenceLevel.REPOSITORY_TESTS
+        record = store.create_github_job(job)
+        response_payload = _sanitize_payload(record.model_dump(mode="json", exclude={"payload_json"}))
+        response_payload.update(
+            evidence_level=evidence.value,
+            report_persona=payload.persona.value,
+            product_mode="demo" if settings.mock_llm else "deepseek",
+        )
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response_payload)
 
     @app.get("/runs")
     def list_runs(limit: int = 100) -> dict[str, Any]:

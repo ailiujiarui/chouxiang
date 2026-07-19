@@ -33,6 +33,7 @@ def test_control_api_has_no_webhook_routes(tmp_path: Path):
     assert "/webhooks/github" not in paths
     assert "/jobs/url" in paths
     assert "/jobs/snippet" in paths
+    assert "/analysis" in paths
 
 
 def test_control_api_submits_local_review_job(tmp_path: Path):
@@ -53,6 +54,40 @@ def test_control_api_submits_local_review_job(tmp_path: Path):
     record = store.get_github_job(response.json()["job_id"])
     assert record is not None
     assert record.job_kind == RepositoryJobKind.SNIPPET
+
+
+def test_unified_analysis_endpoint_submits_snippet_with_declared_evidence(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    app = create_app(settings=_settings(tmp_path), store=store, start_worker=False)
+    with TestClient(app) as client:
+        response = client.post(
+            "/analysis",
+            headers={"Authorization": "Bearer admin-secret"},
+            json={
+                "input_kind": "SNIPPET",
+                "instruction": "simplify",
+                "source": "def add(a, b):\n    return a + b\n",
+                "persona": "TSUNDERE",
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json()["evidence_level"] == "STATIC"
+    assert response.json()["report_persona"] == "TSUNDERE"
+    assert response.json()["product_mode"] == "demo"
+
+
+def test_unified_analysis_endpoint_rejects_blank_instruction(tmp_path: Path):
+    app = create_app(settings=_settings(tmp_path), store=SQLiteRunStore(tmp_path / "runs.sqlite"), start_worker=False)
+    with TestClient(app) as client:
+        response = client.post(
+            "/analysis",
+            headers={"Authorization": "Bearer admin-secret"},
+            json={"input_kind": "SNIPPET", "instruction": "   ", "source": "x = 1"},
+        )
+
+    assert response.status_code == 400
+    assert "non-whitespace" in response.json()["detail"]
 
 
 def test_worker_rejects_legacy_webhook_job(tmp_path: Path):

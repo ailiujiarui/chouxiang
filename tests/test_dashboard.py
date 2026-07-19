@@ -407,7 +407,7 @@ def test_streamlit_dashboard_renders_four_operations_tabs(monkeypatch):
     app = streamlit.AppTest.from_file("tests/streamlit_dashboard_app.py").run(timeout=10)
 
     assert [tab.label for tab in app.tabs] == ["任务", "执行过程", "代码变更", "基准测试"]
-    assert app.title[0].value == "重构 Agent 运维仪表盘"
+    assert app.title[0].value == "代码审判助手"
     admin_inputs = [item for item in app.text_input if item.label == "管理员令牌"]
     assert len(admin_inputs) == 1
     assert admin_inputs[0].proto.type == 1
@@ -427,6 +427,7 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
 
     class FakeDashboardApiClient:
         submissions: list[dict[str, object]] = []
+        snippet_submissions: list[dict[str, object]] = []
         allowlist_actions: list[tuple[str, str]] = []
         allowlist_reads = 0
 
@@ -454,11 +455,19 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
                 "graph_backend": "langgraph",
                 "llm_mode": "deepseek",
                 "url_submission": True,
+                "snippet_submission": True,
+                "snippet_verified_refactor": True,
+                "product_mode": "deepseek",
+                "personas": ["STRICT", "TSUNDERE"],
             }
 
         def submit_url_job(self, **payload):
             self.submissions.append(payload)
             return {"job_id": "url-job-created", "status": "QUEUED"}
+
+        def submit_snippet_job(self, **payload):
+            self.snippet_submissions.append(payload)
+            return {"job_id": "snippet-job-created", "status": "QUEUED"}
 
         def list_repository_allowlist(self):
             type(self).allowlist_reads += 1
@@ -486,7 +495,11 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
             return {"repo_full_name": repository, "removed": True}
 
         def list_runs(self, limit: int = 100):
-            return [{"run_id": "run-1"}]
+            return [{
+                "run_id": "run-1",
+                "evidence_level": "REPOSITORY_TESTS",
+                "report_persona": "TSUNDERE",
+            }]
 
         def list_benchmarks(self, limit: int = 20):
             return [
@@ -513,6 +526,7 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
                 "change.diff": "-    return 1\n+    return 2\n",
                 "pytest.log": "1 passed",
                 "adversary.log": "passed",
+                "report.md": "# Final report\n\nEvidence accepted.",
             }[artifact_name]
 
         def get_benchmark(self, run_id: str):
@@ -541,8 +555,12 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
     assert any(item.label == "目标文件（可选）" for item in app.text_input)
     assert any(item.label == "测试路径" for item in app.text_input)
     assert any(item.label == "简化要求" for item in app.text_area)
+    assert any(item.label == "Python 源码" for item in app.text_area)
+    assert any(item.label == "审查或精简要求" for item in app.text_area)
+    assert any(item.label == "创建代码审判任务" for item in app.button)
     assert any(item.label == "创建本地简化任务" for item in app.button)
     assert any("真实 DeepSeek" in item.value for item in app.caption)
+    assert any("REPOSITORY_TESTS" in item.value for item in app.caption)
 
     initial_submit = next(item for item in app.button if item.label == "创建本地简化任务")
     assert initial_submit.disabled is True
@@ -592,5 +610,6 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
         "branch": None,
         "target_path": None,
         "tests_path": "tests",
+        "persona": "STRICT",
     }
     assert any("url-job-created" in item.value for item in app.success)

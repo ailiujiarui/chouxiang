@@ -16,6 +16,9 @@ def test_one_click_script_checks_docker_and_health_and_has_safe_stop():
     assert "docker image inspect" in script
     assert "docker/sandbox.Dockerfile" in script
     assert "PYTHON_BASE_IMAGE=$PythonBaseImage" in script
+    assert 'if ($env:DEEPSEEK_API_KEY) { "false" } else { "true" }' in script
+    assert "Product Mode:" in script
+    assert "no remote repository writes" in script
     assert "-PythonBaseImage <registry>/python:3.12-slim" in script
 
 
@@ -29,6 +32,7 @@ def test_compose_starts_api_before_dashboard_with_localhost_ports():
     assert '127.0.0.1:${REFACTOR_AGENT_API_PORT:-8000}:8000' in compose
     assert '127.0.0.1:${REFACTOR_AGENT_DASHBOARD_PORT:-8501}:8501' in compose
     assert "REFACTOR_AGENT_MOCK_LLM: ${REFACTOR_AGENT_MOCK_LLM:-true}" in compose
+    assert "DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}" in compose
     assert "REFACTOR_AGENT_DRY_RUN" not in compose
     assert "GITHUB_WEBHOOK_SECRET" not in compose
     assert "REFACTOR_AGENT_ALLOWED_SENDERS" not in compose
