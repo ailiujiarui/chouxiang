@@ -127,12 +127,15 @@ class DashboardApiClient:
         *,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not self.admin_token:
-            raise DashboardApiError("Admin Token is required for control actions.", 401)
+        headers = (
+            {"Authorization": f"Bearer {self.admin_token}"}
+            if self.admin_token
+            else None
+        )
         return self._request(
             method,
             path,
-            headers={"Authorization": f"Bearer {self.admin_token}"},
+            headers=headers,
             json=json,
         )
 

@@ -77,6 +77,63 @@ def test_unified_analysis_endpoint_submits_snippet_with_declared_evidence(tmp_pa
     assert response.json()["product_mode"] == "demo"
 
 
+def test_local_single_user_mode_submits_analysis_without_admin_token(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    app = create_app(
+        settings=_settings(tmp_path, admin_token=None),
+        store=store,
+        start_worker=False,
+    )
+
+    with TestClient(app) as client:
+        capabilities = client.get("/capabilities")
+        response = client.post(
+            "/analysis",
+            json={
+                "input_kind": "SNIPPET",
+                "instruction": "simplify",
+                "source": "def add(a, b):\n    return a + b\n",
+                "persona": "TSUNDERE",
+            },
+        )
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["admin_token_required"] is False
+    assert response.status_code == 202
+
+
+def test_configured_admin_token_remains_enforced(tmp_path: Path):
+    app = create_app(
+        settings=_settings(tmp_path),
+        store=SQLiteRunStore(tmp_path / "runs.sqlite"),
+        start_worker=False,
+    )
+
+    with TestClient(app) as client:
+        capabilities = client.get("/capabilities")
+        missing = client.post(
+            "/analysis",
+            json={
+                "input_kind": "SNIPPET",
+                "instruction": "simplify",
+                "source": "x = 1\n",
+            },
+        )
+        invalid = client.post(
+            "/analysis",
+            headers={"Authorization": "Bearer wrong"},
+            json={
+                "input_kind": "SNIPPET",
+                "instruction": "simplify",
+                "source": "x = 1\n",
+            },
+        )
+
+    assert capabilities.json()["admin_token_required"] is True
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+
+
 def test_unified_analysis_endpoint_rejects_blank_instruction(tmp_path: Path):
     app = create_app(settings=_settings(tmp_path), store=SQLiteRunStore(tmp_path / "runs.sqlite"), start_worker=False)
     with TestClient(app) as client:

@@ -5,6 +5,7 @@ services:
       dockerfile: docker/app.Dockerfile
       args:
         PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     image: refactor-agent:local
     working_dir: /workspace/repo
     environment:
@@ -14,9 +15,11 @@ services:
       REFACTOR_AGENT_DATABASE: /data/refactor_agent.sqlite
       REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT: /data/github-workspaces
       REFACTOR_AGENT_SANDBOX_BACKEND: docker
+      REFACTOR_AGENT_SANDBOX_VOLUME: refactor-agent-local_refactor-agent-memory
+      REFACTOR_AGENT_SANDBOX_DATA_ROOT: /data
       REFACTOR_AGENT_MOCK_LLM: ${REFACTOR_AGENT_MOCK_LLM:-true}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      REFACTOR_AGENT_ADMIN_TOKEN: ${REFACTOR_AGENT_ADMIN_TOKEN:-local-admin-secret}
+      REFACTOR_AGENT_ADMIN_TOKEN: ${REFACTOR_AGENT_ADMIN_TOKEN:-}
       REFACTOR_AGENT_ALLOWED_REPOSITORIES: ${REFACTOR_AGENT_ALLOWED_REPOSITORIES:-owner/repository}
     volumes:
       - refactor-agent-memory:/data
@@ -37,6 +40,7 @@ services:
       dockerfile: docker/app.Dockerfile
       args:
         PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     image: refactor-agent:local
     working_dir: /workspace/repo
     environment:
@@ -57,6 +61,7 @@ services:
       dockerfile: docker/app.Dockerfile
       args:
         PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     working_dir: /workspace/repo
     environment:
       PYTHONUTF8: "1"

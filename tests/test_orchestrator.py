@@ -129,6 +129,11 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
         "report.md",
     }
     assert "PREPARE -> MINIMIZER -> AST_GUARD" in result.report_markdown
+    assert result.report_markdown.startswith("# Code Judge Report")
+    assert "## Decision" in result.report_markdown
+    assert "Provider / model" in result.report_markdown
+    assert "**Next action:**" in result.report_markdown
+    assert "Technical appendix" in result.report_markdown
     assert result.ast_rewrite is not None
     assert result.ast_rewrite.allowed_regions == ["is_leap_year"]
     trajectory_path = tmp_path / ".runs" / result.record.run_id / "trajectory.jsonl"

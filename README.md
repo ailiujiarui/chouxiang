@@ -1,31 +1,37 @@
 # Refactor Agent
 
-面向 Python 的本地代码审查与安全精简工具。当前只提供三条流程：
+面向 Python 的本地代码审判与安全精简工具。当前支持：
 
-1. 粘贴代码并进行只读静态审查；
-2. 粘贴代码和 pytest，执行完整本地验证精简；
-3. 从 allowlist GitHub 仓库只读克隆代码并执行本地验证精简。
+1. 粘贴 Python 代码，执行 AST 分析、多 Agent 对抗和人格化审查；
+2. 粘贴 Python 代码并提供 pytest，执行完整的本地验证精简；
+3. 只读克隆 allowlist 中的 GitHub 仓库，在本地完成分析与验证。
 
 项目不接收 GitHub Webhook，不创建分支、commit、push、Pull Request 或 Issue 评论。
 
-## 安全执行链
+## 执行链
 
-验证精简使用真实 LangGraph 节点执行：
+统一分析流程为：
 
 ```text
-prepare -> minimizer -> ast_guard -> pytest -> adversary -> mutation -> judge -> finalize
+Input Adapter
+  -> AST Analyst
+  -> Minimizer
+  -> Defender
+  -> Adversary
+  -> Judge
+  -> Persona Reporter
 ```
 
-- LLM 候选按不可信完整文件处理。
-- AST Guard 只应用请求、符号或 traceback 定位到的区域。
-- 新 import 默认拒绝，危险调用、公开 API 和目标区域外修改会被拒绝。
-- API/Worker 强制使用无网络、非 root、只读根文件系统和资源受限的 Docker sandbox。
-- 本地 CLI 的 subprocess 模式只适用于可信代码，不是安全 sandbox。
-- 源码、diff、pytest、对抗测试、变异测试和报告保存在 SQLite 与 `.runs`。
+- LLM 生成的候选文件始终按不可信输入处理。
+- AST Guard 限制允许修改的区域，并拒绝危险调用、新增高风险 import、公开 API 破坏和越界修改。
+- API/Worker 使用无网络、非 root、只读根文件系统和资源受限的 Docker sandbox。
+- 用户测试、系统生成测试、对抗测试、变异测试和 Judge 共同形成可追溯证据。
+- 报告明确标记 `STATIC`、`GENERATED_TESTS`、`USER_TESTS` 或 `REPOSITORY_TESTS` 证据等级。
+- 人格只影响报告措辞，不参与技术裁决和安全判断。
 
 ## 一键启动
 
-需要 Docker Desktop。Windows PowerShell：
+需要 Docker Desktop 和 Windows PowerShell：
 
 ```powershell
 .\scripts\start.ps1 -Build
@@ -35,22 +41,47 @@ prepare -> minimizer -> ast_guard -> pytest -> adversary -> mutation -> judge ->
 
 - Dashboard：`http://127.0.0.1:8501`
 - API：`http://127.0.0.1:8000`
-- 本地 Admin Token：`local-admin-secret`
 
-默认使用 mock LLM，不调用真实 DeepSeek。停止服务：
+默认是仅绑定 localhost 的本地单用户模式，不设置管理员令牌，Dashboard 可直接提交和管理本地任务。这个默认值不代表网络部署安全；不要把端口转发到不可信网络。
+
+默认使用 mock LLM，仅适合内置演示和离线回归。停止服务但保留本地数据：
 
 ```powershell
 .\scripts\start.ps1 -Down
 ```
 
-端口和基础镜像可以覆盖：
+端口、基础镜像和 Python 包索引可以覆盖：
 
 ```powershell
 .\scripts\start.ps1 -Build `
   -ApiPort 18000 `
   -DashboardPort 18501 `
-  -PythonBaseImage "your-registry.example.com/library/python:3.12-slim"
+  -PythonBaseImage "your-registry.example.com/library/python:3.12-slim" `
+  -PipIndexUrl "https://pypi.org/simple"
 ```
+
+## 可选认证
+
+本地单用户启动不需要管理员令牌。需要额外保护提交、取消、重试和 allowlist 管理操作时，可在启动前显式设置：
+
+```powershell
+$env:REFACTOR_AGENT_ADMIN_TOKEN="<strong-random-secret>"
+.\scripts\start.ps1
+```
+
+此时 `/capabilities` 返回 `admin_token_required=true`，Dashboard 才显示管理员令牌输入框；未携带正确 Bearer Token 的控制请求会返回 `401`。令牌不会写入 SQLite 或运行产物。
+
+## DeepSeek
+
+使用真实模型：
+
+```powershell
+$env:DEEPSEEK_API_KEY="<set-in-environment>"
+$env:REFACTOR_AGENT_MOCK_LLM="false"
+.\scripts\start.ps1
+```
+
+可选变量为 `DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`。API Key 不会写入 SQLite、日志或运行产物。
 
 ## CLI
 
@@ -60,21 +91,14 @@ prepare -> minimizer -> ast_guard -> pytest -> adversary -> mutation -> judge ->
 python -m pip install -e .[dev]
 ```
 
-内置演示：
-
-```powershell
-refactor-agent demo
-refactor-agent demo-suite --sandbox-backend auto
-```
-
-审查文件或 stdin；REVIEW 不执行代码：
+审查文件或 stdin，`REVIEW` 不执行用户代码：
 
 ```powershell
 refactor-agent snippet --source snippet.py --mode review --persona tsundere
 Get-Content snippet.py | refactor-agent snippet --source - --mode review
 ```
 
-验证精简必须提供 pytest，测试固定从 `snippet` 模块导入：
+提供 pytest 后执行验证精简：
 
 ```powershell
 refactor-agent snippet `
@@ -84,67 +108,27 @@ refactor-agent snippet `
   --sandbox-backend docker
 ```
 
-现有本地项目可以使用文件入口：
-
-```powershell
-refactor-agent run --target app.py --issue issue.md --tests tests
-```
-
-只读 GitHub URL 入口：
+只读 GitHub URL：
 
 ```powershell
 refactor-agent github-url `
   --repo-url https://github.com/owner/repository `
-  --issue-text "精简 calculate 函数" `
+  --issue-text "简化 calculate 函数" `
   --target src/package/module.py `
   --tests tests
 ```
 
-该 CLI 入口只克隆和读取用户显式提供的仓库，候选与报告留在本地；Dashboard/API 的 URL 入口额外要求仓库 allowlist。
-
 ## 控制 API
 
-启动：
-
-```powershell
-$env:REFACTOR_AGENT_ADMIN_TOKEN="local-admin-secret"
-$env:REFACTOR_AGENT_ALLOWED_REPOSITORIES="owner/repository"
-$env:REFACTOR_AGENT_SANDBOX_BACKEND="docker"
-$env:REFACTOR_AGENT_MOCK_LLM="true"
-refactor-agent serve --host 127.0.0.1 --port 8000
-```
-
-控制 API 提供：
+主要接口：
 
 - `/health`、`/capabilities`
+- `/analysis`、`/jobs/snippet`、`/jobs/url`
 - `/jobs`、任务详情、事件、取消和重试
-- `/jobs/snippet`、`/jobs/url`
-- `/runs`、trajectory 和运行产物
-- `/benchmarks`
+- `/runs`、trajectory、运行产物和 `/benchmarks`
 - `/admin/repository-allowlist`
 
-Snippet、URL 提交、取消、重试和 allowlist 管理需要 Admin Token。代码和测试会持久化在本地任务数据中，不要提交密钥。
-
-## 模式和状态
-
-| 入口 | 行为 | 完成语义 |
-| --- | --- | --- |
-| Snippet REVIEW | 静态分析，不执行代码 | 只读审查完成 |
-| Snippet VERIFIED | 完整安全执行链 | 本地验证完成 |
-| GitHub URL | 只读克隆后完整安全执行链 | 本地验证完成 |
-
-旧数据库中的 `GITHUB_WEBHOOK` 和 `DRY_RUN` 枚举仅为历史兼容保留。旧 Webhook 任务可读取，但 Worker 会拒绝执行，API 会拒绝重试。
-
-## DeepSeek
-
-使用真实模型：
-
-```powershell
-$env:DEEPSEEK_API_KEY="<set-in-environment>"
-$env:REFACTOR_AGENT_MOCK_LLM="false"
-```
-
-可选变量：`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL`。密钥不会写入 SQLite、日志或运行产物。
+仓库 URL 仍必须通过 canonical URL 校验和持久化 allowlist。源码和测试会保存在本地任务数据中，不要提交密钥。
 
 ## 验证
 
@@ -155,4 +139,4 @@ docker compose config --quiet
 git diff --check
 ```
 
-架构边界见 `phase4-reliability-benchmark-dashboard-design.md`，Docker 说明见 `docker/README.md`。
+Docker 细节见 `docker/README.md`，当前产品设计见 `docs/designs/2026-07-19-code-judge-product-redesign.md`。

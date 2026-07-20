@@ -1,5 +1,7 @@
 # 删除 GitHub Webhook 自动交付流程设计
 
+> 认证更新（2026-07-20）：本文保留为删除远程写流程的历史记录，其中 Admin Token 必填结论已被 `2026-07-20-local-no-admin-token.md` 取代。
+
 日期：2026-07-18
 状态：已实现、验证并完成 code review
 

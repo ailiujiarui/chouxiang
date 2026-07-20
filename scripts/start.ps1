@@ -7,7 +7,8 @@ param(
     [int]$ApiPort = 8000,
     [ValidateRange(1, 65535)]
     [int]$DashboardPort = 8501,
-    [string]$PythonBaseImage = "python:3.12-slim"
+    [string]$PythonBaseImage = "python:3.12-slim",
+    [string]$PipIndexUrl = "https://pypi.org/simple"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,7 @@ $compose = @("compose", "--project-name", "refactor-agent-local")
 $env:REFACTOR_AGENT_API_PORT = $ApiPort
 $env:REFACTOR_AGENT_DASHBOARD_PORT = $DashboardPort
 $env:PYTHON_BASE_IMAGE = $PythonBaseImage
+$env:PIP_INDEX_URL = $PipIndexUrl
 if (-not $env:REFACTOR_AGENT_MOCK_LLM) {
     $env:REFACTOR_AGENT_MOCK_LLM = if ($env:DEEPSEEK_API_KEY) { "false" } else { "true" }
 }
@@ -53,7 +55,7 @@ $ErrorActionPreference = "SilentlyContinue"
 $sandboxMissing = $LASTEXITCODE -ne 0
 $ErrorActionPreference = $savedErrorAction
 if ($Build -or $sandboxMissing) {
-    & docker build --build-arg "PYTHON_BASE_IMAGE=$PythonBaseImage" -f docker/sandbox.Dockerfile -t $sandboxImage .
+    & docker build --build-arg "PYTHON_BASE_IMAGE=$PythonBaseImage" --build-arg "PIP_INDEX_URL=$PipIndexUrl" -f docker/sandbox.Dockerfile -t $sandboxImage .
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to build the sandbox image. Check registry access or retry with -PythonBaseImage <registry>/python:3.12-slim."
     }
@@ -89,7 +91,8 @@ if ($api.StatusCode -ne 200 -or $dashboard.StatusCode -ne 200) {
 
 Write-Host "Refactor Agent API:       http://127.0.0.1:$ApiPort"
 Write-Host "Refactor Agent Dashboard: http://127.0.0.1:$DashboardPort"
-Write-Host "Local Admin Token:         local-admin-secret"
+$localAuth = if ($env:REFACTOR_AGENT_ADMIN_TOKEN) { "Bearer token enabled" } else { "single-user; no Admin Token" }
+Write-Host "Local Auth:                $localAuth"
 $productMode = if ($env:REFACTOR_AGENT_MOCK_LLM -eq "true") { "demo" } else { "deepseek" }
 Write-Host "Product Mode:              $productMode"
 if ($productMode -eq "demo") {

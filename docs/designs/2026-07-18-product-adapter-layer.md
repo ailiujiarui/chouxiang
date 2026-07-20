@@ -1,5 +1,7 @@
 # 代码审判产品适配层设计
 
+> 认证更新（2026-07-20）：本文中的 Admin Token 必填约束已被 `2026-07-20-local-no-admin-token.md` 取代；默认 localhost 单用户模式不需要令牌，显式配置后仍强制校验。
+
 日期：2026-07-18
 状态：已实现，但产品决策已被 `2026-07-19-code-judge-product-redesign.md` 取代
 

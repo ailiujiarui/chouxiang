@@ -23,7 +23,7 @@ from refactor_agent.models import (
     RepositoryJobKind,
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
-from refactor_agent.persona import build_persona_report, render_persona_markdown
+from refactor_agent.persona import inject_persona_report
 from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
 from refactor_agent.store import SQLiteRunStore
 
@@ -118,12 +118,7 @@ class LocalRepositoryRefactorService:
                 execution_control=control,
             )
             report_path = self.settings.run_root / run_result.record.run_id / "artifacts" / "report.md"
-            with report_path.open("a", encoding="utf-8", newline="") as report:
-                report.write(
-                    render_persona_markdown(
-                        build_persona_report(run_result, ReportPersona(job.persona))
-                    )
-                )
+            inject_persona_report(report_path, run_result, ReportPersona(job.persona))
             status = "DRY_RUN" if run_result.record.status == "SUCCESS" else "FAILED"
             return GitHubAutomationResult(
                 job_id=job.job_id,

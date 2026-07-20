@@ -11,8 +11,10 @@
 ```text
 Dashboard: http://127.0.0.1:8501
 API:       http://127.0.0.1:8000
-Token:     local-admin-secret
+Auth:      local single-user; Admin Token optional
 ```
+
+默认端口只绑定 localhost，Dashboard 无需令牌即可提交和管理本地任务。若显式设置 `REFACTOR_AGENT_ADMIN_TOKEN`，控制操作恢复 Bearer Token 校验，Dashboard 会按 `/capabilities` 的声明显示令牌输入框。
 
 停止服务但保留 SQLite volume：
 
@@ -43,10 +45,11 @@ Sandbox 使用无网络、非 root、只读文件系统、capability 清空、`n
 
 ```powershell
 .\scripts\start.ps1 -Build `
-  -PythonBaseImage "your-registry.example.com/library/python:3.12-slim"
+  -PythonBaseImage "your-registry.example.com/library/python:3.12-slim" `
+  -PipIndexUrl "https://pypi.org/simple"
 ```
 
-参数会同时传给应用和 sandbox 构建。
+基础镜像和包索引参数会同时传给应用和 sandbox 构建。
 
 ## 数据
 

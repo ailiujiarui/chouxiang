@@ -22,6 +22,7 @@ from refactor_agent.dashboard_views import (
     localize_job_status,
 )
 from refactor_agent.models import RunRecord
+from refactor_agent.persona import extract_persona_markdown
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -143,7 +144,7 @@ def dashboard_main() -> None:
             "API 地址",
             value=os.getenv("REFACTOR_AGENT_API_URL", "http://127.0.0.1:8000"),
         )
-        admin_token = st.text_input("管理员令牌", type="password", value="")
+        admin_token = ""
         limit = st.number_input("记录数量上限", min_value=5, max_value=100, value=50, step=5)
         if st.button("刷新数据", width="stretch"):
             st.rerun()
@@ -161,11 +162,22 @@ def dashboard_main() -> None:
     except DashboardApiError as exc:
         _show_dashboard_error(st, exc)
 
+    if capabilities.get("admin_token_required"):
+        with st.sidebar:
+            admin_token = st.text_input("管理员令牌", type="password", value="")
+        client = DashboardApiClient(api_url, admin_token=admin_token or None, timeout_seconds=1.0)
+
     tasks_tab, execution_tab, code_tab, benchmark_tab = st.tabs(
         ["任务", "执行过程", "代码变更", "基准测试"]
     )
     with tasks_tab:
-        _render_tasks_tab(st, client, jobs, bool(admin_token), capabilities)
+        _render_tasks_tab(
+            st,
+            client,
+            jobs,
+            not capabilities.get("admin_token_required") or bool(admin_token),
+            capabilities,
+        )
     with execution_tab:
         _render_execution_tab(st, client, jobs, runs)
     with code_tab:
@@ -460,8 +472,8 @@ def _render_execution_tab(
         left, right = st.columns(2)
         left.text_area("Pytest 日志", client.get_artifact(run_id, "pytest.log"), height=260, disabled=True)
         right.text_area("对抗测试日志", client.get_artifact(run_id, "adversary.log"), height=260, disabled=True)
-        st.subheader("最终审判报告")
-        st.markdown(client.get_artifact(run_id, "report.md"))
+        st.subheader("人格化审判")
+        st.markdown(extract_persona_markdown(client.get_artifact(run_id, "report.md")))
     except DashboardApiError as exc:
         _show_dashboard_error(st, exc)
 

@@ -23,6 +23,7 @@ from refactor_agent.models import (
     CandidateValidationResult,
     DebateRound,
     EvidenceLevel,
+    LLMUsage,
     MutationTestResult,
     PerformanceProfile,
     RefactorRequest,
@@ -406,6 +407,7 @@ class _RefactorWorkflow:
             graph_trace,
             self.request.evidence_level,
             self.request.persona,
+            llm_usages=state.get("llm_usages", []),
         )
         self._write_artifacts(state, report)
         state["result"] = RefactorRunResult(
@@ -621,6 +623,84 @@ def _build_report(
     graph_node_trace: list[str] | None = None,
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
     report_persona: ReportPersona = ReportPersona.STRICT,
+    llm_usages: list[LLMUsage] | None = None,
+) -> str:
+    technical = _build_technical_report(
+        record,
+        workspace,
+        review,
+        sandbox_result,
+        error,
+        ast_validation,
+        adversarial_result,
+        mutation_result,
+        reward,
+        performance_profile,
+        debate_rounds,
+        ast_rewrite,
+        graph_backend,
+        graph_node_trace,
+        evidence_level,
+        report_persona,
+    )
+    decision, next_action = _report_decision(evidence_level, record.status)
+    provider = _report_llm_usage(llm_usages or [])
+    loc_delta = _delta(record.pre_loc, record.post_loc)
+    cc_delta = _delta(record.pre_cc, record.post_cc)
+    summary = [
+        "# Code Judge Report",
+        "",
+        f"> **Decision: {decision}** | Evidence: **{evidence_level.value}** | Persona: **{report_persona.value}**",
+        "",
+        "## Decision",
+        "",
+        *_report_markdown_table(
+            ["Field", "Value"],
+            [
+                ["Run", f"`{record.run_id}`"],
+                ["Status", _report_status_cn(record.status)],
+                ["Provider / model", provider],
+                ["LOC", f"{record.pre_loc} -> {record.post_loc} ({loc_delta})"],
+                ["Cyclomatic complexity", f"{record.pre_cc} -> {record.post_cc} ({cc_delta})"],
+            ],
+        ),
+        "",
+        f"**Next action:** {next_action}",
+        "",
+        "## Evidence Summary",
+        "",
+        f"- {_evidence_boundary(evidence_level)}",
+        f"- Pytest: {_report_bool_status(sandbox_result.passed if sandbox_result else None)}; "
+        f"Adversarial: {_report_bool_status(adversarial_result.passed if adversarial_result else None)}; "
+        f"Mutation: {_report_mutation_status(mutation_result)}",
+        "",
+        "<details>",
+        "<summary>Technical appendix (full metrics, AST, graph, and debate)</summary>",
+        "",
+        technical,
+        "",
+        "</details>",
+    ]
+    return "\n".join(summary)
+
+
+def _build_technical_report(
+    record: RunRecord,
+    workspace: Path,
+    review: str | None,
+    sandbox_result: SandboxResult | None,
+    error: str | None,
+    ast_validation: CandidateValidationResult | None = None,
+    adversarial_result: AdversarialTestResult | None = None,
+    mutation_result: MutationTestResult | None = None,
+    reward: RewardBreakdown | None = None,
+    performance_profile: PerformanceProfile | None = None,
+    debate_rounds: list[DebateRound] | None = None,
+    ast_rewrite: AstRewriteResult | None = None,
+    graph_backend: str | None = None,
+    graph_node_trace: list[str] | None = None,
+    evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
+    report_persona: ReportPersona = ReportPersona.STRICT,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -780,6 +860,28 @@ def _evidence_boundary(level: EvidenceLevel) -> str:
         EvidenceLevel.USER_TESTS: "候选通过用户提供的 pytest 与自动攻击测试。",
         EvidenceLevel.REPOSITORY_TESTS: "候选通过仓库测试与自动攻击测试。",
     }[level]
+
+
+def _report_decision(evidence: EvidenceLevel, status: str) -> tuple[str, str]:
+    if status != "SUCCESS":
+        return "DO NOT ADOPT", "修复未通过裁决；先查看错误详情和失败证据。"
+    if evidence == EvidenceLevel.STATIC:
+        return "REVIEW ONLY", "补充用户或仓库测试后再考虑采用候选。"
+    if evidence == EvidenceLevel.GENERATED_TESTS:
+        return "CONDITIONAL", "先审阅自动生成测试；它不能替代用户或仓库回归测试。"
+    return "ADOPT WITH EVIDENCE", "查看 diff 后合并候选，并保留本次验证产物。"
+
+
+def _report_llm_usage(usages: list[LLMUsage]) -> str:
+    if not usages:
+        return "n/a (no model call recorded)"
+    providers = sorted({f"{item.provider}/{item.model}" for item in usages})
+    total_tokens = sum(item.total_tokens or 0 for item in usages)
+    costs = [item.cost_usd for item in usages if item.cost_usd is not None]
+    suffix = f", {total_tokens} tokens" if total_tokens else ""
+    if costs:
+        suffix += f", ${sum(costs):.4f}"
+    return "; ".join(providers) + suffix
 
 
 def _report_markdown_table(headers: list[object], rows: list[list[object]]) -> list[str]:

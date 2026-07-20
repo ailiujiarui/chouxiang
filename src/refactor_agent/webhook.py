@@ -115,6 +115,7 @@ def create_app(
             "snippet_verified_refactor": settings.sandbox_backend == "docker" and llm_ready,
             "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
             "personas": ["STRICT", "TSUNDERE"],
+            "admin_token_required": bool(settings.admin_token),
         }
 
     @app.get("/admin/repository-allowlist")
@@ -506,8 +507,6 @@ def validate_control_api_settings(
     repository_policy: RepositoryAllowlistPolicy | None = None,
 ) -> None:
     missing = []
-    if not settings.admin_token:
-        missing.append("REFACTOR_AGENT_ADMIN_TOKEN")
     if not (
         repository_policy.list_entries()
         if repository_policy is not None
@@ -527,9 +526,11 @@ def validate_control_api_settings(
 
 
 def _require_admin(request: Request, settings: AppSettings) -> None:
+    if not settings.admin_token:
+        return
     expected = f"Bearer {settings.admin_token or ''}"
     provided = request.headers.get("Authorization", "")
-    if not settings.admin_token or not secrets.compare_digest(provided, expected):
+    if not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token.")
 
 

@@ -18,7 +18,7 @@ from refactor_agent.models import (
     RepositoryJobKind,
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
-from refactor_agent.persona import build_persona_report, render_persona_markdown
+from refactor_agent.persona import inject_persona_report
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -161,6 +161,4 @@ def _append_persona_commentary(
     result: RefactorRunResult,
     persona: ReportPersona,
 ) -> None:
-    commentary = render_persona_markdown(build_persona_report(result, persona))
-    with report_path.open("a", encoding="utf-8", newline="") as report:
-        report.write(commentary)
+    inject_persona_report(report_path, result, persona)

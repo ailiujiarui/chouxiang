@@ -57,9 +57,26 @@ def prepare_workspace(target_file: Path, tests_path: Path, workspace: Path) -> t
     source_root = infer_source_root(target_file, tests_path)
     workspace.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source_root, workspace, dirs_exist_ok=True, ignore=_ignore)
+    _make_workspace_readable(workspace)
     target_in_workspace = workspace / target_file.resolve().relative_to(source_root)
     tests_in_workspace = workspace / tests_path.resolve().relative_to(source_root)
     return source_root, target_in_workspace, tests_in_workspace
+
+
+def _make_workspace_readable(workspace: Path) -> None:
+    """Normalize copied temp-directory permissions for the non-root sandbox user."""
+    for path in [workspace, *workspace.rglob("*")]:
+        try:
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            if path.is_dir():
+                path.chmod(mode | 0o755)
+            else:
+                path.chmod(mode | 0o444)
+        except OSError:
+            # A later sandbox read failure remains explicit in pytest output.
+            continue
 
 
 def write_candidate(target_in_workspace: Path, fixed_code: str) -> None:
@@ -299,7 +316,11 @@ def build_docker_command(
     docker_executable: str = "docker",
     pids_limit: int = 128,
 ) -> list[str]:
+    original_workspace = workspace
     workspace = workspace.resolve()
+    mount_spec, container_workspace = _docker_workspace_mount(
+        original_workspace if os.getenv("REFACTOR_AGENT_SANDBOX_VOLUME", "").strip() else workspace
+    )
     return [
         docker_executable,
         "run",
@@ -328,9 +349,9 @@ def build_docker_command(
         "-e",
         "HOME=/tmp",
         "-v",
-        f"{workspace.as_posix()}:/workspace:ro",
+        mount_spec,
         "-w",
-        "/workspace",
+        container_workspace,
         docker_image,
         "python",
         "-c",
@@ -389,9 +410,13 @@ def _run_performance_profile_docker(
     cpus: float,
     docker_executable: str = "docker",
 ) -> PerformanceProfile:
+    original_workspace = workspace
     workspace = workspace.resolve()
-    target_arg = Path("/workspace") / target_file.resolve().relative_to(workspace)
-    tests_arg = Path("/workspace") / tests_path.resolve().relative_to(workspace)
+    _, container_workspace = _docker_workspace_mount(
+        original_workspace if os.getenv("REFACTOR_AGENT_SANDBOX_VOLUME", "").strip() else workspace
+    )
+    target_arg = Path(container_workspace) / target_file.resolve().relative_to(workspace)
+    tests_arg = Path(container_workspace) / tests_path.resolve().relative_to(workspace)
     try:
         completed = subprocess.run(
             build_docker_command(
@@ -428,6 +453,24 @@ def _run_performance_profile_docker(
             stderr=completed.stderr or "docker performance profiler did not emit JSON",
         )
     return PerformanceProfile.model_validate(payload)
+
+
+def _docker_workspace_mount(workspace: Path) -> tuple[str, str]:
+    """Map a run workspace into nested Docker when the API uses a named volume."""
+    volume = os.getenv("REFACTOR_AGENT_SANDBOX_VOLUME", "").strip()
+    data_root = os.getenv("REFACTOR_AGENT_SANDBOX_DATA_ROOT", "/data").rstrip("/") or "/data"
+    if volume:
+        workspace_text = workspace.as_posix().replace("\\", "/")
+        data_root = data_root.replace("\\", "/")
+        prefix = f"{data_root}/"
+        if not workspace_text.startswith(prefix):
+            # A configured volume must never silently mount an unrelated path.
+            raise ValueError(
+                f"Sandbox workspace {workspace} is outside configured data root {data_root}."
+            )
+        container_workspace = workspace_text
+        return f"{volume}:{data_root}:ro", container_workspace
+    return f"{workspace.as_posix()}:/workspace:ro", "/workspace"
 
 
 def _ignore(directory: str, names: list[str]) -> set[str]:

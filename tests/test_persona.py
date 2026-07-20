@@ -7,7 +7,7 @@ from refactor_agent.models import (
     ReportPersona,
     RunRecord,
 )
-from refactor_agent.persona import build_persona_report, render_persona_markdown
+from refactor_agent.persona import build_persona_report, extract_persona_markdown, render_persona_markdown
 
 
 def test_persona_changes_wording_without_changing_evidence_or_metrics(tmp_path: Path):
@@ -39,4 +39,6 @@ def test_persona_changes_wording_without_changing_evidence_or_metrics(tmp_path: 
     markdown = render_persona_markdown(tsundere)
     assert "多 Agent 对抗摘要" in markdown
     assert "GENERATED_TESTS" not in markdown
+    assert len(markdown) >= 100
+    assert extract_persona_markdown("# report\n\n" + markdown).startswith("#### 人格化代码审判")
     assert "不能等同用户或仓库回归测试" in markdown

@@ -141,6 +141,23 @@ def test_dashboard_api_sends_admin_token_only_for_control_requests():
     assert "admin-secret" not in str(requests[1].url)
 
 
+def test_dashboard_api_control_requests_work_without_configured_token():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(202, json={"job_id": "job-1", "status": "CANCEL_REQUESTED"})
+
+    client = DashboardApiClient(
+        "http://testserver",
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.cancel_job("job-1")
+
+    assert "Authorization" not in requests[0].headers
+
+
 def test_dashboard_api_surfaces_control_conflicts():
     transport = httpx.MockTransport(
         lambda request: httpx.Response(409, json={"detail": "terminal job"})
@@ -408,9 +425,7 @@ def test_streamlit_dashboard_renders_four_operations_tabs(monkeypatch):
 
     assert [tab.label for tab in app.tabs] == ["任务", "执行过程", "代码变更", "基准测试"]
     assert app.title[0].value == "代码审判助手"
-    admin_inputs = [item for item in app.text_input if item.label == "管理员令牌"]
-    assert len(admin_inputs) == 1
-    assert admin_inputs[0].proto.type == 1
+    assert not [item for item in app.text_input if item.label == "管理员令牌"]
     assert any(item.label == "刷新数据" for item in app.button)
     assert any("无法连接本地 API" in item.value for item in app.error)
     assert any("模型：未知" in item.value for item in app.caption)
@@ -420,6 +435,43 @@ def test_streamlit_dashboard_renders_four_operations_tabs(monkeypatch):
         "暂无代码产物。",
         "暂无基准测试记录。",
     }
+
+
+def test_streamlit_dashboard_only_asks_for_token_when_api_requires_it(monkeypatch):
+    streamlit = pytest.importorskip("streamlit.testing.v1")
+
+    class TokenProtectedClient:
+        def __init__(self, api_url: str, admin_token: str | None = None, timeout_seconds: float = 3.0):
+            self.admin_token = admin_token
+
+        def get_capabilities(self):
+            return {
+                "admin_token_required": True,
+                "snippet_submission": True,
+                "url_submission": True,
+                "product_mode": "deepseek",
+            }
+
+        def list_jobs(self, limit: int = 100):
+            return []
+
+        def list_runs(self, limit: int = 100):
+            return []
+
+        def list_benchmarks(self, limit: int = 20):
+            return []
+
+    monkeypatch.setattr(dashboard_module, "DashboardApiClient", TokenProtectedClient)
+    monkeypatch.setenv("REFACTOR_AGENT_API_URL", "http://testserver")
+
+    app = streamlit.AppTest.from_file("tests/streamlit_dashboard_app.py").run(timeout=10)
+
+    admin_inputs = [item for item in app.text_input if item.label == "管理员令牌"]
+    assert len(admin_inputs) == 1
+    assert admin_inputs[0].proto.type == 1
+    assert next(
+        item for item in app.button if item.label == "创建代码审判任务"
+    ).disabled is True
 
 
 def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monkeypatch):
@@ -459,6 +511,7 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
                 "snippet_verified_refactor": True,
                 "product_mode": "deepseek",
                 "personas": ["STRICT", "TSUNDERE"],
+                "admin_token_required": False,
             }
 
         def submit_url_job(self, **payload):
@@ -526,7 +579,7 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
                 "change.diff": "-    return 1\n+    return 2\n",
                 "pytest.log": "1 passed",
                 "adversary.log": "passed",
-                "report.md": "# Final report\n\nEvidence accepted.",
+                "report.md": "# Full report\n\n#### 人格化代码审判\n\n这是至少一百字的人格审判输出，用于确认 Dashboard 只展示人格化部分，而不是把完整技术附录直接铺开。这里继续说明证据边界、代码风险、下一步测试建议，以及最终是否建议采用候选。\n\n<details>\ntechnical appendix\n</details>",
             }[artifact_name]
 
         def get_benchmark(self, run_id: str):
@@ -561,14 +614,11 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
     assert any(item.label == "创建本地简化任务" for item in app.button)
     assert any("真实 DeepSeek" in item.value for item in app.caption)
     assert any("REPOSITORY_TESTS" in item.value for item in app.caption)
+    assert any(item.value == "人格化审判" for item in app.subheader)
 
     initial_submit = next(item for item in app.button if item.label == "创建本地简化任务")
-    assert initial_submit.disabled is True
-    assert FakeDashboardApiClient.allowlist_reads == 0
-    next(item for item in app.text_input if item.label == "管理员令牌").set_value("admin-secret")
-    app.run(timeout=10)
-    enabled_submit = next(item for item in app.button if item.label == "创建本地简化任务")
-    assert enabled_submit.disabled is False
+    assert initial_submit.disabled is False
+    assert not [item for item in app.text_input if item.label == "管理员令牌"]
     assert any(item.label == "仓库名称或 URL" for item in app.text_input)
     assert any(item.label == "添加仓库" for item in app.button)
     assert any(item.label == "选择要移除的仓库" for item in app.selectbox)

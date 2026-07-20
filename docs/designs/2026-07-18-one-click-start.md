@@ -1,5 +1,7 @@
 # 一键启动设计
 
+> 认证更新（2026-07-20）：本文关于“默认或强制 Admin Token”的描述已被 `2026-07-20-local-no-admin-token.md` 取代。当前一键启动默认为 localhost 单用户无令牌模式；只有显式配置 `REFACTOR_AGENT_ADMIN_TOKEN` 时才启用 Bearer 校验。
+
 日期：2026-07-18
 状态：已实现、验证并完成 code review
 
