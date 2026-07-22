@@ -172,3 +172,22 @@ git diff --check
 - 新增隐私能力仅通过 `nailong_agent` 模块暴露；
 - 不改动既有 FastAPI、Dashboard、SQLiteRunStore 或代码审判 LLM 接口；
 - 未实现隐私扩展接口的第三方 Renderer 继续可用，且默认不采集。
+
+## 未来迁移规划
+
+当前隐私接口位于 `nailong_agent`，用于支撑桌宠活动采集与远程推理。
+
+若未来扩展为整个 Refactor Agent 的统一安全与隐私框架，计划将其中具有通用性的能力迁移到共享模块，例如：
+refactor_agent/privacy/
+    consent.py
+    redaction.py
+    remote_gate.py
+
+其中：
+
+- `PrivacyConsent`：迁移为项目级授权模型；
+- `redact_text_for_remote()`：连同其正则规则一并迁移为全项目共享脱敏能力；
+- `admit_activity()` & `prepare_remote_summary()`：依赖桌面活动语义（`ActivityEvent`、meeting 检测），仍保留在桌宠模块，仅其中"是否允许出网"的权限判断部分下沉到 `remote_gate.py`；
+- `PrivacyStore`：继续负责桌宠活动记录，表结构与桌宠语义强绑定，不迁移；项目级运行记录若未来需要类似"清空历史"能力，可通过共享的 `RetentionPolicy` 接口各自独立实现，而非迁移数据本身。
+
+迁移过程中将保持现有接口兼容，避免影响已有桌宠实现。
