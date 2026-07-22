@@ -8,6 +8,8 @@ from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
 from nailong_agent.events import ActivityEvent, EventEnvelope, PopupDecision
 from nailong_agent.renderer import NullRenderer
+from nailong_agent.privacy import PrivacyConsent
+from nailong_agent.privacy_store import PrivacyStore
 
 
 def test_event_models_create_serializable_envelopes() -> None:
@@ -93,6 +95,37 @@ def test_desktop_process_headless_lifecycle(tmp_path) -> None:
 
     assert process.run() == 0
     assert renderer.started is False
+
+
+def test_desktop_process_requests_and_persists_first_startup_consent(tmp_path) -> None:
+    renderer = NullRenderer()
+    renderer.consent_response = PrivacyConsent(activity_collection_enabled=True)
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=lambda: renderer,
+        privacy_store=store,
+    )
+
+    assert process.run() == 0
+    assert renderer.consent_requested is True
+    assert store.load_consent() == renderer.consent_response
+
+
+def test_desktop_process_keeps_legacy_renderers_compatible_and_fail_closed(tmp_path) -> None:
+    class LegacyRenderer(NullRenderer):
+        request_privacy_consent = None
+        configure_privacy_controls = None
+
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=LegacyRenderer,
+        privacy_store=store,
+    )
+
+    assert process.run() == 0
+    assert store.load_consent() == PrivacyConsent()
 
 
 def test_module_entrypoint_supports_headless_mode(tmp_path) -> None:

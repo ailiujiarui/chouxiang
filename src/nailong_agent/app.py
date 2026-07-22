@@ -8,6 +8,8 @@ from typing import Callable
 
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
+from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
+from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
 
 
@@ -75,10 +77,13 @@ class DesktopProcess:
         lock_path: Path = Path(".runs/nailong-agent.lock"),
         bus: EventBus | None = None,
         renderer_factory: Callable[[], PopupRenderer] | None = None,
+        privacy_store: PrivacyStore | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
         self.renderer_factory = renderer_factory or PySide6Renderer
+        self.privacy_store = privacy_store or PrivacyStore(lock_path.parent / "nailong_privacy.sqlite")
+        self.privacy_policy = PrivacyPolicy(self.privacy_store.load_consent())
         self.renderer: PopupRenderer | None = None
 
     def run(self) -> int:
@@ -86,6 +91,15 @@ class DesktopProcess:
             return 2
         try:
             self.renderer = self.renderer_factory()
+            configure_privacy_controls = getattr(self.renderer, "configure_privacy_controls", None)
+            if callable(configure_privacy_controls):
+                configure_privacy_controls(on_clear_activity_history=self.privacy_store.clear_activity_history)
+            if self.privacy_policy.needs_initial_consent:
+                request_privacy_consent = getattr(self.renderer, "request_privacy_consent", None)
+                consent = request_privacy_consent() if callable(request_privacy_consent) else None
+                consent = consent or PrivacyConsent()
+                self.privacy_store.save_consent(consent)
+                self.privacy_policy = PrivacyPolicy(consent)
             self.bus.subscribe("PopupDecision", self._render_popup)
             self.bus.start()
             self.renderer.start()
