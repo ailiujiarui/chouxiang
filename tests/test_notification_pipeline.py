@@ -6,11 +6,16 @@ from threading import Event
 
 import httpx
 
+from nailong_agent.app import DesktopProcess
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.delivery import NotificationDeliveryPump
+from nailong_agent.event_bus import EventBus
 from nailong_agent.events import NotificationKind
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
+from nailong_agent.privacy_store import PrivacyStore
+from nailong_agent.renderer import NullRenderer
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 
@@ -122,6 +127,41 @@ def test_terminal_intents_bypass_regular_cooldown_but_popup_starts_are_serialize
     assert second is not None and second.terminal is True
     assert second.notification_id != first.notification_id
     assert service.acknowledge(second.notification_id, "shown") is True
+
+
+def test_notification_delivery_reaches_renderer_and_acknowledges_popup(tmp_path: Path) -> None:
+    clock, service = _service(tmp_path)
+    bus = EventBus()
+    renderer = NullRenderer()
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        bus=bus,
+        renderer_factory=lambda: renderer,
+        privacy_store=PrivacyStore(tmp_path / "privacy.sqlite"),
+        notification_service=service,
+    )
+    process.renderer = renderer
+    bus.subscribe("PopupDecision", process._render_popup)
+    bus.start()
+    renderer.start()
+
+    try:
+        receipt = service.ingest_analysis_event(
+            _event(1, AnalysisEventType.TASK_STARTED, "renderer-task", clock())
+        )
+        pump = NotificationDeliveryPump(notifications=service, bus=bus)
+
+        assert receipt.reason == "notification_enqueued"
+        assert receipt.notification_id is not None
+        assert pump.run_once() is True
+        assert bus.wait_idle(1.0) is True
+        assert [decision.message for decision in renderer.decisions] == [
+            "任务已接手。我会盯住测试、对抗验证和最终裁决。"
+        ]
+        assert service.get_status().pending_count == 0
+    finally:
+        bus.stop()
+        renderer.stop()
 
 
 def test_long_task_reminder_fires_once_at_one_third_of_deadline(tmp_path: Path) -> None:
