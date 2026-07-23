@@ -134,6 +134,8 @@ class PySide6Renderer:
                 QPainter,
                 QPainterPath,
                 QPen,
+                QTextCharFormat,
+                QTextCursor,
                 QTextDocument,
                 QTextOption,
             )
@@ -184,6 +186,11 @@ class PySide6Renderer:
                 text_options.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
                 bubble_self._document.setDefaultTextOption(text_options)
                 bubble_self._document.setPlainText(message)
+                text_format = QTextCharFormat()
+                text_format.setForeground(QColor("#171717"))
+                text_cursor = QTextCursor(bubble_self._document)
+                text_cursor.select(QTextCursor.Document)
+                text_cursor.mergeCharFormat(text_format)
 
                 bubble_self._document.setTextWidth(-1)
                 ideal_width = int(bubble_self._document.idealWidth()) + bubble_self._horizontal_padding * 2

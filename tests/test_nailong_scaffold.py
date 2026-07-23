@@ -98,8 +98,15 @@ def test_bubble_is_clamped_above_pet_without_covering_it() -> None:
 
 def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
     pytest.importorskip("PySide6")
+    from PySide6.QtGui import QColor, QPalette, QTextCursor
+
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     renderer = PySide6Renderer()
+    original_palette = renderer._app.palette()
+    dark_palette = QPalette(original_palette)
+    dark_palette.setColor(QPalette.Text, QColor("#FFFFFF"))
+    dark_palette.setColor(QPalette.WindowText, QColor("#FFFFFF"))
+    renderer._app.setPalette(dark_palette)
     renderer.start()
     try:
         message = "测试通过，但还需要等待最终裁决。" * 30
@@ -107,6 +114,9 @@ def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
         renderer._app.processEvents()
 
         popup = renderer._popups[-1]
+        text_cursor = QTextCursor(popup._document)
+        text_cursor.movePosition(QTextCursor.Start)
+        assert text_cursor.charFormat().foreground().color().name() == "#171717"
         popup_geometry = popup.frameGeometry()
         pet_geometry = renderer._pet_window.frameGeometry()
         screen = renderer._QApplication.screenAt(pet_geometry.center()) or renderer._app.primaryScreen()
@@ -126,7 +136,16 @@ def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
             - popup._border_inset * 2
         )
         assert popup._document.size().height() <= available_text_height + 1
+        image = popup.grab().toImage()
+        dark_text_pixels = 0
+        for y in range(popup._top_padding, popup.height() - popup._tail_height - popup._bottom_padding):
+            for x in range(popup._horizontal_padding, popup.width() - popup._horizontal_padding):
+                color = image.pixelColor(x, y)
+                if color.alpha() > 0 and max(color.red(), color.green(), color.blue()) < 80:
+                    dark_text_pixels += 1
+        assert dark_text_pixels > 20
     finally:
+        renderer._app.setPalette(original_palette)
         renderer.stop()
 
 
