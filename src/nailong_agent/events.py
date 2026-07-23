@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -107,3 +108,43 @@ class PopupDecision(BaseModel):
 
     def envelope(self) -> EventEnvelope:
         return EventEnvelope.from_payload(self, source="popup_policy")
+
+
+class NotificationKind(StrEnum):
+    ENCOURAGEMENT = "encouragement"
+    LIGHT_TEASE = "light_tease"
+    DEBUG_HINT = "debug_hint"
+    PYTEST_CELEBRATION = "pytest_celebration"
+    FINAL_CELEBRATION = "final_celebration"
+    LONG_TASK_REMINDER = "long_task_reminder"
+    TERMINAL_FAILURE = "terminal_failure"
+    QUIET_MODE_SUMMARY = "quiet_mode_summary"
+
+
+class NotificationIntent(BaseModel):
+    notification_id: str = Field(default_factory=lambda: uuid4().hex)
+    task_id: str = Field(min_length=1)
+    kind: NotificationKind
+    message: str = Field(min_length=1, max_length=500)
+    priority: Literal["low", "normal", "high"] = "normal"
+    terminal: bool = False
+    dedupe_key: str = Field(min_length=1)
+    source_event_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    available_at: datetime = Field(default_factory=utc_now)
+
+
+class NotificationStatus(BaseModel):
+    do_not_disturb: bool
+    last_consumed_sequence: int = Field(ge=0)
+    next_regular_at: datetime | None = None
+    last_popup_started_at: datetime | None = None
+    pending_count: int = Field(ge=0)
+    suppressed_terminal_count: int = Field(ge=0)
+
+
+class NotificationIngestReceipt(BaseModel):
+    accepted: bool
+    duplicate: bool = False
+    notification_id: str | None = None
+    reason: str

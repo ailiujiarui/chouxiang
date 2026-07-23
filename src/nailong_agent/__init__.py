@@ -5,9 +5,15 @@ from nailong_agent.events import (
     ActivityEvent,
     ActivitySnapshot,
     EventEnvelope,
+    NotificationIngestReceipt,
+    NotificationIntent,
+    NotificationKind,
+    NotificationStatus,
     PersonalityResponseProposal,
     PopupDecision,
 )
+from nailong_agent.notification_service import NotificationPort, NotificationService
+from nailong_agent.notification_store import NotificationStore
 from nailong_agent.privacy import CollectionDecision, PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 
@@ -16,6 +22,13 @@ __all__ = [
     "ActivityEvent",
     "ActivitySnapshot",
     "EventEnvelope",
+    "NotificationIngestReceipt",
+    "NotificationIntent",
+    "NotificationKind",
+    "NotificationPort",
+    "NotificationService",
+    "NotificationStatus",
+    "NotificationStore",
     "PersonalityResponseProposal",
     "PopupDecision",
     "CollectionDecision",
