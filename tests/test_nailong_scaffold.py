@@ -11,7 +11,7 @@ from nailong_agent.events import ActivityEvent, EventEnvelope, PopupDecision
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
-from nailong_agent.renderer import NullRenderer
+from nailong_agent.renderer import NullRenderer, PySide6Renderer, place_bubble_above_pet
 from nailong_agent.privacy import PrivacyConsent
 from nailong_agent.privacy_store import PrivacyStore
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
@@ -80,6 +80,54 @@ def test_null_renderer_only_records_visible_decisions() -> None:
 
     assert [decision.message for decision in renderer.decisions] == ["now"]
     assert renderer.started is False
+
+
+def test_bubble_is_clamped_above_pet_without_covering_it() -> None:
+    placement = place_bubble_above_pet(
+        available=(0, 0, 1280, 720),
+        pet=(1076, 576, 180, 120),
+        bubble_size=(420, 300),
+    )
+
+    assert placement.x >= 12
+    assert placement.x + 420 <= 1280 - 12
+    assert placement.y >= 12
+    assert placement.y + 300 <= 576 - 6
+    assert 28 <= placement.tail_x <= 420 - 28
+
+
+def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    renderer = PySide6Renderer()
+    renderer.start()
+    try:
+        message = "测试通过，但还需要等待最终裁决。" * 30
+        assert renderer.show(PopupDecision(action="show", reason="layout", message=message)) is True
+        renderer._app.processEvents()
+
+        popup = renderer._popups[-1]
+        popup_geometry = popup.frameGeometry()
+        pet_geometry = renderer._pet_window.frameGeometry()
+        screen = renderer._QApplication.screenAt(pet_geometry.center()) or renderer._app.primaryScreen()
+        assert screen is not None
+        area = screen.availableGeometry()
+        assert popup_geometry.top() >= area.top() + 12
+        assert popup_geometry.left() >= area.left() + 12
+        assert popup_geometry.right() <= area.right() - 12
+        assert popup_geometry.bottom() <= pet_geometry.top() - 6
+        assert popup.width() <= 420
+        assert popup.height() > 58
+        available_text_height = (
+            popup.height()
+            - popup._tail_height
+            - popup._top_padding
+            - popup._bottom_padding
+            - popup._border_inset * 2
+        )
+        assert popup._document.size().height() <= available_text_height + 1
+    finally:
+        renderer.stop()
 
 
 def test_single_instance_lock_rejects_second_owner(tmp_path) -> None:
