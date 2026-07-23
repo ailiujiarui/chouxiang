@@ -10,7 +10,7 @@ from nailong_agent.privacy import PrivacyConsent
 class PopupRenderer(Protocol):
     def start(self) -> None: ...
 
-    def show(self, decision: PopupDecision) -> None: ...
+    def show(self, decision: PopupDecision) -> bool | None: ...
 
     def stop(self) -> None: ...
 
@@ -25,6 +25,17 @@ class PrivacyControlsRenderer(Protocol):
     def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None: ...
 
 
+class NotificationControlsRenderer(Protocol):
+    """Optional all-day do-not-disturb control exposed by desktop renderers."""
+
+    def configure_notification_controls(
+        self,
+        *,
+        on_set_do_not_disturb: Callable[[bool], None],
+        get_do_not_disturb: Callable[[], bool],
+    ) -> None: ...
+
+
 class NullRenderer:
     """Headless renderer used by tests and command-line smoke runs."""
 
@@ -34,13 +45,17 @@ class NullRenderer:
         self.consent_response: PrivacyConsent | None = None
         self.consent_requested = False
         self._on_clear_activity_history: Callable[[], int] | None = None
+        self._on_set_do_not_disturb: Callable[[bool], None] | None = None
+        self._get_do_not_disturb: Callable[[], bool] | None = None
 
     def start(self) -> None:
         self.started = True
 
-    def show(self, decision: PopupDecision) -> None:
+    def show(self, decision: PopupDecision) -> bool:
         if decision.action == "show":
             self.decisions.append(decision)
+            return True
+        return False
 
     def stop(self) -> None:
         self.started = False
@@ -54,6 +69,20 @@ class NullRenderer:
 
     def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None:
         self._on_clear_activity_history = on_clear_activity_history
+
+    def configure_notification_controls(
+        self,
+        *,
+        on_set_do_not_disturb: Callable[[bool], None],
+        get_do_not_disturb: Callable[[], bool],
+    ) -> None:
+        self._on_set_do_not_disturb = on_set_do_not_disturb
+        self._get_do_not_disturb = get_do_not_disturb
+
+    def set_do_not_disturb(self, enabled: bool) -> None:
+        if self._on_set_do_not_disturb is None:
+            raise RuntimeError("notification controls are not configured")
+        self._on_set_do_not_disturb(enabled)
 
 
 class PySide6Renderer:
@@ -94,8 +123,9 @@ class PySide6Renderer:
         self._popups: list[QLabel] = []
         self._on_quit = on_quit
         self._on_clear_activity_history: Callable[[], int] | None = None
+        self._on_set_do_not_disturb: Callable[[bool], None] | None = None
         self._tray = None
-        self._paused = False
+        self._dnd_action = None
 
         class Bridge(QObject):
             decision = Signal(object)
@@ -106,9 +136,11 @@ class PySide6Renderer:
             self._tray = QSystemTrayIcon(self._pet_window)
             self._tray.setIcon(self._app.style().standardIcon(self._app.style().StandardPixmap.SP_ComputerIcon))  # 占位图标
             menu = QMenu()
-            pause_action = QAction("暂停", menu)
-            pause_action.triggered.connect(self._toggle_pause)
-            menu.addAction(pause_action)
+            self._dnd_action = QAction("全天免打扰", menu)
+            self._dnd_action.setCheckable(True)
+            self._dnd_action.setEnabled(False)
+            self._dnd_action.triggered.connect(self._set_do_not_disturb)
+            menu.addAction(self._dnd_action)
             clear_history_action = QAction("删除本地活动记录", menu)
             clear_history_action.triggered.connect(self._clear_activity_history)
             menu.addAction(clear_history_action)
@@ -126,9 +158,11 @@ class PySide6Renderer:
         if self._tray is not None:
             self._tray.show()
 
-    def show(self, decision: PopupDecision) -> None:
-        if decision.action == "show" and not self._paused:
+    def show(self, decision: PopupDecision) -> bool:
+        if decision.action == "show":
             self._bridge.decision.emit(decision)
+            return True
+        return False
 
     def stop(self) -> None:
         if self._tray is not None:
@@ -164,6 +198,17 @@ class PySide6Renderer:
     def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None:
         self._on_clear_activity_history = on_clear_activity_history
 
+    def configure_notification_controls(
+        self,
+        *,
+        on_set_do_not_disturb: Callable[[bool], None],
+        get_do_not_disturb: Callable[[], bool],
+    ) -> None:
+        self._on_set_do_not_disturb = on_set_do_not_disturb
+        if self._dnd_action is not None:
+            self._dnd_action.setChecked(get_do_not_disturb())
+            self._dnd_action.setEnabled(True)
+
     def _show_on_ui_thread(self, decision: PopupDecision) -> None:
         popup = self._QLabel(decision.message or "奶龙有话想说", self._pet_window)
         popup.setWindowFlags(self._Qt.Tool | self._Qt.FramelessWindowHint | self._Qt.WindowStaysOnTopHint)
@@ -178,8 +223,9 @@ class PySide6Renderer:
         if popup in self._popups:
             self._popups.remove(popup)
 
-    def _toggle_pause(self) -> None:
-        self._paused = not self._paused
+    def _set_do_not_disturb(self, enabled: bool) -> None:
+        if self._on_set_do_not_disturb is not None:
+            self._on_set_do_not_disturb(enabled)
 
     def _clear_activity_history(self) -> None:
         deleted = self._on_clear_activity_history() if self._on_clear_activity_history is not None else 0

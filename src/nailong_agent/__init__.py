@@ -1,5 +1,6 @@
 """Desktop pet application boundary for Nailong Agent."""
 
+from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.events import (
     ActivityClassification,
     ActivityEvent,
@@ -18,6 +19,7 @@ from nailong_agent.privacy import CollectionDecision, PrivacyConsent, PrivacyPol
 from nailong_agent.privacy_store import PrivacyStore
 
 __all__ = [
+    "AnalysisEventSubscriber",
     "ActivityClassification",
     "ActivityEvent",
     "ActivitySnapshot",
@@ -29,6 +31,7 @@ __all__ = [
     "NotificationService",
     "NotificationStatus",
     "NotificationStore",
+    "HttpxSSEAnalysisEventSource",
     "PersonalityResponseProposal",
     "PopupDecision",
     "CollectionDecision",

@@ -3,6 +3,7 @@ param(
     [switch]$Build,
     [switch]$Down,
     [switch]$Follow,
+    [switch]$Desktop,
     [ValidateRange(1, 65535)]
     [int]$ApiPort = 8000,
     [ValidateRange(1, 65535)]
@@ -99,6 +100,39 @@ if ($productMode -eq "demo") {
     Write-Host "Demo limitation: only built-in deterministic patterns are supported."
 }
 Write-Host "All analysis is local-only; no remote repository writes."
+
+if ($Desktop) {
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
+        throw "Python was not found. Install Python and the desktop extra: pip install -e '.[desktop]'."
+    }
+    $pythonExe = $pythonCommand.Source
+    $pythonwExe = Join-Path (Split-Path $pythonExe -Parent) "pythonw.exe"
+    if (-not (Test-Path -LiteralPath $pythonwExe)) {
+        throw "pythonw.exe was not found next to $pythonExe. A Windows Python installation is required for -Desktop."
+    }
+    $previousPythonPath = $env:PYTHONPATH
+    $env:PYTHONPATH = if ($previousPythonPath) { "$repoRoot\src;$previousPythonPath" } else { "$repoRoot\src" }
+    try {
+        & $pythonExe -c "import PySide6, nailong_agent"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Desktop dependencies are missing. Run: pip install -e '.[desktop]'"
+        }
+        $notificationDatabase = Join-Path $repoRoot ".runs\nailong_notifications.sqlite"
+        $desktopProcess = Start-Process -FilePath $pythonwExe -ArgumentList @(
+            "-m", "nailong_agent",
+            "--analysis-url", "http://127.0.0.1:$ApiPort",
+            "--notification-database", "`"$notificationDatabase`""
+        ) -WorkingDirectory $repoRoot -PassThru
+        Write-Host "Nailong Desktop:          started (PID $($desktopProcess.Id))"
+    } finally {
+        if ($null -eq $previousPythonPath) {
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONPATH = $previousPythonPath
+        }
+    }
+}
 
 if ($Follow) {
     & docker @compose logs -f api dashboard
