@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType, PublishReceipt
 from refactor_agent.artifacts import sanitize_text
 from refactor_agent.models import (
     BenchmarkCaseRecord,
@@ -52,6 +54,93 @@ class SQLiteRunStore:
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
+
+    def emit(self, event: AnalysisEvent) -> PublishReceipt:
+        """Persist a sanitized analysis event with idempotent event IDs."""
+
+        try:
+            with self._connect() as connection:
+                sequence = self._insert_analysis_event(connection, event)
+        except sqlite3.IntegrityError:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT sequence FROM analysis_events WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+            return PublishReceipt(
+                accepted=True,
+                duplicate=True,
+                sequence=int(row["sequence"]) if row else None,
+                reason="duplicate_event",
+            )
+        return PublishReceipt(accepted=True, sequence=sequence, reason="persisted")
+
+    def list_analysis_events(self, *, after: int = 0, limit: int = 100) -> list[AnalysisEvent]:
+        bounded_limit = max(1, min(limit, 500))
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM analysis_events
+                WHERE sequence > ?
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (max(after, 0), bounded_limit),
+            ).fetchall()
+        return [_analysis_event_from_row(row) for row in rows]
+
+    def read_public_analysis_event_page(
+        self,
+        *,
+        after: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[AnalysisEvent], int, int, bool]:
+        """Read a public-only page against one captured sequence high-water mark."""
+
+        bounded_after = max(after, 0)
+        bounded_limit = max(1, min(limit, 500))
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS latest FROM analysis_events"
+            ).fetchone()
+            latest_sequence = int(row["latest"] if row else 0)
+            rows = connection.execute(
+                """
+                SELECT * FROM analysis_events
+                WHERE sequence > ? AND sequence <= ? AND sensitivity = 'public'
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (bounded_after, latest_sequence, bounded_limit),
+            ).fetchall()
+            events = [_analysis_event_from_row(event_row) for event_row in rows]
+            next_sequence = int(events[-1].sequence) if events else latest_sequence
+            has_more = bool(
+                connection.execute(
+                    """
+                    SELECT 1 FROM analysis_events
+                    WHERE sequence > ? AND sequence <= ? AND sensitivity = 'public'
+                    LIMIT 1
+                    """,
+                    (next_sequence, latest_sequence),
+                ).fetchone()
+            )
+        return events, next_sequence, latest_sequence, has_more
+
+    def latest_analysis_event_sequence(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) AS latest FROM analysis_events"
+            ).fetchone()
+        return int(row["latest"] if row else 0)
+
+    def prune_analysis_events(self, *, older_than: datetime) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM analysis_events WHERE occurred_at < ?",
+                (older_than.astimezone(timezone.utc).isoformat(),),
+            )
+        return cursor.rowcount
 
     def save(self, record: RunRecord) -> None:
         with self._connect() as connection:
@@ -269,6 +358,12 @@ class SQLiteRunStore:
                     attempt=0,
                     message="job queued",
                 )
+                self._insert_task_analysis_event(
+                    connection,
+                    job_id=record.job_id,
+                    status=GitHubJobStatus.QUEUED,
+                    attempt=0,
+                )
         except sqlite3.IntegrityError:
             existing = self.get_github_job_by_delivery(job.delivery_id)
             if existing is None:
@@ -350,6 +445,13 @@ class SQLiteRunStore:
                         else "expired lease returned job to queue"
                     ),
                 )
+                self._insert_task_analysis_event(
+                    connection,
+                    job_id=expired_row["job_id"],
+                    status=next_status,
+                    attempt=expired_row["attempt_count"],
+                    run_id=expired_row["run_id"],
+                )
             row = connection.execute(
                 """
                 SELECT * FROM github_jobs
@@ -378,6 +480,14 @@ class SQLiteRunStore:
                 worker_id=worker_id,
                 attempt=row["attempt_count"] + 1,
                 message="worker claimed job",
+            )
+            self._insert_task_analysis_event(
+                connection,
+                job_id=row["job_id"],
+                status=GitHubJobStatus.RUNNING,
+                attempt=row["attempt_count"] + 1,
+                run_id=row["run_id"],
+                deadline_at=deadline_at,
             )
             claimed = connection.execute(
                 "SELECT * FROM github_jobs WHERE job_id = ?",
@@ -440,6 +550,14 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"],
                 message=message,
             )
+            self._insert_task_analysis_event(
+                connection,
+                job_id=job_id,
+                status=destination,
+                attempt=row["attempt_count"],
+                run_id=row["run_id"],
+                deadline_at=row["deadline_at"],
+            )
             updated = connection.execute(
                 "SELECT * FROM github_jobs WHERE job_id = ?",
                 (job_id,),
@@ -483,6 +601,14 @@ class SQLiteRunStore:
                 worker_id=row["lease_owner"],
                 attempt=row["attempt_count"],
                 message="manual cancellation requested",
+            )
+            self._insert_task_analysis_event(
+                connection,
+                job_id=job_id,
+                status=destination,
+                attempt=row["attempt_count"],
+                run_id=row["run_id"],
+                deadline_at=row["deadline_at"],
             )
             updated = connection.execute(
                 "SELECT * FROM github_jobs WHERE job_id = ?",
@@ -528,6 +654,13 @@ class SQLiteRunStore:
                 to_status=GitHubJobStatus.QUEUED,
                 attempt=0,
                 message="manual retry queued",
+            )
+            self._insert_task_analysis_event(
+                connection,
+                job_id=job_id,
+                status=GitHubJobStatus.QUEUED,
+                attempt=0,
+                run_id=row["run_id"],
             )
             updated = connection.execute(
                 "SELECT * FROM github_jobs WHERE job_id = ?",
@@ -665,6 +798,14 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"],
                 message=sanitize_text(error) if error else f"job completed with status {destination.value}",
             )
+            self._insert_task_analysis_event(
+                connection,
+                job_id=job_id,
+                status=destination,
+                attempt=row["attempt_count"],
+                run_id=run_id or row["run_id"],
+                deadline_at=row["deadline_at"],
+            )
             updated = connection.execute(
                 "SELECT * FROM github_jobs WHERE job_id = ?",
                 (job_id,),
@@ -759,6 +900,74 @@ class SQLiteRunStore:
                 attempt,
                 sanitize_text(message)[:2048],
                 _now(),
+            ),
+        )
+
+    def _insert_analysis_event(
+        self,
+        connection: sqlite3.Connection,
+        event: AnalysisEvent,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            INSERT INTO analysis_events (
+                event_id, schema_version, event_type, task_id, run_id, source,
+                phase, attempt, evidence_level, error_category, recoverable,
+                deadline_at, safe_metrics_json, occurred_at, sensitivity
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.schema_version,
+                event.event_type.value,
+                event.task_id,
+                event.run_id,
+                event.source,
+                event.phase,
+                event.attempt,
+                event.evidence_level,
+                event.error_category,
+                int(event.recoverable) if event.recoverable is not None else None,
+                event.deadline_at.astimezone(timezone.utc).isoformat() if event.deadline_at else None,
+                json.dumps(event.safe_metrics, ensure_ascii=False, sort_keys=True),
+                event.occurred_at.astimezone(timezone.utc).isoformat(),
+                event.sensitivity,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def _insert_task_analysis_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        status: GitHubJobStatus,
+        attempt: int,
+        run_id: str | None = None,
+        deadline_at: str | None = None,
+    ) -> None:
+        event_types = {
+            GitHubJobStatus.QUEUED: AnalysisEventType.TASK_QUEUED,
+            GitHubJobStatus.RUNNING: AnalysisEventType.TASK_STARTED,
+            GitHubJobStatus.SUCCESS: AnalysisEventType.TASK_COMPLETED,
+            GitHubJobStatus.DRY_RUN: AnalysisEventType.TASK_COMPLETED,
+            GitHubJobStatus.FAILED: AnalysisEventType.TASK_FAILED,
+            GitHubJobStatus.TIMED_OUT: AnalysisEventType.TASK_TIMED_OUT,
+            GitHubJobStatus.CANCELLED: AnalysisEventType.TASK_CANCELLED,
+        }
+        event_type = event_types.get(status)
+        if event_type is None:
+            return
+        self._insert_analysis_event(
+            connection,
+            AnalysisEvent(
+                event_type=event_type,
+                task_id=job_id,
+                run_id=run_id,
+                source="worker",
+                attempt=attempt,
+                deadline_at=datetime.fromisoformat(deadline_at) if deadline_at else None,
+                safe_metrics={"job_status": status.value},
             ),
         )
 
@@ -946,6 +1155,35 @@ class SQLiteRunStore:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS analysis_events (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    schema_version INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    run_id TEXT,
+                    source TEXT NOT NULL,
+                    phase TEXT,
+                    attempt INTEGER NOT NULL DEFAULT 0,
+                    evidence_level TEXT,
+                    error_category TEXT,
+                    recoverable INTEGER,
+                    deadline_at TEXT,
+                    safe_metrics_json TEXT NOT NULL DEFAULT '{}',
+                    occurred_at TEXT NOT NULL,
+                    sensitivity TEXT NOT NULL DEFAULT 'public'
+                        CHECK(sensitivity IN ('public', 'private', 'blocked'))
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_analysis_events_task_sequence
+                ON analysis_events (task_id, sequence)
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS benchmark_runs (
                     run_id TEXT PRIMARY KEY,
                     manifest_hash TEXT NOT NULL,
@@ -1046,6 +1284,14 @@ def _job_record_from_row(row: sqlite3.Row) -> GitHubJobRecord:
     if data.get("workspace_path"):
         data["workspace_path"] = Path(data["workspace_path"])
     return GitHubJobRecord(**data)
+
+
+def _analysis_event_from_row(row: sqlite3.Row) -> AnalysisEvent:
+    data = dict(row)
+    data["safe_metrics"] = json.loads(data.pop("safe_metrics_json") or "{}")
+    if data.get("recoverable") is not None:
+        data["recoverable"] = bool(data["recoverable"])
+    return AnalysisEvent.model_validate(data)
 
 
 def _migrate_runs_status(connection: sqlite3.Connection) -> None:

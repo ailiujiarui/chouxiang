@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 from uuid import uuid4
 
+from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventSink, AnalysisEventType
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
 from refactor_agent.artifacts import RunArtifactWriter
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
@@ -46,6 +48,9 @@ from refactor_agent.store import SQLiteRunStore
 from refactor_agent.trajectory import append_trajectory
 
 
+logger = logging.getLogger(__name__)
+
+
 class RefactorOrchestrator:
     def __init__(
         self,
@@ -58,10 +63,12 @@ class RefactorOrchestrator:
         sandbox_memory: str = "256m",
         sandbox_cpus: float = 1.0,
         graph_backend: str = "langgraph",
+        analysis_event_sink: AnalysisEventSink | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.run_root = run_root.resolve()
         self.store = store or SQLiteRunStore(self.run_root / "refactor_agent.sqlite")
+        self.analysis_event_sink = analysis_event_sink or self.store
         self.pytest_timeout_seconds = pytest_timeout_seconds
         self.sandbox_backend = sandbox_backend
         self.sandbox_docker_image = sandbox_docker_image
@@ -124,6 +131,7 @@ class _RefactorWorkflow:
         return result
 
     def prepare(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "prepare")
         memory = build_memory_context(self.orchestrator.store.list_memory(self.repo_name, self.memory_key, limit=3))
         state["llm_request"] = _request_with_memory(self.request, memory)
         state["baseline"] = analyze_file(self.request.target_file)
@@ -145,6 +153,7 @@ class _RefactorWorkflow:
 
     def minimizer(self, state: ExecutionState) -> ExecutionState:
         state["attempt"] += 1
+        self._phase_started(state, "minimizer")
         state["allowed_regions"] = select_target_regions(
             state["original_code"],
             self.request.issue_text,
@@ -173,6 +182,7 @@ class _RefactorWorkflow:
         return state
 
     def ast_guard(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "ast_guard")
         rewrite = controlled_subtree_rewrite(
             state["original_code"],
             state["llm_result"].fixed_code,
@@ -196,6 +206,13 @@ class _RefactorWorkflow:
         )
         if not validation.ok:
             state["previous_error"] = "AST guard rejected candidate:\n" + validation.summary()
+            self._emit_analysis_event(
+                AnalysisEventType.AST_REJECTED,
+                state,
+                phase="ast_guard",
+                error_category="ast_guard_rejected",
+                recoverable=state["attempt"] < state["max_attempts"],
+            )
             self._trajectory(
                 state,
                 "AST_REJECTED",
@@ -216,6 +233,7 @@ class _RefactorWorkflow:
         return state
 
     def pytest(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "pytest")
         write_candidate(state["target_file"], state["current_code"])
         result = run_pytest_with_backend(
             workspace=self.workspace,
@@ -234,13 +252,34 @@ class _RefactorWorkflow:
         )
         if not result.passed:
             state["previous_error"] = _summarize_failure(result)
+            self._emit_analysis_event(
+                AnalysisEventType.PYTEST_FAILED,
+                state,
+                phase="pytest",
+                error_category="pytest_failed",
+                recoverable=state["attempt"] < state["max_attempts"],
+                safe_metrics={
+                    "returncode": result.returncode,
+                    "duration_seconds": result.duration_seconds,
+                },
+            )
             self._trajectory(state, "PYTEST_FAILED", state["previous_error"], "DEFENDER")
             self._close_round(state, pytest_passed=False)
             return self._retry_or_finalize(state)
+        self._emit_analysis_event(
+            AnalysisEventType.PYTEST_PASSED,
+            state,
+            phase="pytest",
+            safe_metrics={
+                "returncode": result.returncode,
+                "duration_seconds": result.duration_seconds,
+            },
+        )
         state["next_node"] = "adversary"
         return state
 
     def adversary(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "adversary")
         critique = self.orchestrator.adversary.critique(state["current_code"], self.request.issue_text)
         critique_message = _summarize_critique(critique)
         state["round_messages"].append(
@@ -267,13 +306,28 @@ class _RefactorWorkflow:
         self._trajectory(state, "ADVERSARY_CHALLENGED", message, "ADVERSARY")
         if not result.passed:
             state["previous_error"] = _summarize_adversarial_failure(result) + "\n" + critique_message
+            self._emit_analysis_event(
+                AnalysisEventType.ADVERSARY_FAILED,
+                state,
+                phase="adversary",
+                error_category="adversary_failed",
+                recoverable=state["attempt"] < state["max_attempts"],
+                safe_metrics={"generated_tests": result.generated},
+            )
             self._trajectory(state, "ADVERSARY_FAILED", state["previous_error"], "ADVERSARY")
             self._close_round(state, pytest_passed=True, adversarial_passed=False)
             return self._retry_or_finalize(state)
+        self._emit_analysis_event(
+            AnalysisEventType.ADVERSARY_PASSED,
+            state,
+            phase="adversary",
+            safe_metrics={"generated_tests": result.generated},
+        )
         state["next_node"] = "mutation"
         return state
 
     def mutation(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "mutation")
         state["post"] = analyze_file(state["target_file"])
         mutation_tests = _combined_mutation_tests_path(
             self.workspace,
@@ -312,6 +366,7 @@ class _RefactorWorkflow:
         return state
 
     def judge(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "judge")
         reward = self.orchestrator.judge.score(
             pre=state["baseline"],
             post=state["post"],
@@ -353,6 +408,7 @@ class _RefactorWorkflow:
         return self._retry_or_finalize(state)
 
     def finalize(self, state: ExecutionState) -> ExecutionState:
+        self._phase_started(state, "finalize")
         baseline = state.get("baseline")
         approved = bool(state.get("approved"))
         error = None if approved else str(state.get("terminal_error") or state.get("previous_error") or "refactor failed")
@@ -429,6 +485,28 @@ class _RefactorWorkflow:
             evidence_level=self.request.evidence_level,
             report_persona=self.request.persona,
         )
+        reward = state.get("reward")
+        mutation = state.get("mutation")
+        self._emit_analysis_event(
+            AnalysisEventType.FINAL_VERDICT_PASSED if approved else AnalysisEventType.FINAL_VERDICT_FAILED,
+            state,
+            phase="finalize",
+            error_category=(
+                None
+                if approved
+                else str(state.get("control_status") or "analysis_failed").casefold()
+            ),
+            recoverable=False,
+            safe_metrics={
+                "pre_loc": record.pre_loc,
+                "post_loc": record.post_loc,
+                "pre_cc": record.pre_cc,
+                "post_cc": record.post_cc,
+                "self_heal_count": record.self_heal_count,
+                "reward": getattr(reward, "reward", None),
+                "mutation_kill_rate": getattr(mutation, "kill_rate", None),
+            },
+        )
         state["next_node"] = "finalize"
         return state
 
@@ -488,6 +566,41 @@ class _RefactorWorkflow:
                 metadata=metadata or {},
                 reward=reward,
             ),
+        )
+
+    def _emit_analysis_event(
+        self,
+        event_type: AnalysisEventType,
+        state: ExecutionState,
+        *,
+        phase: str | None = None,
+        error_category: str | None = None,
+        recoverable: bool | None = None,
+        safe_metrics: dict[str, str | int | float | bool | None] | None = None,
+    ) -> None:
+        try:
+            self.orchestrator.analysis_event_sink.emit(
+                AnalysisEvent(
+                    event_type=event_type,
+                    task_id=self.request.issue_id or self.run_id,
+                    run_id=self.run_id,
+                    source="orchestrator",
+                    phase=phase,
+                    attempt=int(state.get("attempt", 0)),
+                    evidence_level=self.request.evidence_level.value,
+                    error_category=error_category,
+                    recoverable=recoverable,
+                    safe_metrics=safe_metrics or {},
+                )
+            )
+        except Exception:
+            logger.exception("Analysis event emission failed for run %s", self.run_id)
+
+    def _phase_started(self, state: ExecutionState, phase: str) -> None:
+        self._emit_analysis_event(
+            AnalysisEventType.PHASE_STARTED,
+            state,
+            phase=phase,
         )
 
     @staticmethod

@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+from refactor_agent.analysis_events import AnalysisEventType
 from refactor_agent.debate_state import validate_status_sequence
 from refactor_agent.llm import LLMError, MockRefactorClient
 from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest, TrajectoryMemoryRecord
@@ -81,10 +82,11 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
         repo_name="leap",
         max_retry=3,
     )
+    store = SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite")
     orchestrator = RefactorOrchestrator(
         llm_client=MockRefactorClient(fail_times=1),
         run_root=tmp_path / ".runs",
-        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
+        store=store,
     )
     result = orchestrator.run(request)
     assert result.record.status == "SUCCESS"
@@ -114,6 +116,10 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     assert "Peak traced memory" in result.report_markdown
     assert "指标对比表" in result.report_markdown
     assert "验证矩阵" in result.report_markdown
+    event_types = [event.event_type for event in store.list_analysis_events()]
+    assert AnalysisEventType.PYTEST_FAILED in event_types
+    assert AnalysisEventType.PYTEST_PASSED in event_types
+    assert event_types[-1] == AnalysisEventType.FINAL_VERDICT_PASSED
     assert "| LOC |" in result.report_markdown
     assert "| AST 守卫 (AST guard) |" in result.report_markdown
     assert "Selected AST targets" in result.report_markdown
