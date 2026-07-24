@@ -6,15 +6,22 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
+from nailong_agent.activity_collector import WindowActivityCollector
+from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
+from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
 from nailong_agent.notification_service import NotificationPort, NotificationService
+from nailong_agent.notification_store import NotificationStore
+from nailong_agent.personality_agent import PetPersonalityAgent
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
+from nailong_agent.windows_activity import create_foreground_source, create_idle_source
+from refactor_agent.llm import DeepSeekClient
 
 
 class SingleInstanceLock:
@@ -82,17 +89,22 @@ class DesktopProcess:
         bus: EventBus | None = None,
         renderer_factory: Callable[[], PopupRenderer] | None = None,
         privacy_store: PrivacyStore | None = None,
+        privacy_policy: PrivacyPolicy | None = None,
         notification_service: NotificationPort | None = None,
         analysis_subscriber: AnalysisEventSubscriber | None = None,
         delivery_pump: NotificationDeliveryPump | None = None,
+        activity_collector: WindowActivityCollector | None = None,
+        activity_orchestrator: ActivityPersonalityOrchestrator | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
         self.renderer_factory = renderer_factory or PySide6Renderer
         self.privacy_store = privacy_store or PrivacyStore(lock_path.parent / "nailong_privacy.sqlite")
-        self.privacy_policy = PrivacyPolicy(self.privacy_store.load_consent())
+        self.privacy_policy = privacy_policy or PrivacyPolicy(self.privacy_store.load_consent())
         self.notification_service = notification_service
         self.analysis_subscriber = analysis_subscriber
+        self.activity_collector = activity_collector
+        self.activity_orchestrator = activity_orchestrator
         self.delivery_pump = delivery_pump or (
             NotificationDeliveryPump(notifications=notification_service, bus=self.bus)
             if notification_service is not None
@@ -119,9 +131,13 @@ class DesktopProcess:
                 consent = request_privacy_consent() if callable(request_privacy_consent) else None
                 consent = consent or PrivacyConsent()
                 self.privacy_store.save_consent(consent)
-                self.privacy_policy = PrivacyPolicy(consent)
+                self.privacy_policy.consent = consent
             self.bus.subscribe("PopupDecision", self._render_popup)
+            if self.activity_orchestrator is not None:
+                self.activity_orchestrator.subscribe(self.bus)
             self.bus.start()
+            if self.activity_collector is not None:
+                self.activity_collector.start()
             self.renderer.start()
             if self.analysis_subscriber is not None:
                 self.analysis_subscriber.start()
@@ -129,6 +145,9 @@ class DesktopProcess:
                 self.delivery_pump.start()
             return self.renderer.exec()
         finally:
+            if self.activity_collector is not None:
+                self.activity_collector.stop()
+            self.bus.wait_idle(2.0)
             if self.delivery_pump is not None:
                 self.delivery_pump.stop()
             if self.analysis_subscriber is not None:
@@ -180,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--maximum-popups-per-day", type=int)
     parser.add_argument("--minimum-cooldown-seconds", type=int)
     parser.add_argument("--maximum-cooldown-seconds", type=int)
+    parser.add_argument("--activity-listener", action=argparse.BooleanOptionalAction, default=None)
     args = parser.parse_args(argv)
     settings = NailongSettings.from_env().with_overrides(
         data_dir=args.data_dir,
@@ -190,13 +210,20 @@ def main(argv: list[str] | None = None) -> int:
         maximum_popups_per_day=args.maximum_popups_per_day,
         minimum_cooldown_seconds=args.minimum_cooldown_seconds,
         maximum_cooldown_seconds=args.maximum_cooldown_seconds,
+        activity_listener_enabled=args.activity_listener,
+    )
+    privacy_store = PrivacyStore(settings.privacy_database)
+    notification_store = (
+        NotificationStore(settings.notification_database)
+        if settings.analysis_url or settings.activity_listener_enabled
+        else None
     )
     notifications = (
-        NotificationService.from_database(
-            settings.notification_database,
+        NotificationService(
+            store=notification_store,
             preference_overrides=settings.notification_preference_overrides,
         )
-        if settings.analysis_url
+        if notification_store is not None
         else None
     )
     subscriber = (
@@ -207,11 +234,48 @@ def main(argv: list[str] | None = None) -> int:
         if settings.analysis_url and notifications is not None
         else None
     )
+    privacy_policy = PrivacyPolicy(privacy_store.load_consent())
+    bus = EventBus()
+    collector = (
+        WindowActivityCollector(
+            source=create_foreground_source(),
+            idle_source=create_idle_source(),
+            privacy_policy=privacy_policy,
+            privacy_store=privacy_store,
+            event_bus=bus,
+            preferences=notification_store.get_preferences,
+            application_rules=notification_store.list_application_rules,
+        )
+        if settings.activity_listener_enabled and notification_store is not None
+        else None
+    )
+    activity_orchestrator = (
+        ActivityPersonalityOrchestrator(
+            personality_agent=PetPersonalityAgent(
+                intensity=notification_store.get_preferences().personality_intensity.lower(),
+            ),
+            notifications=notifications,
+            recognizer=ActivityRecognizer(
+                privacy_policy=privacy_policy,
+                provider_factory=(
+                    lambda: DeepSeekClient(model=settings.deepseek_model)
+                    if os.getenv("DEEPSEEK_API_KEY")
+                    else None
+                ),
+            ),
+        )
+        if settings.activity_listener_enabled and notifications is not None and notification_store is not None
+        else None
+    )
     process = DesktopProcess(
         lock_path=settings.lock_path,
+        bus=bus,
         renderer_factory=lambda: create_renderer(headless=args.headless),
-        privacy_store=PrivacyStore(settings.privacy_database),
+        privacy_store=privacy_store,
+        privacy_policy=privacy_policy,
         notification_service=notifications,
         analysis_subscriber=subscriber,
+        activity_collector=collector,
+        activity_orchestrator=activity_orchestrator,
     )
     return process.run()

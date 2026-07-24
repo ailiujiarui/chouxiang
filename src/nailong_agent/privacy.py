@@ -149,7 +149,9 @@ class PrivacyPolicy:
 
     @staticmethod
     def _is_meeting(event: RawActivitySignal) -> bool:
-        text = " ".join(_event_values(event))
+        values = [event.application_id, event.window_title_summary or "", event.activity_hint or ""]
+        values.extend(str(value) for value in event.metadata.values() if value is not None and not isinstance(value, bool))
+        text = " ".join(value.casefold() for value in values)
         return bool(event.metadata.get("is_meeting_likely")) or any(marker in text for marker in _MEETING_MARKERS)
 
     @staticmethod
@@ -178,6 +180,9 @@ def _classify(event: RawActivitySignal) -> tuple[ActivityType, float]:
         return ActivityType.IDLE, max(event.confidence, 1.0)
     hint = (event.activity_hint or "").casefold()
     rules = (
+        (ActivityType.TEST_FAILED, ("pytest failed", "test failed", "tests failed")),
+        (ActivityType.TEST_SUCCEEDED, ("pytest passed", "test passed", "tests passed")),
+        (ActivityType.COMPILE_SUCCEEDED, ("build succeeded", "compile succeeded", "compiled successfully")),
         (ActivityType.DEBUGGING, ("debug", "traceback", "调试")),
         (ActivityType.CODING, ("edit", "coding", "code", "编程", "编码")),
         (ActivityType.READING, ("read", "阅读")),
@@ -187,5 +192,10 @@ def _classify(event: RawActivitySignal) -> tuple[ActivityType, float]:
     )
     for activity, markers in rules:
         if any(marker in hint for marker in markers):
-            return activity, max(event.confidence, 0.7)
+            confidence = 0.9 if activity in {
+                ActivityType.TEST_FAILED,
+                ActivityType.TEST_SUCCEEDED,
+                ActivityType.COMPILE_SUCCEEDED,
+            } else 0.7
+            return activity, max(event.confidence, confidence)
     return ActivityType.UNKNOWN, event.confidence

@@ -47,6 +47,16 @@ def test_sensitive_and_meeting_windows_are_blocked_before_unified_event_creation
     assert (meeting.allowed, meeting.reason) == (False, "meeting_window")
 
 
+def test_false_meeting_signal_does_not_block_collection() -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(source="window", application_id="code", metadata={"is_meeting_likely": False})
+    )
+
+    assert decision.allowed is True
+
+
 def test_allowed_signal_becomes_unified_minimized_activity() -> None:
     signal = RawActivitySignal(
         source="window",
@@ -67,6 +77,36 @@ def test_allowed_signal_becomes_unified_minimized_activity() -> None:
     assert decision.event.summary == "application=code; activity=coding; source=window"
     assert "private.py" not in decision.event.model_dump_json()
     assert policy.prepare_remote_summary(decision.event) is None
+
+
+@pytest.mark.parametrize(
+    ("activity_hint", "expected_activity"),
+    [
+        ("pytest failed", ActivityType.TEST_FAILED),
+        ("pytest passed", ActivityType.TEST_SUCCEEDED),
+        ("build succeeded", ActivityType.COMPILE_SUCCEEDED),
+    ],
+)
+def test_terminal_status_hints_are_minimized_to_activity_enums(
+    activity_hint: str,
+    expected_activity: ActivityType,
+) -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(
+            source="ide",
+            application_id="Code.exe",
+            activity_hint=activity_hint,
+        )
+    )
+
+    assert decision.event is not None
+    assert decision.event.activity is expected_activity
+    assert decision.event.confidence == 0.9
+    assert decision.event.summary == (
+        f"application=code; activity={expected_activity.value}; source=ide"
+    )
 
 
 def test_unknown_application_is_reduced_to_a_nonidentifying_category() -> None:
