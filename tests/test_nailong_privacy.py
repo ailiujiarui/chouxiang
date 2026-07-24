@@ -61,6 +61,16 @@ def test_allowed_activity_is_minimized_and_remote_summary_is_local_by_default() 
     assert local_only.prepare_remote_summary(event) is None
 
 
+def test_false_meeting_signal_does_not_block_collection() -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        ActivityEvent(source="window", application_id="code", metadata={"is_meeting_likely": False})
+    )
+
+    assert decision.allowed is True
+
+
 def test_remote_summary_is_minimized_and_text_redaction_is_defence_in_depth() -> None:
     policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True, remote_inference_enabled=True))
     event = ActivityEvent(source="idle", application_id="Code.exe", metadata={"idle_seconds": 60})

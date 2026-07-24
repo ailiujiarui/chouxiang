@@ -130,7 +130,10 @@ class PrivacyPolicy:
 
     @staticmethod
     def _is_meeting(event: ActivityEvent) -> bool:
-        text = " ".join(_event_values(event))
+        text = " ".join(
+            value.casefold()
+            for value in (event.application_id, event.window_title_summary or "", event.activity_hint or "")
+        )
         return bool(event.metadata.get("is_meeting_likely")) or any(marker in text for marker in _MEETING_MARKERS)
 
     @staticmethod
