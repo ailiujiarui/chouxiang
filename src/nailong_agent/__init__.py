@@ -1,5 +1,6 @@
 """Desktop pet application boundary for Nailong Agent."""
 
+from nailong_agent.activity_collector import ForegroundWindow, WindowActivityCollector
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.config import NailongSettings
 from nailong_agent.events import (
@@ -21,6 +22,7 @@ from nailong_agent.privacy_store import PrivacyStore
 
 __all__ = [
     "AnalysisEventSubscriber",
+    "ForegroundWindow",
     "ActivityClassification",
     "ActivityEvent",
     "ActivitySnapshot",
@@ -40,4 +42,5 @@ __all__ = [
     "PrivacyConsent",
     "PrivacyPolicy",
     "PrivacyStore",
+    "WindowActivityCollector",
 ]
