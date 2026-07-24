@@ -8,6 +8,7 @@ from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PetApplicationRule, PetPreferences
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
+from nailong_agent.windows_activity import create_foreground_source
 
 
 class FakeForegroundSource:
@@ -74,3 +75,11 @@ def test_collector_blocks_paused_and_blacklisted_applications(tmp_path: Path) ->
     assert store.activity_count() == 0
     collector.stop()
     bus.stop()
+
+
+def test_non_windows_foreground_source_is_a_noop(monkeypatch) -> None:
+    monkeypatch.setattr("nailong_agent.windows_activity.os.name", "posix")
+    source = create_foreground_source()
+
+    source.start(lambda _: (_ for _ in ()).throw(AssertionError("unexpected callback")))
+    source.stop()
