@@ -33,7 +33,7 @@ def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
     assert decision_input.signal.application_id == "vscode"
     assert decision_input.classification is not None
     assert decision_input.classification.situation == PetSituation.TEST_FAILED
-    assert decision_input.context.paused is False
+    assert decision_input.context.recent_messages == []
 
 
 @pytest.mark.parametrize(
@@ -80,20 +80,11 @@ def test_redacted_signal_enforces_bounds_and_aware_time() -> None:
         )
 
 
-def test_decision_context_contains_only_non_content_policy_state() -> None:
+def test_decision_context_contains_only_recent_personality_messages() -> None:
     context = PetDecisionContext(
-        now=datetime(2026, 7, 24, 9, 0, tzinfo=timezone.utc),
-        paused=True,
-        quiet_hours_active=True,
-        is_fullscreen=True,
-        is_meeting=True,
-        daily_popup_count=3,
-        last_popup_at=datetime(2026, 7, 24, 8, 30, tzinfo=timezone.utc),
         recent_messages=["哼，本龙听见了。"],
     )
 
-    assert context.paused is True
-    assert context.daily_popup_count == 3
     assert context.recent_messages == ["哼，本龙听见了。"]
 
 

@@ -9,7 +9,6 @@ from nailong_agent.contracts import (
     PetSituation,
     RedactedActivitySignal,
 )
-from nailong_agent.decision_service import PetDecisionService
 from nailong_agent.events import (
     ActivityClassification,
     ActivityEvent,
@@ -25,9 +24,8 @@ from nailong_agent.events import (
 from nailong_agent.notification_service import NotificationPort, NotificationService
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.personality_agent import PetPersonalityAgent
-from nailong_agent.pet_graph import PET_NODE_ORDER, render_pet_graph_mermaid, run_pet_graph
+from nailong_agent.pet_graph import PET_NODE_ORDER, run_pet_graph
 from nailong_agent.pet_state import (
-    InterruptionPolicy,
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
@@ -43,7 +41,6 @@ __all__ = [
     "CollectionDecision",
     "EventEnvelope",
     "HttpxSSEAnalysisEventSource",
-    "InterruptionPolicy",
     "NotificationIngestReceipt",
     "NotificationIntent",
     "NotificationKind",
@@ -56,7 +53,6 @@ __all__ = [
     "PetDecisionContext",
     "PetDecisionInput",
     "PetDecisionOutput",
-    "PetDecisionService",
     "PetEmotion",
     "PetGraphState",
     "PetPersonalityAgent",
@@ -68,6 +64,5 @@ __all__ = [
     "PrivacyPolicy",
     "PrivacyStore",
     "RedactedActivitySignal",
-    "render_pet_graph_mermaid",
     "run_pet_graph",
 ]

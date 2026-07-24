@@ -68,32 +68,11 @@ class PetClassificationHint(BaseModel):
 
 
 class PetDecisionContext(BaseModel):
-    """Non-content context used later by interruption policy nodes."""
+    """Minimal non-content context used to keep personality wording varied."""
 
     model_config = ConfigDict(extra="forbid")
 
-    now: datetime = Field(default_factory=utc_now)
-    paused: bool = False
-    quiet_hours_active: bool = False
-    is_fullscreen: bool = False
-    is_meeting: bool = False
-    daily_popup_count: int = Field(default=0, ge=0)
-    last_popup_at: datetime | None = None
     recent_messages: list[RecentMessage] = Field(default_factory=list, max_length=20)
-
-    @field_validator("now")
-    @classmethod
-    def require_now_timezone(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("now must be timezone-aware")
-        return value
-
-    @field_validator("last_popup_at")
-    @classmethod
-    def require_last_popup_timezone(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("last_popup_at must be timezone-aware")
-        return value
 
 
 class PetDecisionInput(BaseModel):

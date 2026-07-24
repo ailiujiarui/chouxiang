@@ -113,14 +113,9 @@ unknown
 
 ### 决策上下文
 
-`PetDecisionContext` 只保存决定是否打扰所需的非内容状态：
+`PetDecisionContext` 只保存人格措辞所需的最近可见消息，用于避免重复口头禅。它不保存冷却时间、每日次数、免打扰或通知持久化状态。
 
-- 当前时间；
-- 手动暂停和免打扰状态；
-- 全屏和会议状态；
-- 当日已弹窗次数；
-- 上次弹窗时间；
-- 最近展示过的短消息。
+`apply_interruption_policy` 节点保留在人格图中，但只处理敏感活动和 `stay_silent` 等人格层静默条件。冷却、免打扰、每日次数、持久化去重和最终 EventBus 发布统一由现有 `NotificationService`、`NotificationStore` 与 `NotificationDeliveryPump` 负责，避免形成第二套通知策略。
 
 ### 输出
 
@@ -135,7 +130,7 @@ display_seconds: 展示秒数
 dedupe_key: 可选去重键
 ```
 
-`PopupDecision` 只是决策结果；是否发布到 EventBus、如何播放动作和绘制气泡由桌面进程与渲染层负责。
+`PopupDecision` 只是人格图的结构化决策结果；人格图不直接发布 EventBus。正式接入时应由通知服务接管持久化策略与投递，如何播放动作和绘制气泡由桌面进程与渲染层负责。
 
 ## 人格
 

@@ -34,17 +34,7 @@ PET_NODE_ORDER = (
 def run_pet_graph(
     initial: PetGraphState,
     nodes: PetDecisionNodes,
-    *,
-    backend: str = "loop",
 ) -> PetGraphState:
-    if backend == "loop":
-        state = initial
-        for name in PET_NODE_ORDER:
-            state = _wrapped(name, getattr(nodes, name))(state)
-        return state
-    if backend != "langgraph":
-        raise ValueError(f"Unsupported pet graph backend: {backend}")
-
     graph = StateGraph(PetGraphState)
     for name in PET_NODE_ORDER:
         graph.add_node(name, _wrapped(name, getattr(nodes, name)))
@@ -62,8 +52,3 @@ def _wrapped(name: str, node):
         return updated
 
     return invoke
-
-
-def render_pet_graph_mermaid() -> str:
-    nodes = " --> ".join(name.upper() for name in PET_NODE_ORDER)
-    return f"flowchart LR\n    START --> {nodes} --> END"

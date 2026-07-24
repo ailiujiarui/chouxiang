@@ -17,7 +17,6 @@ from nailong_agent.pet_prompts import (
     build_pet_classification_user_prompt,
 )
 from nailong_agent.pet_state import (
-    InterruptionPolicy,
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
@@ -146,10 +145,8 @@ class PetPersonalityAgent:
         *,
         provider: LLMProvider | None = None,
         intensity: PersonalityIntensity | str = PersonalityIntensity.STANDARD,
-        interruption_policy: InterruptionPolicy | None = None,
         high_confidence_threshold: float = 0.75,
         response_confidence_threshold: float = 0.65,
-        backend: str = "loop",
     ) -> None:
         if not 0.0 <= high_confidence_threshold <= 1.0:
             raise ValueError("high_confidence_threshold must be between 0 and 1")
@@ -157,10 +154,8 @@ class PetPersonalityAgent:
             raise ValueError("response_confidence_threshold must be between 0 and 1")
         self.provider = provider
         self.intensity = PersonalityIntensity(intensity)
-        self.interruption_policy = interruption_policy or InterruptionPolicy()
         self.high_confidence_threshold = high_confidence_threshold
         self.response_confidence_threshold = response_confidence_threshold
-        self.backend = backend
 
     def decide(self, decision_input: PetDecisionInput) -> PetDecisionOutput:
         return self.run(decision_input)["decision"]
@@ -170,7 +165,6 @@ class PetPersonalityAgent:
         return run_pet_graph(
             {"decision_input": validated, "node_trace": []},
             self,
-            backend=self.backend,
         )
 
     def observe(self, state: PetGraphState) -> PetGraphState:
@@ -281,31 +275,13 @@ class PetPersonalityAgent:
 
     def apply_interruption_policy(self, state: PetGraphState) -> PetGraphState:
         signal = state["signal"]
-        context = state["context"]
         response = state["response"]
 
         if signal.sensitivity != "public":
             return self._policy_result(state, "drop", "sensitive_activity")
-        if context.paused:
-            return self._policy_result(state, "drop", "manually_paused")
-        if context.quiet_hours_active:
-            return self._policy_result(state, "drop", "quiet_hours")
-        if context.is_meeting or state["situation"] is PetSituation.MEETING:
-            return self._policy_result(state, "drop", "meeting")
         if response.intent == "stay_silent":
             return self._policy_result(state, "drop", "personality_chose_silence")
-        if context.daily_popup_count >= self.interruption_policy.daily_popup_limit:
-            return self._policy_result(state, "drop", "daily_popup_limit")
-        if context.is_fullscreen:
-            return self._policy_result(state, "defer", "fullscreen")
-        if response.message in context.recent_messages:
-            return self._policy_result(state, "drop", "duplicate_message")
-        if context.last_popup_at is not None:
-            elapsed = (context.now - context.last_popup_at).total_seconds()
-            cooldown = self.interruption_policy.cooldown_seconds(response.priority)
-            if elapsed < cooldown:
-                return self._policy_result(state, "defer", "cooldown")
-        return self._policy_result(state, "show", "eligible")
+        return self._policy_result(state, "show", "personality_response_ready")
 
     def render(self, state: PetGraphState) -> PetGraphState:
         response = state["response"]

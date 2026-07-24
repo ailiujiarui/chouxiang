@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from nailong_agent.contracts import (
@@ -11,11 +9,9 @@ from nailong_agent.contracts import (
     PetSituation,
     RedactedActivitySignal,
 )
-from nailong_agent.decision_service import PetDecisionService
-from nailong_agent.event_bus import EventBus
 from nailong_agent.personality_agent import PetPersonalityAgent
 from nailong_agent.pet_graph import PET_NODE_ORDER
-from nailong_agent.pet_state import InterruptionPolicy, PersonalityIntensity, PetEmotion
+from nailong_agent.pet_state import PersonalityIntensity, PetEmotion
 from refactor_agent.llm import DeepSeekClient
 
 
@@ -212,62 +208,6 @@ def test_personality_intensity_changes_wording_but_not_policy_or_facts() -> None
     assert "测试通过" not in (high["decision"].message or "")
 
 
-@pytest.mark.parametrize(
-    ("context_changes", "expected_action", "expected_reason"),
-    [
-        ({"paused": True}, "drop", "manually_paused"),
-        ({"quiet_hours_active": True}, "drop", "quiet_hours"),
-        ({"is_meeting": True}, "drop", "meeting"),
-        ({"is_fullscreen": True}, "defer", "fullscreen"),
-        ({"daily_popup_count": 8}, "drop", "daily_popup_limit"),
-    ],
-)
-def test_interruption_policy_respects_hard_user_boundaries(
-    context_changes: dict[str, object],
-    expected_action: str,
-    expected_reason: str,
-) -> None:
-    context = PetDecisionContext.model_validate(context_changes)
-
-    decision = PetPersonalityAgent().decide(
-        make_input(hint="test_succeeded", context=context)
-    )
-
-    assert decision.action == expected_action
-    assert decision.reason == expected_reason
-    assert decision.message is None
-
-
-def test_interruption_policy_defers_during_priority_cooldown() -> None:
-    now = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
-    context = PetDecisionContext(
-        now=now,
-        last_popup_at=now - timedelta(minutes=10),
-    )
-    policy = InterruptionPolicy(normal_priority_cooldown_seconds=15 * 60)
-
-    decision = PetPersonalityAgent(interruption_policy=policy).decide(
-        make_input(hint="test_succeeded", context=context)
-    )
-
-    assert decision.action == "defer"
-    assert decision.reason == "cooldown"
-    assert decision.message is None
-
-
-def test_interruption_policy_drops_a_recent_duplicate_message() -> None:
-    agent = PetPersonalityAgent(intensity=PersonalityIntensity.LOW)
-    first = agent.decide(make_input(hint="test_succeeded"))
-    assert first.message is not None
-    context = PetDecisionContext(recent_messages=[first.message])
-
-    duplicate = agent.decide(make_input(hint="test_succeeded", context=context))
-
-    assert duplicate.action == "drop"
-    assert duplicate.reason == "duplicate_message"
-    assert duplicate.message is None
-
-
 def test_recent_catchphrase_is_replaced_with_a_characterful_non_repeating_line() -> None:
     context = PetDecisionContext(recent_messages=["看吧，还得是本龙……和你也有那么一点功劳。"])
 
@@ -291,37 +231,6 @@ def test_low_confidence_proactive_activity_stays_silent_but_user_action_gets_rep
     assert proactive.action == "drop"
     assert user_requested.action == "show"
     assert "不乱猜" in (user_requested.message or "")
-
-
-def test_decision_service_publishes_popup_without_renderer_calling_llm() -> None:
-    provider = FakeProvider({"situation": "test_succeeded", "confidence": 0.9})
-    agent = PetPersonalityAgent(provider=provider)
-    bus = EventBus()
-    received: list[dict[str, object]] = []
-    bus.subscribe("PopupDecision", lambda event: received.append(event.payload))
-    bus.start()
-    service = PetDecisionService(agent=agent, bus=bus)
-
-    decision = service.decide_and_publish(
-        make_input(hint="ambiguous", signal_confidence=0.1)
-    )
-
-    assert bus.wait_idle(1.0)
-    bus.stop()
-    assert len(provider.calls) == 1
-    assert decision.action == "show"
-    assert received[0]["action"] == "show"
-    assert received[0]["message"] == decision.message
-
-
-def test_loop_and_langgraph_backends_produce_the_same_decision() -> None:
-    decision_input = make_input(hint="test_succeeded")
-
-    loop_state = PetPersonalityAgent(backend="loop").run(decision_input)
-    langgraph_state = PetPersonalityAgent(backend="langgraph").run(decision_input)
-
-    assert loop_state["decision"] == langgraph_state["decision"]
-    assert loop_state["node_trace"] == langgraph_state["node_trace"] == list(PET_NODE_ORDER)
 
 
 def test_deepseek_generic_provider_uses_caller_prompts_without_refactor_prompt(
