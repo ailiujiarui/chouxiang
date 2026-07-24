@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from nailong_agent.events import PersonalityResponseProposal, Sensitivity, utc_now
+from nailong_agent.events import Sensitivity, utc_now
 
 
 class PersonalityScenario(StrEnum):
@@ -91,4 +91,14 @@ class PetDecisionInput(BaseModel):
     context: PetDecisionContext = Field(default_factory=PetDecisionContext)
 
 
-PetDecisionOutput: TypeAlias = PersonalityResponseProposal | None
+class PetPersonalityResponse(BaseModel):
+    """Content-only personality result with no notification or rendering policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona_version: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=500)
+    intent: Literal["encourage", "remind", "celebrate", "ask", "stay_silent"]
+
+
+PetDecisionOutput: TypeAlias = PetPersonalityResponse | None

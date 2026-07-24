@@ -6,6 +6,7 @@ from nailong_agent.contracts import (
     PetDecisionContext,
     PetDecisionInput,
     PetDecisionOutput,
+    PetPersonalityResponse,
     PersonalityScenario,
     RedactedActivitySignal,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "PetEmotion",
     "PetGraphState",
     "PetPersonalityAgent",
+    "PetPersonalityResponse",
     "PersonalityScenario",
     "PersonalityIntensity",
     "PersonalityResponseProposal",

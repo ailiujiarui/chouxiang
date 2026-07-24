@@ -8,9 +8,9 @@ from nailong_agent.contracts import (
     PetClassificationSource,
     PetDecisionInput,
     PetDecisionOutput,
+    PetPersonalityResponse,
     PersonalityScenario,
 )
-from nailong_agent.events import PersonalityResponseProposal
 from nailong_agent.pet_graph import run_pet_graph
 from nailong_agent.pet_prompts import (
     PET_PERSONALITY_SYSTEM_PROMPT,
@@ -248,9 +248,8 @@ class PetPersonalityAgent:
                     "llm_error": type(exc).__name__,
                 }
 
-        response = PersonalityResponseProposal(
+        response = PetPersonalityResponse(
             persona_version=f"nailong-v1.1-{self.intensity.value}",
-            emotion=state["emotion"].value,
             message=message,
             intent=intent,
         )

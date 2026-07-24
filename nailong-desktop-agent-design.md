@@ -125,20 +125,17 @@ unknown
 
 ### 输出
 
-人格图最终只输出人格响应提案或静默：
+人格图最终只输出纯人格内容或静默：
 
 ```text
-PersonalityResponseProposal | null
+PetPersonalityResponse | null
 
 persona_version: 人格版本
-emotion: 奶龙情绪
 message: 奶龙短文案
 intent: encourage | remind | celebrate | ask | stay_silent
-priority: low | normal | high
-expires_in_seconds: 提案有效时间
 ```
 
-其中 `priority` 和 `expires_in_seconds` 是共享事件模型已有的兼容字段，人格 Agent 不设置它们，只保留共享模型默认值；最终优先级与有效时间由通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管优先级、有效时间、冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
+`PetPersonalityResponse` 不包含 `emotion`、`priority`、`expires_in_seconds`、弹窗动作或渲染表情。`infer_emotion` 的结果只在人格图内部影响措辞；最终动作表情归渲染模块决定，优先级与有效时间归通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。
 
 ## 人格
 

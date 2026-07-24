@@ -9,10 +9,10 @@ from nailong_agent.contracts import (
     PetDecisionContext,
     PetDecisionInput,
     PetDecisionOutput,
+    PetPersonalityResponse,
     PersonalityScenario,
     RedactedActivitySignal,
 )
-from nailong_agent.events import PersonalityResponseProposal
 
 
 class PetEmotion(StrEnum):
@@ -44,7 +44,7 @@ class PetGraphState(TypedDict, total=False):
     classification_confidence: float
     classification_source: PetClassificationSource
     emotion: PetEmotion
-    response: PersonalityResponseProposal
+    response: PetPersonalityResponse
     policy_action: PolicyAction
     policy_reason: str
     output: PetDecisionOutput

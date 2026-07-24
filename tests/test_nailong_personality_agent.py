@@ -212,10 +212,8 @@ def test_personality_intensity_changes_wording_but_not_policy_or_facts() -> None
         is high["scenario"]
         is PersonalityScenario.COMPILE_SUCCEEDED
     )
-    assert "priority" not in low["output"].model_fields_set
-    assert "priority" not in high["output"].model_fields_set
-    assert "expires_in_seconds" not in low["output"].model_fields_set
-    assert "expires_in_seconds" not in high["output"].model_fields_set
+    assert set(low["output"].model_dump()) == {"persona_version", "message", "intent"}
+    assert set(high["output"].model_dump()) == {"persona_version", "message", "intent"}
     assert "测试通过" not in low["output"].message
     assert "测试通过" not in high["output"].message
 

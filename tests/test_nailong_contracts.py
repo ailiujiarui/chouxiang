@@ -9,10 +9,10 @@ from nailong_agent.contracts import (
     PetDecisionContext,
     PetDecisionInput,
     PetDecisionOutput,
+    PetPersonalityResponse,
     PersonalityScenario,
     RedactedActivitySignal,
 )
-from nailong_agent.events import PersonalityResponseProposal
 
 
 def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
@@ -115,13 +115,13 @@ def test_internal_personality_scenario_covers_required_responses() -> None:
     } == {item.value for item in PersonalityScenario}
 
 
-def test_pet_decision_output_is_an_optional_personality_proposal() -> None:
-    assert set(get_args(PetDecisionOutput)) == {PersonalityResponseProposal, type(None)}
-    output = PersonalityResponseProposal(
+def test_pet_decision_output_is_content_only() -> None:
+    assert set(get_args(PetDecisionOutput)) == {PetPersonalityResponse, type(None)}
+    output = PetPersonalityResponse(
         persona_version="nailong-v1.1-standard",
-        emotion="celebrating",
         message="看吧，还得是本龙。",
         intent="celebrate",
     )
 
     assert output.intent == "celebrate"
+    assert set(output.model_dump()) == {"persona_version", "message", "intent"}
