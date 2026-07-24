@@ -4,6 +4,7 @@ from nailong_agent.activity_collector import ForegroundWindow, WindowActivityCol
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.activity_collector import ForegroundWindow, IdleState, WindowActivityCollector
 from nailong_agent.activity_aggregator import ActivityEventAggregator
+from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.config import NailongSettings
 from nailong_agent.contracts import (
     PetClassificationHint,
@@ -46,6 +47,7 @@ from nailong_agent.privacy_store import PrivacyStore
 __all__ = [
     "AnalysisEventSubscriber",
     "ActivityEventAggregator",
+    "ActivityPersonalityOrchestrator",
     "ForegroundWindow",
     "IdleState",
     "ActivityClassification",

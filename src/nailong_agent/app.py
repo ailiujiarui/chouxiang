@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Callable
 
 from nailong_agent.activity_collector import WindowActivityCollector
+from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
@@ -14,6 +15,7 @@ from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
 from nailong_agent.notification_service import NotificationPort, NotificationService
 from nailong_agent.notification_store import NotificationStore
+from nailong_agent.personality_agent import PetPersonalityAgent
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
@@ -90,6 +92,7 @@ class DesktopProcess:
         analysis_subscriber: AnalysisEventSubscriber | None = None,
         delivery_pump: NotificationDeliveryPump | None = None,
         activity_collector: WindowActivityCollector | None = None,
+        activity_orchestrator: ActivityPersonalityOrchestrator | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
@@ -99,6 +102,7 @@ class DesktopProcess:
         self.notification_service = notification_service
         self.analysis_subscriber = analysis_subscriber
         self.activity_collector = activity_collector
+        self.activity_orchestrator = activity_orchestrator
         self.delivery_pump = delivery_pump or (
             NotificationDeliveryPump(notifications=notification_service, bus=self.bus)
             if notification_service is not None
@@ -127,6 +131,8 @@ class DesktopProcess:
                 self.privacy_store.save_consent(consent)
                 self.privacy_policy.consent = consent
             self.bus.subscribe("PopupDecision", self._render_popup)
+            if self.activity_orchestrator is not None:
+                self.activity_orchestrator.subscribe(self.bus)
             self.bus.start()
             if self.activity_collector is not None:
                 self.activity_collector.start()
@@ -137,12 +143,13 @@ class DesktopProcess:
                 self.delivery_pump.start()
             return self.renderer.exec()
         finally:
+            if self.activity_collector is not None:
+                self.activity_collector.stop()
+            self.bus.wait_idle(2.0)
             if self.delivery_pump is not None:
                 self.delivery_pump.stop()
             if self.analysis_subscriber is not None:
                 self.analysis_subscriber.stop()
-            if self.activity_collector is not None:
-                self.activity_collector.stop()
             self.bus.stop()
             if self.renderer is not None:
                 self.renderer.stop()
@@ -214,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             store=notification_store,
             preference_overrides=settings.notification_preference_overrides,
         )
-        if settings.analysis_url and notification_store is not None
+        if notification_store is not None
         else None
     )
     subscriber = (
@@ -240,6 +247,16 @@ def main(argv: list[str] | None = None) -> int:
         if settings.activity_listener_enabled and notification_store is not None
         else None
     )
+    activity_orchestrator = (
+        ActivityPersonalityOrchestrator(
+            personality_agent=PetPersonalityAgent(
+                intensity=notification_store.get_preferences().personality_intensity.lower(),
+            ),
+            notifications=notifications,
+        )
+        if settings.activity_listener_enabled and notifications is not None and notification_store is not None
+        else None
+    )
     process = DesktopProcess(
         lock_path=settings.lock_path,
         bus=bus,
@@ -249,5 +266,6 @@ def main(argv: list[str] | None = None) -> int:
         notification_service=notifications,
         analysis_subscriber=subscriber,
         activity_collector=collector,
+        activity_orchestrator=activity_orchestrator,
     )
     return process.run()

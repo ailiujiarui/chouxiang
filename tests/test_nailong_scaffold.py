@@ -363,6 +363,34 @@ def test_desktop_process_starts_and_stops_injected_activity_collector(tmp_path) 
     assert (collector.starts, collector.stops) == (1, 1)
 
 
+def test_desktop_process_stops_activity_collection_before_delivery(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    class CollectorProbe:
+        def start(self) -> None:
+            lifecycle.append("collector:start")
+
+        def stop(self) -> None:
+            lifecycle.append("collector:stop")
+
+    class DeliveryProbe:
+        def start(self) -> None:
+            lifecycle.append("delivery:start")
+
+        def stop(self) -> None:
+            lifecycle.append("delivery:stop")
+
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=NullRenderer,
+        activity_collector=CollectorProbe(),  # type: ignore[arg-type]
+        delivery_pump=DeliveryProbe(),  # type: ignore[arg-type]
+    )
+
+    assert process.run() == 0
+    assert lifecycle.index("collector:stop") < lifecycle.index("delivery:stop")
+
+
 def test_entrypoint_creates_enabled_activity_collector(monkeypatch, tmp_path) -> None:
     source = object()
     idle_source = object()
