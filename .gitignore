@@ -1,4 +1,5 @@
 .runs/
+.worktrees/
 .github-workspaces/
 .benchmark-cache/
 benchmark-results/
