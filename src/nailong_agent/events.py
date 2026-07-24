@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
@@ -149,6 +149,22 @@ class NotificationIntent(BaseModel):
     available_at: datetime = Field(default_factory=utc_now)
 
 
+class PetPreferences(BaseModel):
+    activity_listener_enabled: bool = True
+    manual_pause_enabled: bool = False
+    do_not_disturb_start: time | None = None
+    do_not_disturb_end: time | None = None
+    minimum_cooldown_seconds: int = Field(default=5 * 60, ge=0)
+    maximum_cooldown_seconds: int = Field(default=15 * 60, ge=0)
+    maximum_popups_per_day: int = Field(default=12, ge=0)
+    personality_intensity: Literal["LOW", "STANDARD", "HIGH"] = "STANDARD"
+
+
+class PetApplicationRule(BaseModel):
+    application_id: str = Field(min_length=1, max_length=64)
+    rule: Literal["allow", "block"]
+
+
 class NotificationStatus(BaseModel):
     do_not_disturb: bool
     last_consumed_sequence: int = Field(ge=0)
@@ -156,6 +172,9 @@ class NotificationStatus(BaseModel):
     last_popup_started_at: datetime | None = None
     pending_count: int = Field(ge=0)
     suppressed_terminal_count: int = Field(ge=0)
+    manual_pause_enabled: bool = False
+    scheduled_do_not_disturb: bool = False
+    remaining_daily_popup_budget: int = Field(default=0, ge=0)
 
 
 class NotificationIngestReceipt(BaseModel):

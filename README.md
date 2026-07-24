@@ -69,7 +69,7 @@ python -m pip install -e ".[desktop]"
 .\scripts\start.ps1 -Build -Desktop
 ```
 
-桌面端通过现有分析事件流接收任务状态，按冷却、免打扰和终态优先级规则显示弹窗。通知数据库默认位于 `.runs\\nailong_notifications.sqlite`。完整的事件映射、接口和验证方式见 [`docs/designs/2026-07-24-nailong-proactive-notifications-update.md`](docs/designs/2026-07-24-nailong-proactive-notifications-update.md)。
+桌面端通过现有分析事件流接收任务状态，按冷却、免打扰和终态优先级规则显示弹窗。默认数据目录为 `.runs`，其中包含 `nailong-agent.lock`、`nailong_privacy.sqlite` 和 `nailong_notifications.sqlite`；可通过 `NAILONG_DATA_DIR` 或启动脚本的 `-NailongDataDir` 修改。`NAILONG_ANALYSIS_URL` 和 `NAILONG_DEEPSEEK_MODEL` 可提供桌面端默认连接配置。桌宠数据库不会保存 API Key、源代码、原始窗口内容、截图、OCR、剪贴板或终端正文。完整的事件映射、接口和验证方式见 [`docs/designs/2026-07-24-nailong-proactive-notifications-update.md`](docs/designs/2026-07-24-nailong-proactive-notifications-update.md)。
 
 ## 可选认证
 

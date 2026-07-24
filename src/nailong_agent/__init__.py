@@ -1,6 +1,7 @@
 """Desktop pet application boundary for Nailong Agent."""
 
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.config import NailongSettings
 from nailong_agent.events import (
     ActivityClassification,
     ActivityEvent,
@@ -34,6 +35,7 @@ __all__ = [
     "NotificationStatus",
     "NotificationStore",
     "HttpxSSEAnalysisEventSource",
+    "NailongSettings",
     "PersonalityResponseProposal",
     "PetExpression",
     "PetState",

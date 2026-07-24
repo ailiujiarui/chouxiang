@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import sqlite3
+from datetime import datetime, timezone
+
 import pytest
 
-from nailong_agent.events import ActivityEvent
+from nailong_agent.events import ActivityClassification, ActivityEvent
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 
@@ -96,3 +99,74 @@ def test_store_rejects_events_that_bypass_minimization(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="minimized"):
         store.append_minimized_activity(ActivityEvent(source="window", application_id="C:\\private\\code.exe"))
+
+
+def test_store_deduplicates_and_aggregates_minimized_activity(tmp_path) -> None:
+    store = PrivacyStore(tmp_path / "pet.sqlite")
+    occurred_at = datetime(2026, 7, 24, 9, 1, tzinfo=timezone.utc)
+    classification = ActivityClassification(activity="coding", confidence=0.9)
+    first = ActivityEvent(
+        event_id="activity-1",
+        occurred_at=occurred_at,
+        source="window",
+        application_id="code",
+        metadata={"idle_seconds": 0},
+    )
+    duplicate = first.model_copy(update={"event_id": "activity-2"})
+
+    assert store.append_minimized_activity(first, classification=classification) is True
+    assert store.append_minimized_activity(duplicate, classification=classification) is False
+
+    windows = store.list_activity_windows()
+    assert len(windows) == 1
+    assert windows[0].application_id == "code"
+    assert windows[0].activity == "coding"
+    assert windows[0].event_count == 1
+    assert windows[0].maximum_confidence == 0.9
+
+
+def test_clear_activity_history_removes_aggregates_but_preserves_consent(tmp_path) -> None:
+    store = PrivacyStore(tmp_path / "pet.sqlite")
+    consent = PrivacyConsent(activity_collection_enabled=True)
+    store.save_consent(consent)
+    store.append_minimized_activity(
+        ActivityEvent(source="window", application_id="code"),
+        classification=ActivityClassification(activity="coding", confidence=0.9),
+    )
+
+    assert store.clear_activity_history() == 1
+    assert store.list_activity_windows() == []
+    assert store.load_consent() == consent
+
+
+def test_store_migrates_existing_privacy_database_without_losing_consent(tmp_path) -> None:
+    database = tmp_path / "pet.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE pet_privacy_consent (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                activity_collection_enabled INTEGER NOT NULL,
+                remote_inference_enabled INTEGER NOT NULL
+            );
+            INSERT INTO pet_privacy_consent VALUES (1, 1, 0);
+            CREATE TABLE pet_activity_events (
+                event_id TEXT PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                application_id TEXT NOT NULL,
+                idle_seconds INTEGER,
+                is_fullscreen INTEGER NOT NULL,
+                is_meeting_likely INTEGER NOT NULL
+            );
+            """
+        )
+
+    store = PrivacyStore(database)
+
+    assert store.load_consent() == PrivacyConsent(activity_collection_enabled=True)
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(pet_activity_events)")}
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert {"activity", "confidence", "fingerprint"}.issubset(columns)
+    assert "pet_activity_windows" in tables
