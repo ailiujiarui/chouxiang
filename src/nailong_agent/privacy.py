@@ -180,6 +180,9 @@ def _classify(event: RawActivitySignal) -> tuple[ActivityType, float]:
         return ActivityType.IDLE, max(event.confidence, 1.0)
     hint = (event.activity_hint or "").casefold()
     rules = (
+        (ActivityType.TEST_FAILED, ("pytest failed", "test failed", "tests failed")),
+        (ActivityType.TEST_SUCCEEDED, ("pytest passed", "test passed", "tests passed")),
+        (ActivityType.COMPILE_SUCCEEDED, ("build succeeded", "compile succeeded", "compiled successfully")),
         (ActivityType.DEBUGGING, ("debug", "traceback", "调试")),
         (ActivityType.CODING, ("edit", "coding", "code", "编程", "编码")),
         (ActivityType.READING, ("read", "阅读")),
@@ -189,5 +192,10 @@ def _classify(event: RawActivitySignal) -> tuple[ActivityType, float]:
     )
     for activity, markers in rules:
         if any(marker in hint for marker in markers):
-            return activity, max(event.confidence, 0.7)
+            confidence = 0.9 if activity in {
+                ActivityType.TEST_FAILED,
+                ActivityType.TEST_SUCCEEDED,
+                ActivityType.COMPILE_SUCCEEDED,
+            } else 0.7
+            return activity, max(event.confidence, confidence)
     return ActivityType.UNKNOWN, event.confidence
