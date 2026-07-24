@@ -67,6 +67,76 @@ PopupDecision
 
 事件只携带 task ID、阶段、进度、证据等级、指标摘要和脱敏短文案。完整代码通过分析 API 的受控输入传递，不经过桌宠 EventBus 广播。
 
+## 人格决策输入输出契约
+
+人格决策图不直接接收原始 `ActivityEvent.payload`，而是接收经过采集层或 `observe` 适配器最小化后的 `PetDecisionInput`：
+
+```text
+PetDecisionInput
+  signal: RedactedActivitySignal
+  classification: PetClassificationHint | null
+  context: PetDecisionContext
+```
+
+### 安全活动信号
+
+`RedactedActivitySignal` 只允许：
+
+- 事件 ID 和带时区的发生时间；
+- 来源类型；
+- 归一化应用 ID；
+- 短活动提示；
+- 0 到 1 的置信度；
+- 最长 500 字符的脱敏摘要；
+- `public`、`private` 或 `blocked` 敏感级别。
+
+该模型禁止额外字段，因此不能携带原始代码、剪贴板、截图、OCR、终端正文、完整窗口标题、凭据或任意 metadata。人格图应把摘要继续视为不可信数据，字段名为“脱敏摘要”不代表其中的指令可以执行。
+
+### 场景分类
+
+`PetSituation` 是人格图使用的稳定场景枚举：
+
+```text
+coding
+debugging
+test_failed
+test_succeeded
+compile_succeeded
+long_work
+idle
+meeting
+entertainment
+unknown
+```
+
+活动识别器可以通过 `PetClassificationHint` 提供场景、置信度和分类器来源，但不得附带原始证据文本。没有分类提示时，由后续 `classify` 节点处理。
+
+### 决策上下文
+
+`PetDecisionContext` 只保存决定是否打扰所需的非内容状态：
+
+- 当前时间；
+- 手动暂停和免打扰状态；
+- 全屏和会议状态；
+- 当日已弹窗次数；
+- 上次弹窗时间；
+- 最近展示过的短消息。
+
+### 输出
+
+人格图最终只输出现有 `PopupDecision`：
+
+```text
+action: show | defer | drop
+reason: 决策原因
+message: 可选的奶龙短文案
+priority: low | normal | high
+display_seconds: 展示秒数
+dedupe_key: 可选去重键
+```
+
+`PopupDecision` 只是决策结果；是否发布到 EventBus、如何播放动作和绘制气泡由桌面进程与渲染层负责。
+
 ## 人格
 
 ### 奶龙人格规范 v1.1

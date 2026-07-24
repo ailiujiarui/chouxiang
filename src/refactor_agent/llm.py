@@ -27,6 +27,19 @@ class RefactorClient(Protocol):
         ...
 
 
+class LLMProvider(Protocol):
+    """Provider-neutral JSON completion boundary for non-refactor agents."""
+
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.0,
+    ) -> dict[str, object]:
+        ...
+
+
 class DeepSeekClient:
     def __init__(
         self,
@@ -41,6 +54,43 @@ class DeepSeekClient:
         self.base_url = (base_url or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
         self.model = model or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
         self.timeout = timeout
+
+    def complete_json(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.0,
+    ) -> dict[str, object]:
+        """Return a validated JSON object without imposing a task-specific prompt."""
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": temperature,
+        }
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            parsed = json.loads(content)
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise LLMError(f"LLM JSON completion failed: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise LLMError("LLM JSON completion must return an object.")
+        return parsed
 
     def refactor(
         self,
