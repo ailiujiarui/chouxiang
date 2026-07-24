@@ -92,9 +92,11 @@ PetDecisionInput
 
 该模型禁止额外字段，因此不能携带原始代码、剪贴板、截图、OCR、终端正文、完整窗口标题、凭据或任意 metadata。人格图应把摘要继续视为不可信数据，字段名为“脱敏摘要”不代表其中的指令可以执行。
 
-### 场景分类
+### 活动标签到人格场景
 
-`PetSituation` 是人格图使用的稳定场景枚举：
+公共活动分类类型由活动识别模块定义，人格 Agent 不声明或约束该枚举。活动识别器通过 `PetClassificationHint` 只传递受长度限制的脱敏活动标签、置信度和分类器来源，不得附带原始证据文本。
+
+`classify` 节点将外部活动标签映射为人格层内部的 `PersonalityScenario`，用于选择情绪与措辞。它不是公共活动分类契约：
 
 ```text
 coding
@@ -109,7 +111,7 @@ entertainment
 unknown
 ```
 
-活动识别器可以通过 `PetClassificationHint` 提供场景、置信度和分类器来源，但不得附带原始证据文本。没有分类提示时，由后续 `classify` 节点处理。
+没有分类提示，或外部活动标签无法映射时，由 `classify` 节点按置信度决定是否使用通用 Provider 辅助映射；信息仍不足则映射为 `unknown` 并保持静默。外部模块未来增加活动类型时，不会导致人格输入校验失败。
 
 ### 决策上下文
 
@@ -132,7 +134,7 @@ priority: low | normal | high
 expires_in_seconds: 提案有效时间
 ```
 
-敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
+其中 `priority` 是共享事件模型已有的兼容字段，人格 Agent 不按活动或人格场景设置它，只保留共享模型默认值；最终优先级由通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管优先级、冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
 
 ## 人格
 

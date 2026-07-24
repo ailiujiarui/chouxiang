@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 from nailong_agent.events import PersonalityResponseProposal, Sensitivity, utc_now
 
 
-class PetSituation(StrEnum):
-    """Normalized situations understood by the personality decision graph."""
+class PersonalityScenario(StrEnum):
+    """Internal scenarios used only to select personality behavior."""
 
     CODING = "coding"
     DEBUGGING = "debugging"
@@ -58,11 +58,16 @@ class RedactedActivitySignal(BaseModel):
 
 
 class PetClassificationHint(BaseModel):
-    """Optional upstream classification without raw evidence or source text."""
+    """Sanitized upstream activity label without raw evidence or source text.
+
+    The activity recognition module owns the public activity taxonomy. This
+    handoff accepts its label as a bounded string and does not redefine that
+    taxonomy inside the personality package.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    situation: PetSituation
+    activity: str = Field(min_length=1, max_length=100)
     confidence: float = Field(ge=0.0, le=1.0)
     classifier: PetClassificationSource
 

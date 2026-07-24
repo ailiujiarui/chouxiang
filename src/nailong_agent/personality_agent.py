@@ -8,7 +8,7 @@ from nailong_agent.contracts import (
     PetClassificationSource,
     PetDecisionInput,
     PetDecisionOutput,
-    PetSituation,
+    PersonalityScenario,
 )
 from nailong_agent.events import PersonalityResponseProposal
 from nailong_agent.pet_graph import run_pet_graph
@@ -27,76 +27,76 @@ from refactor_agent.llm import LLMProvider
 class _LLMClassification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    situation: PetSituation
+    scenario: PersonalityScenario
     confidence: float = Field(ge=0.0, le=1.0)
 
 
 _EMOTIONS = {
-    PetSituation.CODING: PetEmotion.CURIOUS,
-    PetSituation.DEBUGGING: PetEmotion.CONCERNED,
-    PetSituation.TEST_FAILED: PetEmotion.CONCERNED,
-    PetSituation.TEST_SUCCEEDED: PetEmotion.CELEBRATING,
-    PetSituation.COMPILE_SUCCEEDED: PetEmotion.CHEERFUL,
-    PetSituation.LONG_WORK: PetEmotion.SLEEPY,
-    PetSituation.IDLE: PetEmotion.SLEEPY,
-    PetSituation.MEETING: PetEmotion.NEUTRAL,
-    PetSituation.ENTERTAINMENT: PetEmotion.CHEERFUL,
-    PetSituation.UNKNOWN: PetEmotion.NEUTRAL,
+    PersonalityScenario.CODING: PetEmotion.CURIOUS,
+    PersonalityScenario.DEBUGGING: PetEmotion.CONCERNED,
+    PersonalityScenario.TEST_FAILED: PetEmotion.CONCERNED,
+    PersonalityScenario.TEST_SUCCEEDED: PetEmotion.CELEBRATING,
+    PersonalityScenario.COMPILE_SUCCEEDED: PetEmotion.CHEERFUL,
+    PersonalityScenario.LONG_WORK: PetEmotion.SLEEPY,
+    PersonalityScenario.IDLE: PetEmotion.SLEEPY,
+    PersonalityScenario.MEETING: PetEmotion.NEUTRAL,
+    PersonalityScenario.ENTERTAINMENT: PetEmotion.CHEERFUL,
+    PersonalityScenario.UNKNOWN: PetEmotion.NEUTRAL,
 }
 
-_RULE_SITUATIONS = {
-    "coding": PetSituation.CODING,
-    "editing_code": PetSituation.CODING,
-    "debug": PetSituation.DEBUGGING,
-    "debugging": PetSituation.DEBUGGING,
-    "debug_session": PetSituation.DEBUGGING,
-    "test_failed": PetSituation.TEST_FAILED,
-    "tests_failed": PetSituation.TEST_FAILED,
-    "pytest_failed": PetSituation.TEST_FAILED,
-    "test_succeeded": PetSituation.TEST_SUCCEEDED,
-    "tests_succeeded": PetSituation.TEST_SUCCEEDED,
-    "tests_passed": PetSituation.TEST_SUCCEEDED,
-    "pytest_passed": PetSituation.TEST_SUCCEEDED,
-    "compile_succeeded": PetSituation.COMPILE_SUCCEEDED,
-    "build_succeeded": PetSituation.COMPILE_SUCCEEDED,
-    "long_work": PetSituation.LONG_WORK,
-    "idle": PetSituation.IDLE,
-    "meeting": PetSituation.MEETING,
-    "entertainment": PetSituation.ENTERTAINMENT,
-    "gaming": PetSituation.ENTERTAINMENT,
-    "media": PetSituation.ENTERTAINMENT,
+_SCENARIO_BY_ACTIVITY_LABEL = {
+    "coding": PersonalityScenario.CODING,
+    "editing_code": PersonalityScenario.CODING,
+    "debug": PersonalityScenario.DEBUGGING,
+    "debugging": PersonalityScenario.DEBUGGING,
+    "debug_session": PersonalityScenario.DEBUGGING,
+    "test_failed": PersonalityScenario.TEST_FAILED,
+    "tests_failed": PersonalityScenario.TEST_FAILED,
+    "pytest_failed": PersonalityScenario.TEST_FAILED,
+    "test_succeeded": PersonalityScenario.TEST_SUCCEEDED,
+    "tests_succeeded": PersonalityScenario.TEST_SUCCEEDED,
+    "tests_passed": PersonalityScenario.TEST_SUCCEEDED,
+    "pytest_passed": PersonalityScenario.TEST_SUCCEEDED,
+    "compile_succeeded": PersonalityScenario.COMPILE_SUCCEEDED,
+    "build_succeeded": PersonalityScenario.COMPILE_SUCCEEDED,
+    "long_work": PersonalityScenario.LONG_WORK,
+    "idle": PersonalityScenario.IDLE,
+    "meeting": PersonalityScenario.MEETING,
+    "entertainment": PersonalityScenario.ENTERTAINMENT,
+    "gaming": PersonalityScenario.ENTERTAINMENT,
+    "media": PersonalityScenario.ENTERTAINMENT,
 }
 
-_MESSAGES: dict[PersonalityIntensity, dict[PetSituation, str]] = {
+_MESSAGES: dict[PersonalityIntensity, dict[PersonalityScenario, str]] = {
     PersonalityIntensity.LOW: {
-        PetSituation.DEBUGGING: "看起来还在调试。先看最近一次变化，本龙陪你理一理。",
-        PetSituation.TEST_FAILED: "测试没有通过。先看第一条失败，本龙陪你一起排查。",
-        PetSituation.TEST_SUCCEEDED: "测试通过了。本龙也替你高兴。",
-        PetSituation.COMPILE_SUCCEEDED: "编译通过了，记得继续确认测试结果。",
-        PetSituation.LONG_WORK: "你已经忙一阵了。本龙陪你休息一下再继续。",
+        PersonalityScenario.DEBUGGING: "看起来还在调试。先看最近一次变化，本龙陪你理一理。",
+        PersonalityScenario.TEST_FAILED: "测试没有通过。先看第一条失败，本龙陪你一起排查。",
+        PersonalityScenario.TEST_SUCCEEDED: "测试通过了。本龙也替你高兴。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译通过了，记得继续确认测试结果。",
+        PersonalityScenario.LONG_WORK: "你已经忙一阵了。本龙陪你休息一下再继续。",
     },
     PersonalityIntensity.STANDARD: {
-        PetSituation.DEBUGGING: "哼，这个问题还挺会躲。本龙只是顺手陪你从最近一次变化开始看。",
-        PetSituation.TEST_FAILED: "哼，这个测试又闹脾气了。本龙还没认输，先看第一条失败。",
-        PetSituation.TEST_SUCCEEDED: "看吧，还得是本龙……和你也有那么一点功劳。",
-        PetSituation.COMPILE_SUCCEEDED: "编译通过啦，勉强有本龙几分风范。下一步再确认测试。",
-        PetSituation.LONG_WORK: "你已经忙很久了。本龙才不是担心你，起来喝口水再继续？",
+        PersonalityScenario.DEBUGGING: "哼，这个问题还挺会躲。本龙只是顺手陪你从最近一次变化开始看。",
+        PersonalityScenario.TEST_FAILED: "哼，这个测试又闹脾气了。本龙还没认输，先看第一条失败。",
+        PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……和你也有那么一点功劳。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦，勉强有本龙几分风范。下一步再确认测试。",
+        PersonalityScenario.LONG_WORK: "你已经忙很久了。本龙才不是担心你，起来喝口水再继续？",
     },
     PersonalityIntensity.HIGH: {
-        PetSituation.DEBUGGING: "哼，这个问题躲得倒挺快，可躲不过本龙的龙角！先从最近一次变化查起。",
-        PetSituation.TEST_FAILED: "哼，这个测试还敢闹脾气？本龙可没认输，先揪住第一条失败。",
-        PetSituation.TEST_SUCCEEDED: "看吧，还得是本龙……咳，你也确实干得漂亮！",
-        PetSituation.COMPILE_SUCCEEDED: "编译通过啦！勉强追上本龙甩尾巴的速度，下一步再确认测试。",
-        PetSituation.LONG_WORK: "忙这么久，连本龙的零食都要放凉了。本龙才不是担心你，先喝口水！",
+        PersonalityScenario.DEBUGGING: "哼，这个问题躲得倒挺快，可躲不过本龙的龙角！先从最近一次变化查起。",
+        PersonalityScenario.TEST_FAILED: "哼，这个测试还敢闹脾气？本龙可没认输，先揪住第一条失败。",
+        PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……咳，你也确实干得漂亮！",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦！勉强追上本龙甩尾巴的速度，下一步再确认测试。",
+        PersonalityScenario.LONG_WORK: "忙这么久，连本龙的零食都要放凉了。本龙才不是担心你，先喝口水！",
     },
 }
 
 _CATCHPHRASE_FREE_MESSAGES = {
-    PetSituation.DEBUGGING: "这个问题躲得挺快，龙角都快被它绕晕了。先查最近一次变化。",
-    PetSituation.TEST_FAILED: "这个测试又把尾巴翘起来了。先抓第一条失败，后面的噪声等等。",
-    PetSituation.TEST_SUCCEEDED: "测试确实通过了，小爪子都忍不住要鼓掌。",
-    PetSituation.COMPILE_SUCCEEDED: "编译已经通过，龙角接收到好消息了。下一步再确认测试。",
-    PetSituation.LONG_WORK: "忙了这么久，连零食都该歇一会儿。先喝口水再继续？",
+    PersonalityScenario.DEBUGGING: "这个问题躲得挺快，龙角都快被它绕晕了。先查最近一次变化。",
+    PersonalityScenario.TEST_FAILED: "这个测试又把尾巴翘起来了。先抓第一条失败，后面的噪声等等。",
+    PersonalityScenario.TEST_SUCCEEDED: "测试确实通过了，小爪子都忍不住要鼓掌。",
+    PersonalityScenario.COMPILE_SUCCEEDED: "编译已经通过，龙角接收到好消息了。下一步再确认测试。",
+    PersonalityScenario.LONG_WORK: "忙了这么久，连零食都该歇一会儿。先喝口水再继续？",
 }
 
 _CATCHPHRASE_STEMS = (
@@ -110,30 +110,20 @@ _CATCHPHRASE_STEMS = (
     "看吧，还得是本龙",
 )
 
-_INTENTS: dict[PetSituation, Literal["encourage", "remind", "celebrate", "ask", "stay_silent"]] = {
-    PetSituation.CODING: "stay_silent",
-    PetSituation.DEBUGGING: "encourage",
-    PetSituation.TEST_FAILED: "remind",
-    PetSituation.TEST_SUCCEEDED: "celebrate",
-    PetSituation.COMPILE_SUCCEEDED: "celebrate",
-    PetSituation.LONG_WORK: "remind",
-    PetSituation.IDLE: "stay_silent",
-    PetSituation.MEETING: "stay_silent",
-    PetSituation.ENTERTAINMENT: "stay_silent",
-    PetSituation.UNKNOWN: "stay_silent",
-}
-
-_PRIORITIES: dict[PetSituation, Literal["low", "normal", "high"]] = {
-    PetSituation.CODING: "low",
-    PetSituation.DEBUGGING: "low",
-    PetSituation.TEST_FAILED: "normal",
-    PetSituation.TEST_SUCCEEDED: "normal",
-    PetSituation.COMPILE_SUCCEEDED: "normal",
-    PetSituation.LONG_WORK: "low",
-    PetSituation.IDLE: "low",
-    PetSituation.MEETING: "low",
-    PetSituation.ENTERTAINMENT: "low",
-    PetSituation.UNKNOWN: "low",
+_INTENTS: dict[
+    PersonalityScenario,
+    Literal["encourage", "remind", "celebrate", "ask", "stay_silent"],
+] = {
+    PersonalityScenario.CODING: "stay_silent",
+    PersonalityScenario.DEBUGGING: "encourage",
+    PersonalityScenario.TEST_FAILED: "remind",
+    PersonalityScenario.TEST_SUCCEEDED: "celebrate",
+    PersonalityScenario.COMPILE_SUCCEEDED: "celebrate",
+    PersonalityScenario.LONG_WORK: "remind",
+    PersonalityScenario.IDLE: "stay_silent",
+    PersonalityScenario.MEETING: "stay_silent",
+    PersonalityScenario.ENTERTAINMENT: "stay_silent",
+    PersonalityScenario.UNKNOWN: "stay_silent",
 }
 
 
@@ -185,37 +175,52 @@ class PetPersonalityAgent:
         if signal.sensitivity != "public":
             return self._classified(
                 state,
-                PetSituation.UNKNOWN,
+                PersonalityScenario.UNKNOWN,
                 0.0,
                 "collector",
             )
 
-        rule_situation = _rule_situation(signal.activity_hint)
-        if rule_situation is not PetSituation.UNKNOWN:
+        signal_scenario = _scenario_for_activity_label(signal.activity_hint)
+        if signal_scenario is not PersonalityScenario.UNKNOWN:
             return self._classified(
                 state,
-                rule_situation,
+                signal_scenario,
                 max(signal.confidence, 0.9),
                 "rules",
             )
 
-        if provided is not None and provided.confidence >= self.high_confidence_threshold:
+        provided_scenario = _scenario_for_activity_label(
+            provided.activity if provided is not None else None
+        )
+        if (
+            provided is not None
+            and provided_scenario is not PersonalityScenario.UNKNOWN
+            and provided.confidence >= self.high_confidence_threshold
+        ):
             return self._classified(
                 state,
-                provided.situation,
+                provided_scenario,
                 provided.confidence,
                 provided.classifier,
             )
 
         if self.provider is None:
-            if provided is not None:
+            if (
+                provided is not None
+                and provided_scenario is not PersonalityScenario.UNKNOWN
+            ):
                 return self._classified(
                     state,
-                    provided.situation,
+                    provided_scenario,
                     provided.confidence,
                     provided.classifier,
                 )
-            return self._classified(state, PetSituation.UNKNOWN, 0.0, "classifier")
+            return self._classified(
+                state,
+                PersonalityScenario.UNKNOWN,
+                0.0,
+                "classifier",
+            )
 
         try:
             raw_result = self.provider.complete_json(
@@ -225,36 +230,42 @@ class PetPersonalityAgent:
             )
             result = _LLMClassification.model_validate(raw_result)
         except Exception as exc:
-            fallback = provided.situation if provided is not None else PetSituation.UNKNOWN
-            confidence = provided.confidence if provided is not None else 0.0
-            source = provided.classifier if provided is not None else "classifier"
+            has_fallback = (
+                provided is not None
+                and provided_scenario is not PersonalityScenario.UNKNOWN
+            )
+            fallback = (
+                provided_scenario if has_fallback else PersonalityScenario.UNKNOWN
+            )
+            confidence = provided.confidence if has_fallback else 0.0
+            source = provided.classifier if has_fallback else "classifier"
             return {
                 **self._classified(state, fallback, confidence, source),
                 "llm_used": True,
                 "llm_error": type(exc).__name__,
             }
         return {
-            **self._classified(state, result.situation, result.confidence, "llm"),
+            **self._classified(state, result.scenario, result.confidence, "llm"),
             "llm_used": True,
         }
 
     def infer_emotion(self, state: PetGraphState) -> PetGraphState:
         return {
             **state,
-            "emotion": _EMOTIONS[state["situation"]],
+            "emotion": _EMOTIONS[state["scenario"]],
         }
 
     def choose_personality_response(self, state: PetGraphState) -> PetGraphState:
-        situation = state["situation"]
+        scenario = state["scenario"]
         signal = state["signal"]
         confidence = state["classification_confidence"]
-        intent = _INTENTS[situation]
-        message = _MESSAGES[self.intensity].get(situation, "保持安静")
-        if situation in _CATCHPHRASE_FREE_MESSAGES and _should_avoid_catchphrase(
+        intent = _INTENTS[scenario]
+        message = _MESSAGES[self.intensity].get(scenario, "保持安静")
+        if scenario in _CATCHPHRASE_FREE_MESSAGES and _should_avoid_catchphrase(
             message,
             state["context"].recent_messages,
         ):
-            message = _CATCHPHRASE_FREE_MESSAGES[situation]
+            message = _CATCHPHRASE_FREE_MESSAGES[scenario]
 
         if confidence < self.response_confidence_threshold:
             intent = "stay_silent"
@@ -268,7 +279,6 @@ class PetPersonalityAgent:
             emotion=state["emotion"].value,
             message=message,
             intent=intent,
-            priority=_PRIORITIES[situation],
             expires_in_seconds=300,
         )
         return {**state, "response": response}
@@ -290,13 +300,13 @@ class PetPersonalityAgent:
     @staticmethod
     def _classified(
         state: PetGraphState,
-        situation: PetSituation,
+        scenario: PersonalityScenario,
         confidence: float,
         source: PetClassificationSource,
     ) -> PetGraphState:
         return {
             **state,
-            "situation": situation,
+            "scenario": scenario,
             "classification_confidence": confidence,
             "classification_source": source,
         }
@@ -314,11 +324,11 @@ class PetPersonalityAgent:
         }
 
 
-def _rule_situation(activity_hint: str | None) -> PetSituation:
-    if activity_hint is None:
-        return PetSituation.UNKNOWN
-    normalized = activity_hint.strip().lower().replace("-", "_").replace(" ", "_")
-    return _RULE_SITUATIONS.get(normalized, PetSituation.UNKNOWN)
+def _scenario_for_activity_label(activity_label: str | None) -> PersonalityScenario:
+    if activity_label is None:
+        return PersonalityScenario.UNKNOWN
+    normalized = activity_label.strip().lower().replace("-", "_").replace(" ", "_")
+    return _SCENARIO_BY_ACTIVITY_LABEL.get(normalized, PersonalityScenario.UNKNOWN)
 
 
 def _should_avoid_catchphrase(candidate: str, recent_messages: list[str]) -> bool:

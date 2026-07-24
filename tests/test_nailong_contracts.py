@@ -9,7 +9,7 @@ from nailong_agent.contracts import (
     PetDecisionContext,
     PetDecisionInput,
     PetDecisionOutput,
-    PetSituation,
+    PersonalityScenario,
     RedactedActivitySignal,
 )
 from nailong_agent.events import PersonalityResponseProposal
@@ -25,7 +25,7 @@ def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
             redacted_summary="pytest reported a failure",
         ),
         classification=PetClassificationHint(
-            situation=PetSituation.TEST_FAILED,
+            activity="test_failed",
             confidence=0.98,
             classifier="rules",
         ),
@@ -33,7 +33,7 @@ def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
 
     assert decision_input.signal.application_id == "vscode"
     assert decision_input.classification is not None
-    assert decision_input.classification.situation == PetSituation.TEST_FAILED
+    assert decision_input.classification.activity == "test_failed"
     assert decision_input.context.recent_messages == []
 
 
@@ -89,7 +89,17 @@ def test_decision_context_contains_only_recent_personality_messages() -> None:
     assert context.recent_messages == ["哼，本龙听见了。"]
 
 
-def test_pet_situation_covers_required_personality_scenarios() -> None:
+def test_upstream_activity_label_is_not_restricted_by_personality_contract() -> None:
+    hint = PetClassificationHint(
+        activity="future_team_defined_activity",
+        confidence=0.8,
+        classifier="classifier",
+    )
+
+    assert hint.activity == "future_team_defined_activity"
+
+
+def test_internal_personality_scenario_covers_required_responses() -> None:
     assert {
         "coding",
         "debugging",
@@ -101,7 +111,7 @@ def test_pet_situation_covers_required_personality_scenarios() -> None:
         "meeting",
         "entertainment",
         "unknown",
-    } == {item.value for item in PetSituation}
+    } == {item.value for item in PersonalityScenario}
 
 
 def test_pet_decision_output_is_an_optional_personality_proposal() -> None:
