@@ -16,6 +16,7 @@ from nailong_agent.privacy_store import PrivacyStore
 class ForegroundWindow:
     process_id: int
     executable_name: str
+    idle_seconds: float | None = None
     is_fullscreen: bool = False
     is_meeting_likely: bool = False
 
@@ -83,13 +84,16 @@ class WindowActivityCollector:
         now = self.clock()
         if now - self._last_seen.get(application_id, float("-inf")) < 5:
             return
+        metadata: dict[str, float | bool] = {
+            "is_fullscreen": window.is_fullscreen,
+            "is_meeting_likely": window.is_meeting_likely,
+        }
+        if window.idle_seconds is not None:
+            metadata["idle_seconds"] = window.idle_seconds
         event = ActivityEvent(
             source="window",
             application_id=application_id,
-            metadata={
-                "is_fullscreen": window.is_fullscreen,
-                "is_meeting_likely": window.is_meeting_likely,
-            },
+            metadata=metadata,
         )
         decision = self.privacy_policy.admit_activity(event)
         if not decision.allowed or decision.event is None:

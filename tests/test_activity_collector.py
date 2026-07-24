@@ -8,6 +8,7 @@ from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PetApplicationRule, PetPreferences
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
+from nailong_agent import windows_activity
 from nailong_agent.windows_activity import create_foreground_source
 
 
@@ -45,12 +46,17 @@ def test_collector_persists_and_publishes_only_minimized_event(tmp_path: Path) -
     )
 
     collector.start()
-    source.emit(ForegroundWindow(process_id=1, executable_name="Code.exe"))
+    source.emit(ForegroundWindow(process_id=1, executable_name="Code.exe", idle_seconds=12.5, is_fullscreen=True))
 
     assert bus.wait_idle(1.0)
     assert store.activity_count() == 1
     assert received[0].payload["application_id"] == "code"
     assert received[0].payload["window_title_summary"] is None
+    assert received[0].payload["metadata"] == {
+        "idle_seconds": 12.5,
+        "is_fullscreen": True,
+        "is_meeting_likely": False,
+    }
     collector.stop()
     bus.stop()
 
@@ -83,3 +89,49 @@ def test_non_windows_foreground_source_is_a_noop(monkeypatch) -> None:
 
     source.start(lambda _: (_ for _ in ()).throw(AssertionError("unexpected callback")))
     source.stop()
+
+
+def test_idle_seconds_handles_tick_counter_wraparound() -> None:
+    assert windows_activity.idle_seconds_from_ticks(current_tick=500, last_input_tick=0xFFFF_FF00) == 0.756
+
+
+def test_fullscreen_rectangle_requires_exact_monitor_coverage() -> None:
+    assert windows_activity.is_fullscreen_rectangle((0, 0, 1920, 1080), (0, 0, 1920, 1080))
+    assert not windows_activity.is_fullscreen_rectangle((0, 32, 1920, 1080), (0, 0, 1920, 1080))
+
+
+def test_read_idle_seconds_uses_last_input_info() -> None:
+    class User32:
+        @staticmethod
+        def GetLastInputInfo(info_pointer) -> int:
+            info_pointer._obj.dwTime = 0xFFFF_FF00
+            return 1
+
+    class Kernel32:
+        @staticmethod
+        def GetTickCount() -> int:
+            return 500
+
+    assert windows_activity.read_idle_seconds(User32(), Kernel32()) == 0.756
+
+
+def test_read_fullscreen_state_compares_window_and_monitor_rectangles() -> None:
+    class User32:
+        @staticmethod
+        def GetWindowRect(_, rectangle_pointer) -> int:
+            rectangle = rectangle_pointer._obj
+            rectangle.left, rectangle.top, rectangle.right, rectangle.bottom = (0, 0, 1920, 1080)
+            return 1
+
+        @staticmethod
+        def MonitorFromWindow(_, __) -> int:
+            return 1
+
+        @staticmethod
+        def GetMonitorInfoW(_, monitor_pointer) -> int:
+            monitor = monitor_pointer._obj
+            monitor.rcMonitor.left, monitor.rcMonitor.top = (0, 0)
+            monitor.rcMonitor.right, monitor.rcMonitor.bottom = (1920, 1080)
+            return 1
+
+    assert windows_activity.read_fullscreen_state(User32(), 100)

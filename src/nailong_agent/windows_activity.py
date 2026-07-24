@@ -10,6 +10,52 @@ from threading import Event, Thread
 from nailong_agent.activity_collector import ForegroundActivitySource, ForegroundWindow
 
 
+class _LastInputInfo(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+def idle_seconds_from_ticks(*, current_tick: int, last_input_tick: int) -> float:
+    """Return idle duration from the 32-bit Windows tick counter."""
+    return ((current_tick - last_input_tick) & 0xFFFF_FFFF) / 1000
+
+
+def is_fullscreen_rectangle(window: tuple[int, int, int, int], monitor: tuple[int, int, int, int]) -> bool:
+    return window == monitor
+
+
+def read_idle_seconds(user32, kernel32) -> float | None:
+    info = _LastInputInfo(cbSize=ctypes.sizeof(_LastInputInfo))
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return None
+    return idle_seconds_from_ticks(current_tick=kernel32.GetTickCount(), last_input_tick=info.dwTime)
+
+
+def read_fullscreen_state(user32, hwnd) -> bool:
+    window = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(window)):
+        return False
+    monitor_handle = user32.MonitorFromWindow(hwnd, 2)
+    if not monitor_handle:
+        return False
+    monitor = _MonitorInfo(cbSize=ctypes.sizeof(_MonitorInfo))
+    if not user32.GetMonitorInfoW(monitor_handle, ctypes.byref(monitor)):
+        return False
+    return is_fullscreen_rectangle(_rectangle_values(window), _rectangle_values(monitor.rcMonitor))
+
+
+def _rectangle_values(rectangle: wintypes.RECT) -> tuple[int, int, int, int]:
+    return rectangle.left, rectangle.top, rectangle.right, rectangle.bottom
+
+
 class NullForegroundActivitySource:
     """Portable source used when Win32 foreground hooks are unavailable."""
 
@@ -109,6 +155,11 @@ def _foreground_window(user32, kernel32, hwnd, access: int) -> ForegroundWindow 
         length = ctypes.c_ulong(len(buffer))
         if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(length)):
             return None
-        return ForegroundWindow(process_id=process_id.value, executable_name=Path(buffer.value).name)
+        return ForegroundWindow(
+            process_id=process_id.value,
+            executable_name=Path(buffer.value).name,
+            idle_seconds=read_idle_seconds(user32, kernel32),
+            is_fullscreen=read_fullscreen_state(user32, hwnd),
+        )
     finally:
         kernel32.CloseHandle(process)
