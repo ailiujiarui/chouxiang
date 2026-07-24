@@ -7,6 +7,7 @@ from threading import Lock
 from typing import Callable
 
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
@@ -171,30 +172,36 @@ def create_renderer(*, headless: bool = False) -> PopupRenderer:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Nailong desktop pet")
     parser.add_argument("--headless", action="store_true", help="run the process shell without PySide6")
-    parser.add_argument("--lock-path", type=Path, default=Path(".runs/nailong-agent.lock"))
+    parser.add_argument("--data-dir", type=Path)
+    parser.add_argument("--lock-path", type=Path)
+    parser.add_argument("--privacy-database", type=Path)
     parser.add_argument("--analysis-url", help="subscribe to the Refactor Agent analysis SSE stream")
-    parser.add_argument(
-        "--notification-database",
-        type=Path,
-        default=Path(".runs/nailong_notifications.sqlite"),
-    )
+    parser.add_argument("--notification-database", type=Path)
     args = parser.parse_args(argv)
+    settings = NailongSettings.from_env().with_overrides(
+        data_dir=args.data_dir,
+        lock_path=args.lock_path,
+        privacy_database=args.privacy_database,
+        notification_database=args.notification_database,
+        analysis_url=args.analysis_url,
+    )
     notifications = (
-        NotificationService.from_database(args.notification_database)
-        if args.analysis_url
+        NotificationService.from_database(settings.notification_database)
+        if settings.analysis_url
         else None
     )
     subscriber = (
         AnalysisEventSubscriber(
-            source=HttpxSSEAnalysisEventSource(args.analysis_url),
+            source=HttpxSSEAnalysisEventSource(settings.analysis_url),
             notifications=notifications,
         )
-        if args.analysis_url and notifications is not None
+        if settings.analysis_url and notifications is not None
         else None
     )
     process = DesktopProcess(
-        lock_path=args.lock_path,
+        lock_path=settings.lock_path,
         renderer_factory=lambda: create_renderer(headless=args.headless),
+        privacy_store=PrivacyStore(settings.privacy_database),
         notification_service=notifications,
         analysis_subscriber=subscriber,
     )
