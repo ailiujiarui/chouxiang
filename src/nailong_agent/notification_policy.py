@@ -31,8 +31,12 @@ class NotificationPolicy:
         self.maximum_cooldown_seconds = maximum_cooldown_seconds
         self._rng = rng or random.Random()
 
-    def cooldown_seconds(self) -> int:
-        return self._rng.randint(self.minimum_cooldown_seconds, self.maximum_cooldown_seconds)
+    def cooldown_seconds(self, *, minimum: int | None = None, maximum: int | None = None) -> int:
+        lower = self.minimum_cooldown_seconds if minimum is None else minimum
+        upper = self.maximum_cooldown_seconds if maximum is None else maximum
+        if lower < 0 or upper < lower:
+            raise ValueError("invalid notification cooldown range")
+        return self._rng.randint(lower, upper)
 
     def candidate_for(self, event: AnalysisEvent) -> NotificationCandidate | None:
         event_type = event.event_type

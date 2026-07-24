@@ -34,6 +34,18 @@ def test_explicit_path_override_wins_over_derived_path(tmp_path: Path) -> None:
     assert settings.privacy_database == data_dir / "nailong_privacy.sqlite"
 
 
+def test_runtime_preference_overrides_include_only_configured_values() -> None:
+    settings = NailongSettings(
+        maximum_popups_per_day=8,
+        minimum_cooldown_seconds=60,
+    )
+
+    assert settings.notification_preference_overrides == {
+        "maximum_popups_per_day": 8,
+        "minimum_cooldown_seconds": 60,
+    }
+
+
 def test_headless_entrypoint_uses_data_directory_for_lock_and_privacy_store(tmp_path: Path) -> None:
     data_dir = tmp_path / "pet-data"
 

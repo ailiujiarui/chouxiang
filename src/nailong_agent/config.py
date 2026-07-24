@@ -68,6 +68,15 @@ class NailongSettings(BaseModel):
     def notification_database(self) -> Path:
         return self.notification_database_override or self.data_dir / "nailong_notifications.sqlite"
 
+    @property
+    def notification_preference_overrides(self) -> dict[str, int]:
+        values = {
+            "maximum_popups_per_day": self.maximum_popups_per_day,
+            "minimum_cooldown_seconds": self.minimum_cooldown_seconds,
+            "maximum_cooldown_seconds": self.maximum_cooldown_seconds,
+        }
+        return {name: value for name, value in values.items() if value is not None}
+
 
 def _optional_int(name: str) -> int | None:
     value = os.getenv(name)

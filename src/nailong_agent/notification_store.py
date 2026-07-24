@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -11,6 +11,8 @@ from nailong_agent.events import (
     NotificationIntent,
     NotificationKind,
     NotificationStatus,
+    PetApplicationRule,
+    PetPreferences,
 )
 from nailong_agent.notification_policy import NotificationCandidate
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
@@ -34,6 +36,52 @@ class NotificationStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    def get_preferences(self) -> PetPreferences:
+        with self._connect() as connection:
+            return self._preferences(connection)
+
+    def save_preferences(self, preferences: PetPreferences) -> None:
+        if preferences.minimum_cooldown_seconds > preferences.maximum_cooldown_seconds:
+            raise ValueError("minimum cooldown must not exceed maximum cooldown")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE pet_preferences SET
+                    activity_listener_enabled = ?, manual_pause_enabled = ?,
+                    do_not_disturb_start = ?, do_not_disturb_end = ?,
+                    minimum_cooldown_seconds = ?, maximum_cooldown_seconds = ?,
+                    maximum_popups_per_day = ?, personality_intensity = ?
+                WHERE id = 1
+                """,
+                (
+                    int(preferences.activity_listener_enabled),
+                    int(preferences.manual_pause_enabled),
+                    preferences.do_not_disturb_start.isoformat() if preferences.do_not_disturb_start else None,
+                    preferences.do_not_disturb_end.isoformat() if preferences.do_not_disturb_end else None,
+                    preferences.minimum_cooldown_seconds,
+                    preferences.maximum_cooldown_seconds,
+                    preferences.maximum_popups_per_day,
+                    preferences.personality_intensity,
+                ),
+            )
+
+    def list_application_rules(self) -> list[PetApplicationRule]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT application_id, rule FROM pet_app_rules ORDER BY application_id ASC"
+            ).fetchall()
+        return [PetApplicationRule(application_id=row["application_id"], rule=row["rule"]) for row in rows]
+
+    def replace_application_rules(self, rules: list[PetApplicationRule]) -> None:
+        normalized = {rule.application_id.casefold(): rule.rule for rule in rules}
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM pet_app_rules")
+            connection.executemany(
+                "INSERT INTO pet_app_rules (application_id, rule) VALUES (?, ?)",
+                sorted(normalized.items()),
+            )
+
     def process_event(
         self,
         event: AnalysisEvent,
@@ -41,6 +89,7 @@ class NotificationStore:
         *,
         now: datetime,
         cooldown_seconds: int,
+        preferences: PetPreferences | None = None,
     ) -> NotificationIngestReceipt:
         now = _as_utc(now)
         with self._connect() as connection:
@@ -56,6 +105,11 @@ class NotificationStore:
                 return NotificationIngestReceipt(accepted=False, reason="non_public_event")
 
             self._update_task_state(connection, event)
+            preferences = preferences or self._preferences(connection)
+            if preferences.manual_pause_enabled:
+                return NotificationIngestReceipt(accepted=True, reason="manual_pause")
+            if _is_scheduled_do_not_disturb(preferences, now):
+                return NotificationIngestReceipt(accepted=True, reason="scheduled_do_not_disturb")
             if candidate is None:
                 return NotificationIngestReceipt(accepted=True, reason="no_notification_for_event")
             if candidate.terminal:
@@ -193,12 +247,23 @@ class NotificationStore:
         *,
         now: datetime,
         minimum_start_spacing_seconds: int = 30,
+        preferences: PetPreferences | None = None,
     ) -> NotificationIntent | None:
         now = _as_utc(now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             runtime = self._runtime_row(connection)
             if bool(runtime["do_not_disturb"]):
+                return None
+            preferences = preferences or self._preferences(connection)
+            if preferences.manual_pause_enabled or _is_scheduled_do_not_disturb(preferences, now):
+                return None
+            local_date = now.date().isoformat()
+            budget_row = connection.execute(
+                "SELECT popup_count FROM notification_daily_budget WHERE local_date = ?",
+                (local_date,),
+            ).fetchone()
+            if budget_row is not None and int(budget_row["popup_count"]) >= preferences.maximum_popups_per_day:
                 return None
             last_started = _parse_datetime(runtime["last_popup_started_at"])
             if last_started is not None and now < last_started + timedelta(seconds=minimum_start_spacing_seconds):
@@ -224,6 +289,13 @@ class NotificationStore:
                 "UPDATE notification_runtime SET last_popup_started_at = ? WHERE id = 1",
                 (now.isoformat(),),
             )
+            connection.execute(
+                """
+                INSERT INTO notification_daily_budget (local_date, popup_count) VALUES (?, 1)
+                ON CONFLICT(local_date) DO UPDATE SET popup_count = popup_count + 1
+                """,
+                (local_date,),
+            )
         return _intent_from_row(row)
 
     def acknowledge(self, notification_id: str, outcome: str, *, now: datetime) -> bool:
@@ -240,9 +312,11 @@ class NotificationStore:
             )
         return cursor.rowcount == 1
 
-    def status(self) -> NotificationStatus:
+    def status(self, *, now: datetime | None = None) -> NotificationStatus:
+        now = _as_utc(now or datetime.now(timezone.utc))
         with self._connect() as connection:
             runtime = self._runtime_row(connection)
+            preferences = self._preferences(connection)
             pending_count = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM notification_intents WHERE status IN ('PENDING', 'DISPLAYING')"
@@ -251,6 +325,11 @@ class NotificationStore:
             suppressed_count = int(
                 connection.execute("SELECT COUNT(*) FROM suppressed_terminal_tasks").fetchone()[0]
             )
+            budget_row = connection.execute(
+                "SELECT popup_count FROM notification_daily_budget WHERE local_date = ?",
+                (now.date().isoformat(),),
+            ).fetchone()
+            used_budget = int(budget_row["popup_count"]) if budget_row else 0
         return NotificationStatus(
             do_not_disturb=bool(runtime["do_not_disturb"]),
             last_consumed_sequence=int(runtime["last_consumed_sequence"]),
@@ -258,6 +337,9 @@ class NotificationStore:
             last_popup_started_at=_parse_datetime(runtime["last_popup_started_at"]),
             pending_count=pending_count,
             suppressed_terminal_count=suppressed_count,
+            manual_pause_enabled=preferences.manual_pause_enabled,
+            scheduled_do_not_disturb=_is_scheduled_do_not_disturb(preferences, now),
+            remaining_daily_popup_budget=max(0, preferences.maximum_popups_per_day - used_budget),
         )
 
     def list_intents(self) -> list[NotificationIntent]:
@@ -420,6 +502,22 @@ class NotificationStore:
             raise RuntimeError("notification runtime row is missing")
         return row
 
+    @staticmethod
+    def _preferences(connection: sqlite3.Connection) -> PetPreferences:
+        row = connection.execute("SELECT * FROM pet_preferences WHERE id = 1").fetchone()
+        if row is None:
+            raise RuntimeError("pet preferences row is missing")
+        return PetPreferences(
+            activity_listener_enabled=bool(row["activity_listener_enabled"]),
+            manual_pause_enabled=bool(row["manual_pause_enabled"]),
+            do_not_disturb_start=_parse_time(row["do_not_disturb_start"]),
+            do_not_disturb_end=_parse_time(row["do_not_disturb_end"]),
+            minimum_cooldown_seconds=int(row["minimum_cooldown_seconds"]),
+            maximum_cooldown_seconds=int(row["maximum_cooldown_seconds"]),
+            maximum_popups_per_day=int(row["maximum_popups_per_day"]),
+            personality_intensity=row["personality_intensity"],
+        )
+
     def _initialize(self) -> None:
         with self._connect() as connection:
             connection.executescript(
@@ -474,6 +572,39 @@ class NotificationStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_notification_intents_delivery
                 ON notification_intents (status, terminal, available_at, created_at);
+
+                CREATE TABLE IF NOT EXISTS pet_preferences (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    activity_listener_enabled INTEGER NOT NULL DEFAULT 1 CHECK(activity_listener_enabled IN (0, 1)),
+                    manual_pause_enabled INTEGER NOT NULL DEFAULT 0 CHECK(manual_pause_enabled IN (0, 1)),
+                    do_not_disturb_start TEXT,
+                    do_not_disturb_end TEXT,
+                    minimum_cooldown_seconds INTEGER NOT NULL DEFAULT 300 CHECK(minimum_cooldown_seconds >= 0),
+                    maximum_cooldown_seconds INTEGER NOT NULL DEFAULT 900 CHECK(maximum_cooldown_seconds >= 0),
+                    maximum_popups_per_day INTEGER NOT NULL DEFAULT 12 CHECK(maximum_popups_per_day >= 0),
+                    personality_intensity TEXT NOT NULL DEFAULT 'STANDARD'
+                        CHECK(personality_intensity IN ('LOW', 'STANDARD', 'HIGH'))
+                );
+                INSERT OR IGNORE INTO pet_preferences (id) VALUES (1);
+
+                CREATE TABLE IF NOT EXISTS pet_app_rules (
+                    application_id TEXT PRIMARY KEY,
+                    rule TEXT NOT NULL CHECK(rule IN ('allow', 'block'))
+                );
+
+                CREATE TABLE IF NOT EXISTS pet_personality_state (
+                    id INTEGER PRIMARY KEY CHECK(id = 1),
+                    emotion TEXT NOT NULL DEFAULT 'neutral',
+                    task_id TEXT,
+                    updated_at TEXT,
+                    expires_at TEXT
+                );
+                INSERT OR IGNORE INTO pet_personality_state (id) VALUES (1);
+
+                CREATE TABLE IF NOT EXISTS notification_daily_budget (
+                    local_date TEXT PRIMARY KEY,
+                    popup_count INTEGER NOT NULL CHECK(popup_count >= 0)
+                );
                 """
             )
             connection.execute(
@@ -505,6 +636,19 @@ def _intent_from_row(row: sqlite3.Row) -> NotificationIntent:
 
 def _parse_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+def _parse_time(value: str | None) -> time | None:
+    return time.fromisoformat(value) if value else None
+
+
+def _is_scheduled_do_not_disturb(preferences: PetPreferences, now: datetime) -> bool:
+    start = preferences.do_not_disturb_start
+    end = preferences.do_not_disturb_end
+    if start is None or end is None or start == end:
+        return False
+    current = now.timetz().replace(tzinfo=None)
+    return start <= current < end if start < end else current >= start or current < end
 
 
 def _as_utc(value: datetime) -> datetime:

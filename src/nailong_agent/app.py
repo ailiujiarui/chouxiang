@@ -177,6 +177,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--privacy-database", type=Path)
     parser.add_argument("--analysis-url", help="subscribe to the Refactor Agent analysis SSE stream")
     parser.add_argument("--notification-database", type=Path)
+    parser.add_argument("--maximum-popups-per-day", type=int)
+    parser.add_argument("--minimum-cooldown-seconds", type=int)
+    parser.add_argument("--maximum-cooldown-seconds", type=int)
     args = parser.parse_args(argv)
     settings = NailongSettings.from_env().with_overrides(
         data_dir=args.data_dir,
@@ -184,9 +187,15 @@ def main(argv: list[str] | None = None) -> int:
         privacy_database=args.privacy_database,
         notification_database=args.notification_database,
         analysis_url=args.analysis_url,
+        maximum_popups_per_day=args.maximum_popups_per_day,
+        minimum_cooldown_seconds=args.minimum_cooldown_seconds,
+        maximum_cooldown_seconds=args.maximum_cooldown_seconds,
     )
     notifications = (
-        NotificationService.from_database(settings.notification_database)
+        NotificationService.from_database(
+            settings.notification_database,
+            preference_overrides=settings.notification_preference_overrides,
+        )
         if settings.analysis_url
         else None
     )
