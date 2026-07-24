@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from nailong_agent.events import ActivityEvent, Sensitivity
+from nailong_agent.events import ActivityEvent, ActivityType, RawActivitySignal
 from refactor_agent.artifacts import sanitize_text
 
 
@@ -41,9 +41,25 @@ _SENSITIVE_MARKERS = (
     "认证",
 )
 _MEETING_MARKERS = ("teams", "zoom", "meet", "webex", "lark", "飞书", "腾讯会议", "钉钉会议")
-_SAFE_METADATA_KEYS = frozenset({"idle_seconds", "is_fullscreen", "is_meeting_likely"})
 _SECRET_ASSIGNMENT = re.compile(r"(?i)\b(password|passcode|token|secret|api[_ -]?key)\s*[:=]\s*[^\s,;]+")
 _PATH = re.compile(r"(?:(?:[A-Za-z]:)?[\\/][^\s]+)+")
+_APPLICATION_CATEGORIES = {
+    "code": "code",
+    "visual studio code": "code",
+    "vscode": "code",
+    "chrome": "browser",
+    "firefox": "browser",
+    "msedge": "browser",
+    "safari": "browser",
+    "cmd": "terminal",
+    "powershell": "terminal",
+    "pwsh": "terminal",
+    "terminal": "terminal",
+    "windows terminal": "terminal",
+    "idea64": "ide",
+    "pycharm64": "ide",
+    "explorer": "explorer",
+}
 
 
 @dataclass(frozen=True)
@@ -79,7 +95,7 @@ class PrivacyPolicy:
     def needs_initial_consent(self) -> bool:
         return not self.consent.decision_recorded
 
-    def admit_activity(self, event: ActivityEvent) -> CollectionDecision:
+    def admit_activity(self, event: RawActivitySignal) -> CollectionDecision:
         if not self.consent.permits("activity_collection"):
             return CollectionDecision(False, "activity_collection_not_authorized")
         if event.sensitivity != "public":
@@ -100,12 +116,12 @@ class PrivacyPolicy:
 
         if not self.consent.permits("remote_inference"):
             return None
-        decision = self.admit_activity(event)
-        if not decision.allowed or decision.event is None:
+        if event.sensitivity != "public":
             return None
-        safe = decision.event
-        signals = ",".join(sorted(key for key, value in safe.metadata.items() if value)) or "none"
-        return f"application={safe.application_id}; source={safe.source}; signals={signals}"
+        summary = event.summary or (
+            f"application={event.application_id}; activity={event.activity.value}; source={event.source}"
+        )
+        return self.redact_text_for_remote(summary)
 
     @staticmethod
     def redact_text_for_remote(value: str) -> str:
@@ -116,30 +132,33 @@ class PrivacyPolicy:
         return _PATH.sub("[PATH]", value)
 
     @staticmethod
-    def _minimize(event: ActivityEvent) -> ActivityEvent:
-        safe_metadata = {key: value for key, value in event.metadata.items() if key in _SAFE_METADATA_KEYS}
-        return event.model_copy(
-            update={
-                "application_id": _normalize_application_id(event.application_id),
-                "window_title_summary": None,
-                "activity_hint": None,
-                "metadata": safe_metadata,
-                "sensitivity": "public",
-            }
+    def _minimize(event: RawActivitySignal) -> ActivityEvent:
+        application = _normalize_application_id(event.application_id)
+        activity, confidence = _classify(event)
+        summary = f"application={application}; activity={activity.value}; source={event.source}"
+        return ActivityEvent(
+            event_id=event.event_id,
+            occurred_at=event.occurred_at,
+            source=event.source,
+            application_id=application,
+            activity=activity,
+            confidence=confidence,
+            summary=summary,
+            sensitivity="public",
         )
 
     @staticmethod
-    def _is_meeting(event: ActivityEvent) -> bool:
+    def _is_meeting(event: RawActivitySignal) -> bool:
         text = " ".join(_event_values(event))
         return bool(event.metadata.get("is_meeting_likely")) or any(marker in text for marker in _MEETING_MARKERS)
 
     @staticmethod
-    def _contains_sensitive_marker(event: ActivityEvent) -> bool:
+    def _contains_sensitive_marker(event: RawActivitySignal) -> bool:
         text = " ".join(_event_values(event))
         return any(marker in text for marker in _SENSITIVE_MARKERS)
 
 
-def _event_values(event: ActivityEvent) -> list[str]:
+def _event_values(event: RawActivitySignal) -> list[str]:
     values = [event.application_id, event.window_title_summary or "", event.activity_hint or ""]
     values.extend(str(key) for key in event.metadata)
     values.extend(str(value) for value in event.metadata.values() if value is not None)
@@ -148,4 +167,25 @@ def _event_values(event: ActivityEvent) -> list[str]:
 
 def _normalize_application_id(value: str) -> str:
     name = re.split(r"[\\/]", value.strip())[-1].casefold()
-    return name.removesuffix(".exe") or "unknown"
+    executable = name.removesuffix(".exe")
+    return _APPLICATION_CATEGORIES.get(executable, "other")
+
+
+def _classify(event: RawActivitySignal) -> tuple[ActivityType, float]:
+    if event.activity != ActivityType.UNKNOWN:
+        return event.activity, event.confidence
+    if event.source == "idle":
+        return ActivityType.IDLE, max(event.confidence, 1.0)
+    hint = (event.activity_hint or "").casefold()
+    rules = (
+        (ActivityType.DEBUGGING, ("debug", "traceback", "调试")),
+        (ActivityType.CODING, ("edit", "coding", "code", "编程", "编码")),
+        (ActivityType.READING, ("read", "阅读")),
+        (ActivityType.WRITING, ("write", "文档", "写作")),
+        (ActivityType.GAMING, ("game", "gaming", "游戏")),
+        (ActivityType.MEDIA, ("video", "media", "music", "视频", "音乐")),
+    )
+    for activity, markers in rules:
+        if any(marker in hint for marker in markers):
+            return activity, max(event.confidence, 0.7)
+    return ActivityType.UNKNOWN, event.confidence

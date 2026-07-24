@@ -7,7 +7,7 @@ import pytest
 
 from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
-from nailong_agent.events import ActivityEvent, EventEnvelope, PetExpression, PopupDecision
+from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetExpression, PopupDecision
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -24,7 +24,13 @@ from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 
 def test_event_models_create_serializable_envelopes() -> None:
-    activity = ActivityEvent(source="window", application_id="code", activity_hint="editing")
+    activity = ActivityEvent(
+        source="window",
+        application_id="code",
+        activity=ActivityType.CODING,
+        confidence=0.9,
+        summary="application=code; activity=coding; source=window",
+    )
 
     envelope = activity.envelope()
 
