@@ -9,7 +9,8 @@ param(
     [ValidateRange(1, 65535)]
     [int]$DashboardPort = 8501,
     [string]$PythonBaseImage = "python:3.12-slim",
-    [string]$PipIndexUrl = "https://pypi.org/simple"
+    [string]$PipIndexUrl = "https://pypi.org/simple",
+    [string]$NailongDataDir = ".runs"
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,11 +119,11 @@ if ($Desktop) {
         if ($LASTEXITCODE -ne 0) {
             throw "Desktop dependencies are missing. Run: pip install -e '.[desktop]'"
         }
-        $notificationDatabase = Join-Path $repoRoot ".runs\nailong_notifications.sqlite"
+        $resolvedNailongDataDir = Join-Path $repoRoot $NailongDataDir
         $desktopProcess = Start-Process -FilePath $pythonwExe -ArgumentList @(
             "-m", "nailong_agent",
             "--analysis-url", "http://127.0.0.1:$ApiPort",
-            "--notification-database", "`"$notificationDatabase`""
+            "--data-dir", "`"$resolvedNailongDataDir`""
         ) -WorkingDirectory $repoRoot -PassThru
         Write-Host "Nailong Desktop:          started (PID $($desktopProcess.Id))"
     } finally {

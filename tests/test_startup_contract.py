@@ -26,8 +26,10 @@ def test_one_click_script_checks_docker_and_health_and_has_safe_stop():
     assert "no remote repository writes" in script
     assert "-PythonBaseImage <registry>/python:3.12-slim" in script
     assert "[switch]$Desktop" in script
+    assert "NailongDataDir" in script
     assert '"--analysis-url", "http://127.0.0.1:$ApiPort"' in script
-    assert '"--notification-database"' in script
+    assert '"--data-dir", "`"$resolvedNailongDataDir`""' in script
+    assert '"--notification-database"' not in script
     assert "pythonw.exe" in script
     assert "import PySide6, nailong_agent" in script
     assert "Start-Process -FilePath $pythonwExe" in script

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from threading import Event
 
@@ -10,7 +10,7 @@ from nailong_agent.app import DesktopProcess
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
-from nailong_agent.events import NotificationKind
+from nailong_agent.events import NotificationKind, PetApplicationRule, PetPreferences
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -270,6 +270,52 @@ def test_httpx_sse_source_sends_last_event_id_and_parses_analysis_event() -> Non
 
     assert [event.sequence for event in events] == [7]
     assert captured_headers == ["6"]
+
+
+def test_preferences_and_application_rules_survive_store_reopen(tmp_path: Path) -> None:
+    database = tmp_path / "notifications.sqlite"
+    store = NotificationStore(database)
+    preferences = PetPreferences(
+        manual_pause_enabled=True,
+        do_not_disturb_start=time(22, 0),
+        do_not_disturb_end=time(7, 0),
+        maximum_popups_per_day=8,
+        personality_intensity="HIGH",
+    )
+    store.save_preferences(preferences)
+    store.replace_application_rules([PetApplicationRule(application_id="game", rule="block")])
+
+    reopened = NotificationStore(database)
+
+    assert reopened.get_preferences() == preferences
+    assert reopened.list_application_rules() == [PetApplicationRule(application_id="game", rule="block")]
+
+
+def test_daily_popup_budget_is_durable_and_only_counts_displaying_intents(tmp_path: Path) -> None:
+    clock = MutableClock(_now())
+    store = NotificationStore(tmp_path / "notifications.sqlite")
+    store.save_preferences(PetPreferences(maximum_popups_per_day=1))
+    service = NotificationService(
+        store=store,
+        policy=NotificationPolicy(minimum_cooldown_seconds=0, maximum_cooldown_seconds=0),
+        clock=clock,
+        minimum_popup_start_spacing_seconds=0,
+    )
+    service.ingest_analysis_event(_event(1, AnalysisEventType.TASK_FAILED, "task-1", clock()))
+    service.ingest_analysis_event(_event(2, AnalysisEventType.TASK_FAILED, "task-2", clock()))
+
+    first = service.lease_next()
+
+    assert first is not None
+    assert service.lease_next() is None
+    assert NotificationService(
+        store=NotificationStore(store.database_path),
+        clock=clock,
+        minimum_popup_start_spacing_seconds=0,
+    ).get_status().remaining_daily_popup_budget == 0
+
+    clock.advance(seconds=24 * 60 * 60)
+    assert service.lease_next() is not None
 
 
 def _service(tmp_path: Path) -> tuple[MutableClock, NotificationService]:

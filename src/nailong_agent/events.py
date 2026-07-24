@@ -1,13 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Sensitivity = Literal["public", "private", "blocked"]
+ActivitySource = Literal["window", "process", "idle", "ide"]
+
+
+class ActivityType(StrEnum):
+    CODING = "coding"
+    DEBUGGING = "debugging"
+    READING = "reading"
+    WRITING = "writing"
+    MEETING = "meeting"
+    GAMING = "gaming"
+    MEDIA = "media"
+    IDLE = "idle"
+    UNKNOWN = "unknown"
 
 
 class PetExpression(StrEnum):
@@ -53,18 +66,76 @@ class EventEnvelope(BaseModel):
         )
 
 
-class ActivityEvent(BaseModel):
+class RawActivitySignal(BaseModel):
+    """Ephemeral collector input. It must never be persisted or published."""
+
+    model_config = ConfigDict(extra="forbid")
+
     event_id: str = Field(default_factory=lambda: uuid4().hex)
     occurred_at: datetime = Field(default_factory=utc_now)
-    source: Literal["window", "process", "idle", "ide"]
+    source: ActivitySource
     application_id: str = Field(min_length=1)
     window_title_summary: str | None = None
     activity_hint: str | None = None
+    activity: ActivityType = ActivityType.UNKNOWN
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     sensitivity: Sensitivity = "public"
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_timestamp(cls, value: datetime) -> datetime:
+        return _as_utc(value)
+
+
+class ActivityEvent(BaseModel):
+    """Privacy-minimized activity contract used outside the collector boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(default_factory=lambda: uuid4().hex)
+    occurred_at: datetime = Field(default_factory=utc_now)
+    source: ActivitySource
+    application_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
+    activity: ActivityType
+    confidence: float = Field(ge=0.0, le=1.0)
+    summary: str | None = Field(default=None, max_length=240)
+    sensitivity: Sensitivity = "public"
+
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_timestamp(cls, value: datetime) -> datetime:
+        return _as_utc(value)
+
+    @field_validator("summary")
+    @classmethod
+    def normalize_summary(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        return normalized or None
+
     def envelope(self) -> EventEnvelope:
         return EventEnvelope.from_payload(self, source=self.source, sensitivity=self.sensitivity)
+
+
+class ActivityWindow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    window_started_at: datetime
+    window_ended_at: datetime
+    dominant_application: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
+    dominant_activity: ActivityType
+    confidence: float = Field(ge=0.0, le=1.0)
+    event_count: int = Field(ge=1)
+    duplicate_count: int = Field(default=0, ge=0)
+    summary: str | None = Field(default=None, max_length=240)
+    sensitivity: Literal["public"] = "public"
+
+    @field_validator("window_started_at", "window_ended_at")
+    @classmethod
+    def validate_window_timestamp(cls, value: datetime) -> datetime:
+        return _as_utc(value)
 
 
 class ActivitySnapshot(BaseModel):
@@ -82,17 +153,7 @@ class ActivitySnapshot(BaseModel):
 
 
 class ActivityClassification(BaseModel):
-    activity: Literal[
-        "coding",
-        "debugging",
-        "reading",
-        "writing",
-        "meeting",
-        "gaming",
-        "media",
-        "idle",
-        "unknown",
-    ]
+    activity: ActivityType
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[str] = Field(default_factory=list)
     classifier: Literal["rules", "llm"] = "rules"
@@ -149,6 +210,22 @@ class NotificationIntent(BaseModel):
     available_at: datetime = Field(default_factory=utc_now)
 
 
+class PetPreferences(BaseModel):
+    activity_listener_enabled: bool = True
+    manual_pause_enabled: bool = False
+    do_not_disturb_start: time | None = None
+    do_not_disturb_end: time | None = None
+    minimum_cooldown_seconds: int = Field(default=5 * 60, ge=0)
+    maximum_cooldown_seconds: int = Field(default=15 * 60, ge=0)
+    maximum_popups_per_day: int = Field(default=12, ge=0)
+    personality_intensity: Literal["LOW", "STANDARD", "HIGH"] = "STANDARD"
+
+
+class PetApplicationRule(BaseModel):
+    application_id: str = Field(min_length=1, max_length=64)
+    rule: Literal["allow", "block"]
+
+
 class NotificationStatus(BaseModel):
     do_not_disturb: bool
     last_consumed_sequence: int = Field(ge=0)
@@ -156,6 +233,9 @@ class NotificationStatus(BaseModel):
     last_popup_started_at: datetime | None = None
     pending_count: int = Field(ge=0)
     suppressed_terminal_count: int = Field(ge=0)
+    manual_pause_enabled: bool = False
+    scheduled_do_not_disturb: bool = False
+    remaining_daily_popup_budget: int = Field(default=0, ge=0)
 
 
 class NotificationIngestReceipt(BaseModel):
@@ -163,3 +243,9 @@ class NotificationIngestReceipt(BaseModel):
     duplicate: bool = False
     notification_id: str | None = None
     reason: str
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("activity timestamps must be timezone-aware")
+    return value.astimezone(timezone.utc)

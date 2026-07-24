@@ -1,6 +1,8 @@
 """Desktop pet application boundary for Nailong Agent."""
 
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.activity_aggregator import ActivityEventAggregator
+from nailong_agent.config import NailongSettings
 from nailong_agent.contracts import (
     PetClassificationHint,
     PetDecisionContext,
@@ -14,6 +16,8 @@ from nailong_agent.events import (
     ActivityClassification,
     ActivityEvent,
     ActivitySnapshot,
+    ActivityType,
+    ActivityWindow,
     EventEnvelope,
     NotificationIngestReceipt,
     NotificationIntent,
@@ -23,6 +27,7 @@ from nailong_agent.events import (
     PetExpression,
     PetState,
     PopupDecision,
+    RawActivitySignal,
 )
 from nailong_agent.notification_service import NotificationPort, NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -38,9 +43,12 @@ from nailong_agent.privacy_store import PrivacyStore
 
 __all__ = [
     "AnalysisEventSubscriber",
+    "ActivityEventAggregator",
     "ActivityClassification",
     "ActivityEvent",
     "ActivitySnapshot",
+    "ActivityType",
+    "ActivityWindow",
     "CollectionDecision",
     "EventEnvelope",
     "HttpxSSEAnalysisEventSource",
@@ -51,6 +59,7 @@ __all__ = [
     "NotificationService",
     "NotificationStatus",
     "NotificationStore",
+    "NailongSettings",
     "PET_NODE_ORDER",
     "PetClassificationHint",
     "PetDecisionContext",
@@ -66,6 +75,7 @@ __all__ = [
     "PetExpression",
     "PetState",
     "PopupDecision",
+    "RawActivitySignal",
     "PrivacyConsent",
     "PrivacyPolicy",
     "PrivacyStore",
