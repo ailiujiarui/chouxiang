@@ -78,7 +78,7 @@ def test_personality_graph_runs_the_six_nodes_in_order() -> None:
     assert "第一条失败" in state["output"].message
 
 
-def test_upstream_classification_is_authoritative_and_provider_only_writes_response() -> None:
+def test_high_confidence_classification_uses_local_personality_response() -> None:
     provider = FakeProvider({"message": "哼，测试过了，本龙早就知道。"})
     decision_input = make_input(
         classified_activity="test_succeeded",
@@ -87,14 +87,12 @@ def test_upstream_classification_is_authoritative_and_provider_only_writes_respo
 
     state = PetPersonalityAgent(provider=provider).run(decision_input)
 
-    assert len(provider.calls) == 1
-    assert "desktop pet" in str(provider.calls[0]["system_prompt"])
-    assert "activity classifier" not in str(provider.calls[0]["system_prompt"])
+    assert provider.calls == []
     assert state["scenario"] is PersonalityScenario.TEST_SUCCEEDED
     assert state["classification_source"] == "classifier"
-    assert state["llm_used"] is True
+    assert state["llm_used"] is False
     assert state["output"] is not None
-    assert state["output"].message == "哼，测试过了，本龙早就知道。"
+    assert state["output"].message != "哼，测试过了，本龙早就知道。"
 
 
 def test_personality_llm_treats_redacted_summary_as_untrusted_data() -> None:
@@ -104,6 +102,8 @@ def test_personality_llm_treats_redacted_summary_as_untrusted_data() -> None:
     state = PetPersonalityAgent(provider=provider).run(
         make_input(
             classified_activity="debugging",
+            classification_confidence=0.1,
+            source="user",
             summary=injection,
         )
     )
@@ -145,7 +145,11 @@ def test_invalid_llm_output_fails_closed_without_exposing_provider_error() -> No
     )
 
     state = PetPersonalityAgent(provider=provider).run(
-        make_input(classified_activity="test_succeeded")
+        make_input(
+            classified_activity="test_succeeded",
+            classification_confidence=0.1,
+            source="user",
+        )
     )
 
     assert state["llm_used"] is True
@@ -163,6 +167,8 @@ def test_llm_response_that_echoes_untrusted_summary_uses_local_fallback() -> Non
     state = PetPersonalityAgent(provider=provider).run(
         make_input(
             classified_activity="debugging",
+            classification_confidence=0.1,
+            source="user",
             summary=injection,
         )
     )

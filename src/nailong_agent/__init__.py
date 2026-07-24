@@ -1,7 +1,11 @@
 """Desktop pet application boundary for Nailong Agent."""
 
+from nailong_agent.activity_collector import ForegroundWindow, WindowActivityCollector
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.activity_collector import ForegroundWindow, IdleState, WindowActivityCollector
 from nailong_agent.activity_aggregator import ActivityEventAggregator
+from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
+from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.config import NailongSettings
 from nailong_agent.contracts import (
     PetClassificationHint,
@@ -37,6 +41,7 @@ from nailong_agent.pet_state import (
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
+    PetPersonalityState,
 )
 from nailong_agent.privacy import CollectionDecision, PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
@@ -44,6 +49,10 @@ from nailong_agent.privacy_store import PrivacyStore
 __all__ = [
     "AnalysisEventSubscriber",
     "ActivityEventAggregator",
+    "ActivityPersonalityOrchestrator",
+    "ActivityRecognizer",
+    "ForegroundWindow",
+    "IdleState",
     "ActivityClassification",
     "ActivityEvent",
     "ActivitySnapshot",
@@ -67,6 +76,7 @@ __all__ = [
     "PetDecisionOutput",
     "PetEmotion",
     "PetGraphState",
+    "PetPersonalityState",
     "PetPersonalityAgent",
     "PetPersonalityResponse",
     "PersonalityScenario",
@@ -79,6 +89,7 @@ __all__ = [
     "PrivacyConsent",
     "PrivacyPolicy",
     "PrivacyStore",
+    "WindowActivityCollector",
     "RedactedActivitySignal",
     "run_pet_graph",
 ]

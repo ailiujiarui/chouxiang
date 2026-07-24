@@ -15,6 +15,7 @@ from nailong_agent.events import (
     PetPreferences,
 )
 from nailong_agent.notification_policy import NotificationCandidate
+from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 
@@ -82,6 +83,48 @@ class NotificationStore:
                 sorted(normalized.items()),
             )
 
+    def save_personality_state(self, state: PetPersonalityState) -> None:
+        validated = PetPersonalityState.model_validate(state)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE pet_personality_state
+                SET emotion = ?, task_id = ?, updated_at = ?, expires_at = ?
+                WHERE id = 1
+                """,
+                (
+                    validated.emotion.value,
+                    validated.task_id,
+                    validated.updated_at.isoformat() if validated.updated_at else None,
+                    validated.expires_at.isoformat() if validated.expires_at else None,
+                ),
+            )
+
+    def get_personality_state(self, *, now: datetime | None = None) -> PetPersonalityState:
+        current_time = _as_utc(now or datetime.now(timezone.utc))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT emotion, task_id, updated_at, expires_at FROM pet_personality_state WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("pet personality state row is missing")
+            state = _personality_state_from_row(row)
+            if state.expires_at is not None and state.expires_at <= current_time:
+                state = PetPersonalityState(
+                    emotion=PetEmotion.NEUTRAL,
+                    updated_at=current_time,
+                )
+                connection.execute(
+                    """
+                    UPDATE pet_personality_state
+                    SET emotion = ?, task_id = NULL, updated_at = ?, expires_at = NULL
+                    WHERE id = 1
+                    """,
+                    (state.emotion.value, state.updated_at.isoformat()),
+                )
+        return state
+
     def process_event(
         self,
         event: AnalysisEvent,
@@ -127,6 +170,54 @@ class NotificationStore:
                 candidate=candidate,
                 source_event_id=event.event_id,
                 dedupe_key=f"event:{event.event_id}",
+                now=now,
+            )
+            connection.execute(
+                "UPDATE notification_runtime SET next_regular_at = ? WHERE id = 1",
+                ((now + timedelta(seconds=cooldown_seconds)).isoformat(),),
+            )
+            return NotificationIngestReceipt(
+                accepted=True,
+                notification_id=intent.notification_id,
+                reason="notification_enqueued",
+            )
+
+    def process_personality_event(
+        self,
+        *,
+        event_id: str,
+        occurred_at: datetime,
+        candidate: NotificationCandidate,
+        now: datetime,
+        cooldown_seconds: int,
+        preferences: PetPreferences | None = None,
+    ) -> NotificationIngestReceipt:
+        now = _as_utc(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO consumed_personality_events (event_id, consumed_at) VALUES (?, ?)",
+                (event_id, now.isoformat()),
+            ).rowcount
+            if not inserted:
+                return NotificationIngestReceipt(accepted=True, duplicate=True, reason="duplicate_event")
+            preferences = preferences or self._preferences(connection)
+            if preferences.manual_pause_enabled:
+                return NotificationIngestReceipt(accepted=True, reason="manual_pause")
+            if _is_scheduled_do_not_disturb(preferences, now):
+                return NotificationIngestReceipt(accepted=True, reason="scheduled_do_not_disturb")
+            runtime = self._runtime_row(connection)
+            if bool(runtime["do_not_disturb"]):
+                return NotificationIngestReceipt(accepted=True, reason="do_not_disturb")
+            next_regular_at = _parse_datetime(runtime["next_regular_at"])
+            if next_regular_at is not None and now < next_regular_at:
+                return NotificationIngestReceipt(accepted=True, reason="regular_cooldown")
+            intent = self._insert_intent(
+                connection,
+                task_id=f"activity:{event_id}",
+                candidate=candidate,
+                source_event_id=event_id,
+                dedupe_key=f"personality:{event_id}",
                 now=now,
             )
             connection.execute(
@@ -585,6 +676,11 @@ class NotificationStore:
                     personality_intensity TEXT NOT NULL DEFAULT 'STANDARD'
                         CHECK(personality_intensity IN ('LOW', 'STANDARD', 'HIGH'))
                 );
+
+                CREATE TABLE IF NOT EXISTS consumed_personality_events (
+                    event_id TEXT PRIMARY KEY,
+                    consumed_at TEXT NOT NULL
+                );
                 INSERT OR IGNORE INTO pet_preferences (id) VALUES (1);
 
                 CREATE TABLE IF NOT EXISTS pet_app_rules (
@@ -631,6 +727,15 @@ def _intent_from_row(row: sqlite3.Row) -> NotificationIntent:
         source_event_id=row["source_event_id"],
         created_at=datetime.fromisoformat(row["created_at"]),
         available_at=datetime.fromisoformat(row["available_at"]),
+    )
+
+
+def _personality_state_from_row(row: sqlite3.Row) -> PetPersonalityState:
+    return PetPersonalityState(
+        emotion=PetEmotion(row["emotion"]),
+        task_id=row["task_id"],
+        updated_at=_parse_datetime(row["updated_at"]),
+        expires_at=_parse_datetime(row["expires_at"]),
     )
 
 

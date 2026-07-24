@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal, TypedDict
+
+from pydantic import BaseModel, Field, field_validator
 
 from nailong_agent.contracts import (
     PetClassificationHint,
@@ -28,6 +31,24 @@ class PersonalityIntensity(StrEnum):
     LOW = "low"
     STANDARD = "standard"
     HIGH = "high"
+
+
+class PetPersonalityState(BaseModel):
+    """Durable, non-content state for restoring the pet after a restart."""
+
+    emotion: PetEmotion = PetEmotion.NEUTRAL
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    updated_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    @field_validator("updated_at", "expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("personality state timestamps must be timezone-aware")
+        return value.astimezone(timezone.utc)
 
 
 PolicyAction = Literal["show", "drop"]
