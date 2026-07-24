@@ -68,12 +68,8 @@ def test_collector_persists_and_publishes_only_minimized_event(tmp_path: Path) -
     assert bus.wait_idle(1.0)
     assert store.activity_count() == 1
     assert received[0].payload["application_id"] == "code"
-    assert received[0].payload["window_title_summary"] is None
-    assert received[0].payload["metadata"] == {
-        "idle_seconds": 12.5,
-        "is_fullscreen": True,
-        "is_meeting_likely": False,
-    }
+    assert received[0].payload["activity"] == "unknown"
+    assert received[0].payload["summary"] == "application=code; activity=unknown; source=window"
     collector.stop()
     bus.stop()
 
@@ -96,6 +92,35 @@ def test_collector_blocks_paused_and_blacklisted_applications(tmp_path: Path) ->
     source.emit(ForegroundWindow(process_id=1, executable_name="Code.exe"))
 
     assert store.activity_count() == 0
+    collector.stop()
+    bus.stop()
+
+
+def test_collector_throttles_repeated_foreground_application(tmp_path: Path) -> None:
+    source = FakeForegroundSource()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    bus = EventBus()
+    received: list[EventEnvelope] = []
+    bus.subscribe("ActivityEvent", received.append)
+    bus.start()
+    clock_values = iter([0, 1])
+    collector = WindowActivityCollector(
+        source=source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=store,
+        event_bus=bus,
+        preferences=lambda: PetPreferences(),
+        application_rules=lambda: [],
+        clock=lambda: next(clock_values),
+    )
+
+    collector.start()
+    source.emit(ForegroundWindow(process_id=1, executable_name="Code.exe"))
+    source.emit(ForegroundWindow(process_id=1, executable_name="Code.exe"))
+
+    assert bus.wait_idle(1.0)
+    assert store.activity_count() == 1
+    assert len(received) == 1
     collector.stop()
     bus.stop()
 
@@ -125,8 +150,9 @@ def test_collector_persists_idle_state_after_threshold(tmp_path: Path) -> None:
     assert idle_source.started is True
     assert store.activity_count() == 1
     assert received[0].payload["source"] == "idle"
-    assert received[0].payload["application_id"] == "system"
-    assert received[0].payload["metadata"] == {"idle_seconds": 300}
+    assert received[0].payload["application_id"] == "other"
+    assert received[0].payload["activity"] == "idle"
+    assert received[0].payload["summary"] == "application=other; activity=idle; source=idle"
     collector.stop()
     bus.stop()
 

@@ -7,7 +7,7 @@ from time import monotonic
 from typing import Protocol
 
 from nailong_agent.event_bus import EventBus
-from nailong_agent.events import ActivityEvent, PetApplicationRule, PetPreferences
+from nailong_agent.events import PetApplicationRule, PetPreferences, RawActivitySignal
 from nailong_agent.privacy import PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 
@@ -93,14 +93,12 @@ class WindowActivityCollector:
             preferences = self.preferences()
             if not preferences.activity_listener_enabled or preferences.manual_pause_enabled:
                 return
-            event = ActivityEvent(
+            signal = RawActivitySignal(
                 source="idle",
                 application_id="system",
                 metadata={"idle_seconds": state.idle_seconds},
             )
-            decision = self.privacy_policy.admit_activity(event)
-            if decision.allowed and decision.event is not None and self.privacy_store.append_minimized_activity(decision.event):
-                self.event_bus.publish(decision.event.envelope())
+            self._persist_and_publish(signal)
         except Exception as exc:
             self.stop()
             if self.on_error is not None:
@@ -125,17 +123,22 @@ class WindowActivityCollector:
         }
         if window.idle_seconds is not None:
             metadata["idle_seconds"] = window.idle_seconds
-        event = ActivityEvent(
+        signal = RawActivitySignal(
             source="window",
             application_id=application_id,
             metadata=metadata,
         )
-        decision = self.privacy_policy.admit_activity(event)
+        if self._persist_and_publish(signal):
+            self._last_seen[application_id] = now
+
+    def _persist_and_publish(self, signal: RawActivitySignal) -> bool:
+        decision = self.privacy_policy.admit_activity(signal)
         if not decision.allowed or decision.event is None:
-            return
-        self._last_seen[application_id] = now
+            return False
         if self.privacy_store.append_minimized_activity(decision.event):
             self.event_bus.publish(decision.event.envelope())
+            return True
+        return False
 
 
 def _normalize_application_id(value: str) -> str:

@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient, build_user_prompt, parse_llm_result
+from refactor_agent.llm import (
+    DeepSeekClient,
+    LLMError,
+    MockRefactorClient,
+    build_persona_system_prompt,
+    build_user_prompt,
+    parse_llm_result,
+)
 from refactor_agent.models import MetricsSnapshot, RefactorRequest
 
 
@@ -21,6 +28,20 @@ def test_parse_llm_result_rejects_missing_field():
 def test_parse_llm_result_rejects_invalid_json():
     with pytest.raises(LLMError):
         parse_llm_result("not json")
+
+
+def test_persona_prompt_requires_moderate_tsundere_and_factual_json():
+    prompt = build_persona_system_prompt()
+    assert "中度傲娇" in prompt
+    assert "opening_verdict" in prompt
+    assert "不得编造测试结果" in prompt
+    assert "作为AI" in prompt
+
+
+def test_mock_persona_copy_is_moderately_tsundere():
+    copy = MockRefactorClient().generate_persona_copy("Status: SUCCESS")
+    assert "别误会" in copy.closing_verdict
+    assert "代码" in copy.commentary
 
 
 def test_mock_client_reports_zero_usage(tmp_path: Path):

@@ -8,18 +8,30 @@ import pytest
 import nailong_agent.app as desktop_app
 from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
-from nailong_agent.events import ActivityEvent, EventEnvelope, PopupDecision
+from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetExpression, PopupDecision
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
-from nailong_agent.renderer import NullRenderer, PySide6Renderer, place_bubble_above_pet
+from nailong_agent.renderer import (
+    MOUTH_TEXT,
+    NullRenderer,
+    PySide6Renderer,
+    decision_to_pet_state,
+    place_bubble_above_pet,
+)
 from nailong_agent.privacy import PrivacyConsent
 from nailong_agent.privacy_store import PrivacyStore
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 
 def test_event_models_create_serializable_envelopes() -> None:
-    activity = ActivityEvent(source="window", application_id="code", activity_hint="editing")
+    activity = ActivityEvent(
+        source="window",
+        application_id="code",
+        activity=ActivityType.CODING,
+        confidence=0.9,
+        summary="application=code; activity=coding; source=window",
+    )
 
     envelope = activity.envelope()
 
@@ -148,6 +160,23 @@ def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
     finally:
         renderer._app.setPalette(original_palette)
         renderer.stop()
+def test_literal_face_labels_and_expression_mapping() -> None:
+    assert MOUTH_TEXT[PetExpression.NEUTRAL] == "（嘴巴）"
+    assert MOUTH_TEXT[PetExpression.LAUGH] == "（大笑）"
+    assert MOUTH_TEXT[PetExpression.CONCERNED] == "（担忧）"
+    assert decision_to_pet_state(
+        PopupDecision(action="show", reason="analysis-complete", message="（完成）")
+    ).expression == PetExpression.LAUGH
+    assert decision_to_pet_state(
+        PopupDecision(action="show", reason="analysis-failed", message="（失败）")
+    ).expression == PetExpression.CONCERNED
+
+
+def test_null_renderer_records_mapped_state() -> None:
+    renderer = NullRenderer()
+    renderer.show(PopupDecision(action="show", reason="ready", message="（工作中）"))
+    assert renderer.states[-1].expression == PetExpression.HAPPY
+    assert renderer.states[-1].bubble_text == "（工作中）"
 
 
 def test_single_instance_lock_rejects_second_owner(tmp_path) -> None:

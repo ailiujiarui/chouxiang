@@ -67,6 +67,13 @@ class PersonaReport(BaseModel):
     metrics_assessment: str
     evidence_warning: str
     final_verdict: str
+    commentary: str | None = None
+
+
+class PersonaCopy(BaseModel):
+    opening_verdict: str = Field(min_length=1, max_length=240)
+    commentary: str = Field(min_length=1, max_length=1000)
+    closing_verdict: str = Field(min_length=1, max_length=240)
 
 
 class MetricsSnapshot(BaseModel):
