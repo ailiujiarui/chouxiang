@@ -17,7 +17,7 @@ from nailong_agent.notification_store import NotificationStore
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
-from nailong_agent.windows_activity import create_foreground_source
+from nailong_agent.windows_activity import create_foreground_source, create_idle_source
 
 
 class SingleInstanceLock:
@@ -230,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     collector = (
         WindowActivityCollector(
             source=create_foreground_source(),
+            idle_source=create_idle_source(),
             privacy_policy=privacy_policy,
             privacy_store=privacy_store,
             event_bus=bus,

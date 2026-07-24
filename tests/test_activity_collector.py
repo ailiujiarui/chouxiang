@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from nailong_agent.activity_collector import ForegroundWindow, WindowActivityCollector
+from nailong_agent.activity_collector import ForegroundWindow, IdleState, WindowActivityCollector
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PetApplicationRule, PetPreferences
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
@@ -27,6 +27,23 @@ class FakeForegroundSource:
     def emit(self, window: ForegroundWindow) -> None:
         assert self.callback is not None
         self.callback(window)
+
+
+class FakeIdleSource:
+    def __init__(self) -> None:
+        self.callback = None
+        self.started = False
+
+    def start(self, on_idle) -> None:
+        self.callback = on_idle
+        self.started = True
+
+    def stop(self) -> None:
+        self.started = False
+
+    def emit(self, state: IdleState) -> None:
+        assert self.callback is not None
+        self.callback(state)
 
 
 def test_collector_persists_and_publishes_only_minimized_event(tmp_path: Path) -> None:
@@ -83,6 +100,37 @@ def test_collector_blocks_paused_and_blacklisted_applications(tmp_path: Path) ->
     bus.stop()
 
 
+def test_collector_persists_idle_state_after_threshold(tmp_path: Path) -> None:
+    foreground_source = FakeForegroundSource()
+    idle_source = FakeIdleSource()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    bus = EventBus()
+    received: list[EventEnvelope] = []
+    bus.subscribe("ActivityEvent", received.append)
+    bus.start()
+    collector = WindowActivityCollector(
+        source=foreground_source,
+        idle_source=idle_source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=store,
+        event_bus=bus,
+        preferences=lambda: PetPreferences(),
+        application_rules=lambda: [],
+    )
+
+    collector.start()
+    idle_source.emit(IdleState(idle_seconds=300))
+
+    assert bus.wait_idle(1.0)
+    assert idle_source.started is True
+    assert store.activity_count() == 1
+    assert received[0].payload["source"] == "idle"
+    assert received[0].payload["application_id"] == "system"
+    assert received[0].payload["metadata"] == {"idle_seconds": 300}
+    collector.stop()
+    bus.stop()
+
+
 def test_non_windows_foreground_source_is_a_noop(monkeypatch) -> None:
     monkeypatch.setattr("nailong_agent.windows_activity.os.name", "posix")
     source = create_foreground_source()
@@ -135,3 +183,38 @@ def test_read_fullscreen_state_compares_window_and_monitor_rectangles() -> None:
             return 1
 
     assert windows_activity.read_fullscreen_state(User32(), 100)
+
+
+def test_windows_idle_source_emits_once_per_continuous_idle_period() -> None:
+    observed: list[IdleState] = []
+    samples = iter([300, 420, 0, 300])
+    source = windows_activity.WindowsIdleStateSource(
+        idle_reader=lambda: next(samples),
+        threshold_seconds=300,
+    )
+    source._callback = observed.append
+
+    source._sample_once()
+    source._sample_once()
+    source._sample_once()
+    source._sample_once()
+
+    assert observed == [IdleState(idle_seconds=300), IdleState(idle_seconds=300)]
+
+
+def test_windows_sources_hide_callback_errors_and_stop() -> None:
+    errors: list[str] = []
+    foreground_source = windows_activity.WindowsForegroundActivitySource(
+        on_error=lambda error: errors.append(str(error))
+    )
+    idle_source = windows_activity.WindowsIdleStateSource(
+        idle_reader=lambda: 300,
+        on_error=lambda error: errors.append(str(error)),
+    )
+
+    foreground_source._handle_callback_failure(RuntimeError("private process path"))
+    idle_source._handle_callback_failure(RuntimeError("private idle details"))
+
+    assert foreground_source.stopped is True
+    assert idle_source.stopped is True
+    assert errors == ["activity source failed", "activity source failed"]

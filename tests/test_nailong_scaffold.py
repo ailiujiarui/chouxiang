@@ -336,6 +336,7 @@ def test_desktop_process_starts_and_stops_injected_activity_collector(tmp_path) 
 
 def test_entrypoint_creates_enabled_activity_collector(monkeypatch, tmp_path) -> None:
     source = object()
+    idle_source = object()
 
     class CollectorProbe:
         instances: list["CollectorProbe"] = []
@@ -353,11 +354,13 @@ def test_entrypoint_creates_enabled_activity_collector(monkeypatch, tmp_path) ->
             self.stops += 1
 
     monkeypatch.setattr(desktop_app, "create_foreground_source", lambda: source)
+    monkeypatch.setattr(desktop_app, "create_idle_source", lambda: idle_source)
     monkeypatch.setattr(desktop_app, "WindowActivityCollector", CollectorProbe)
 
     assert main(["--headless", "--data-dir", str(tmp_path / "pet-data")]) == 0
     assert len(CollectorProbe.instances) == 1
     assert CollectorProbe.instances[0].kwargs["source"] is source
+    assert CollectorProbe.instances[0].kwargs["idle_source"] is idle_source
     assert (CollectorProbe.instances[0].starts, CollectorProbe.instances[0].stops) == (1, 1)
 
 

@@ -5,9 +5,9 @@ import ctypes
 from ctypes import wintypes
 from collections.abc import Callable
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 
-from nailong_agent.activity_collector import ForegroundActivitySource, ForegroundWindow
+from nailong_agent.activity_collector import ForegroundActivitySource, ForegroundWindow, IdleState, IdleStateSource
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -66,10 +66,26 @@ class NullForegroundActivitySource:
         return None
 
 
+class NullIdleStateSource:
+    """Portable source used when Win32 idle APIs are unavailable."""
+
+    def start(self, on_idle: Callable[[IdleState], None]) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+
 def create_foreground_source() -> ForegroundActivitySource:
     if os.name != "nt":
         return NullForegroundActivitySource()
     return WindowsForegroundActivitySource()
+
+
+def create_idle_source() -> IdleStateSource:
+    if os.name != "nt":
+        return NullIdleStateSource()
+    return WindowsIdleStateSource()
 
 
 class WindowsForegroundActivitySource:
@@ -88,6 +104,10 @@ class WindowsForegroundActivitySource:
         self._started = Event()
         self._stopped = Event()
 
+    @property
+    def stopped(self) -> bool:
+        return self._stopped.is_set()
+
     def start(self, on_change: Callable[[ForegroundWindow], None]) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -102,7 +122,7 @@ class WindowsForegroundActivitySource:
         self._stopped.set()
         if self._thread_id is not None:
             ctypes.windll.user32.PostThreadMessageW(self._thread_id, self._WM_QUIT, 0, 0)
-        if self._thread is not None:
+        if self._thread is not None and self._thread is not current_thread():
             self._thread.join(2.0)
             self._thread = None
         self._thread_id = None
@@ -120,8 +140,7 @@ class WindowsForegroundActivitySource:
                 if window is not None and self._callback is not None:
                     self._callback(window)
             except Exception as exc:
-                if self.on_error is not None:
-                    self.on_error(exc)
+                self._handle_callback_failure(exc)
 
         procedure = callback_type(on_event)
         self._thread_id = kernel32.GetCurrentThreadId()
@@ -130,8 +149,7 @@ class WindowsForegroundActivitySource:
         )
         self._started.set()
         if not hook:
-            if self.on_error is not None:
-                self.on_error(RuntimeError("foreground hook unavailable"))
+            self._handle_callback_failure(RuntimeError("foreground hook unavailable"))
             return
         message = wintypes.MSG()
         try:
@@ -140,6 +158,79 @@ class WindowsForegroundActivitySource:
                 user32.DispatchMessageW(ctypes.byref(message))
         finally:
             user32.UnhookWinEvent(hook)
+
+    def _handle_callback_failure(self, _: Exception) -> None:
+        self._stopped.set()
+        if self.on_error is not None:
+            self.on_error(RuntimeError("activity source failed"))
+
+
+class WindowsIdleStateSource:
+    """Windows idle sampler that emits once after each sustained idle period."""
+
+    def __init__(
+        self,
+        *,
+        idle_reader: Callable[[], float | None] | None = None,
+        threshold_seconds: float = 300,
+        poll_interval_seconds: float = 15,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
+        self.idle_reader = idle_reader or _read_windows_idle_seconds
+        self.threshold_seconds = threshold_seconds
+        self.poll_interval_seconds = poll_interval_seconds
+        self.on_error = on_error
+        self._callback: Callable[[IdleState], None] | None = None
+        self._thread: Thread | None = None
+        self._stopped = Event()
+        self._idle_reported = False
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped.is_set()
+
+    def start(self, on_idle: Callable[[IdleState], None]) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._callback = on_idle
+        self._stopped.clear()
+        self._idle_reported = False
+        self._thread = Thread(target=self._run, name="nailong-idle-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        if self._thread is not None and self._thread is not current_thread():
+            self._thread.join(2.0)
+            self._thread = None
+
+    def _run(self) -> None:
+        while not self._stopped.is_set():
+            self._sample_once()
+            self._stopped.wait(self.poll_interval_seconds)
+
+    def _sample_once(self) -> None:
+        try:
+            idle_seconds = self.idle_reader()
+            if idle_seconds is None:
+                return
+            if idle_seconds < self.threshold_seconds:
+                self._idle_reported = False
+                return
+            if not self._idle_reported and self._callback is not None:
+                self._idle_reported = True
+                self._callback(IdleState(idle_seconds=idle_seconds))
+        except Exception as exc:
+            self._handle_callback_failure(exc)
+
+    def _handle_callback_failure(self, _: Exception) -> None:
+        self._stopped.set()
+        if self.on_error is not None:
+            self.on_error(RuntimeError("activity source failed"))
+
+
+def _read_windows_idle_seconds() -> float | None:
+    return read_idle_seconds(ctypes.windll.user32, ctypes.windll.kernel32)
 
 
 def _foreground_window(user32, kernel32, hwnd, access: int) -> ForegroundWindow | None:

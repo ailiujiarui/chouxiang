@@ -27,11 +27,23 @@ class ForegroundActivitySource(Protocol):
     def stop(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class IdleState:
+    idle_seconds: float
+
+
+class IdleStateSource(Protocol):
+    def start(self, on_idle: Callable[[IdleState], None]) -> None: ...
+
+    def stop(self) -> None: ...
+
+
 class WindowActivityCollector:
     def __init__(
         self,
         *,
         source: ForegroundActivitySource,
+        idle_source: IdleStateSource | None = None,
         privacy_policy: PrivacyPolicy,
         privacy_store: PrivacyStore,
         event_bus: EventBus,
@@ -41,6 +53,7 @@ class WindowActivityCollector:
         on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         self.source = source
+        self.idle_source = idle_source
         self.privacy_policy = privacy_policy
         self.privacy_store = privacy_store
         self.event_bus = event_bus
@@ -55,17 +68,39 @@ class WindowActivityCollector:
         if self._started:
             return
         self.source.start(self._on_foreground_change)
+        if self.idle_source is not None:
+            self.idle_source.start(self._on_idle_change)
         self._started = True
 
     def stop(self) -> None:
         if not self._started:
             return
         self._started = False
+        if self.idle_source is not None:
+            self.idle_source.stop()
         self.source.stop()
 
     def _on_foreground_change(self, window: ForegroundWindow) -> None:
         try:
             self._collect(window)
+        except Exception as exc:
+            self.stop()
+            if self.on_error is not None:
+                self.on_error(exc)
+
+    def _on_idle_change(self, state: IdleState) -> None:
+        try:
+            preferences = self.preferences()
+            if not preferences.activity_listener_enabled or preferences.manual_pause_enabled:
+                return
+            event = ActivityEvent(
+                source="idle",
+                application_id="system",
+                metadata={"idle_seconds": state.idle_seconds},
+            )
+            decision = self.privacy_policy.admit_activity(event)
+            if decision.allowed and decision.event is not None and self.privacy_store.append_minimized_activity(decision.event):
+                self.event_bus.publish(decision.event.envelope())
         except Exception as exc:
             self.stop()
             if self.on_error is not None:
