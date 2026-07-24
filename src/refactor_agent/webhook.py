@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import ast
 import json
 import os
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -12,7 +14,7 @@ from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
@@ -95,6 +97,69 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/analysis/events/cursor")
+    def get_analysis_event_cursor() -> dict[str, int]:
+        return {"latest_sequence": store.latest_analysis_event_sequence()}
+
+    @app.get("/analysis/events")
+    def list_analysis_events(after: int = 0, limit: int = 100) -> dict[str, Any]:
+        if after < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="after must be non-negative")
+        events, next_sequence, latest_sequence, has_more = store.read_public_analysis_event_page(
+            after=after,
+            limit=limit,
+        )
+        return {
+            "events": [_sanitize_payload(event.model_dump(mode="json")) for event in events],
+            "next_sequence": next_sequence,
+            "latest_sequence": latest_sequence,
+            "has_more": has_more,
+        }
+
+    @app.get("/analysis/events/stream")
+    async def stream_analysis_events(request: Request, after: int = 0) -> StreamingResponse:
+        if after < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="after must be non-negative")
+        header_cursor = request.headers.get("Last-Event-ID")
+        if header_cursor:
+            try:
+                after = max(after, int(header_cursor))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Last-Event-ID must be an integer",
+                ) from exc
+
+        async def event_stream():
+            cursor = after
+            last_heartbeat = time.monotonic()
+            yield "retry: 1000\n\n"
+            while not await request.is_disconnected():
+                events = store.list_analysis_events(after=cursor, limit=100)
+                delivered = False
+                for event in events:
+                    cursor = int(event.sequence or cursor)
+                    if event.sensitivity != "public":
+                        continue
+                    payload = json.dumps(
+                        _sanitize_payload(event.model_dump(mode="json")),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    yield f"id: {cursor}\nevent: analysis_event\ndata: {payload}\n\n"
+                    delivered = True
+                now = time.monotonic()
+                if not delivered and now - last_heartbeat >= 15:
+                    yield ": keep-alive\n\n"
+                    last_heartbeat = now
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/capabilities")
     def capabilities() -> dict[str, Any]:

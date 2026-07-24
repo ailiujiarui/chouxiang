@@ -6,8 +6,13 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
+from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
+from nailong_agent.notification_service import NotificationPort, NotificationService
+from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
+from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
 
 
@@ -75,10 +80,23 @@ class DesktopProcess:
         lock_path: Path = Path(".runs/nailong-agent.lock"),
         bus: EventBus | None = None,
         renderer_factory: Callable[[], PopupRenderer] | None = None,
+        privacy_store: PrivacyStore | None = None,
+        notification_service: NotificationPort | None = None,
+        analysis_subscriber: AnalysisEventSubscriber | None = None,
+        delivery_pump: NotificationDeliveryPump | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
         self.renderer_factory = renderer_factory or PySide6Renderer
+        self.privacy_store = privacy_store or PrivacyStore(lock_path.parent / "nailong_privacy.sqlite")
+        self.privacy_policy = PrivacyPolicy(self.privacy_store.load_consent())
+        self.notification_service = notification_service
+        self.analysis_subscriber = analysis_subscriber
+        self.delivery_pump = delivery_pump or (
+            NotificationDeliveryPump(notifications=notification_service, bus=self.bus)
+            if notification_service is not None
+            else None
+        )
         self.renderer: PopupRenderer | None = None
 
     def run(self) -> int:
@@ -86,11 +104,34 @@ class DesktopProcess:
             return 2
         try:
             self.renderer = self.renderer_factory()
+            configure_privacy_controls = getattr(self.renderer, "configure_privacy_controls", None)
+            if callable(configure_privacy_controls):
+                configure_privacy_controls(on_clear_activity_history=self.privacy_store.clear_activity_history)
+            configure_notification_controls = getattr(self.renderer, "configure_notification_controls", None)
+            if callable(configure_notification_controls) and self.notification_service is not None:
+                configure_notification_controls(
+                    on_set_do_not_disturb=lambda enabled: self.notification_service.set_do_not_disturb(enabled),
+                    get_do_not_disturb=lambda: self.notification_service.get_status().do_not_disturb,
+                )
+            if self.privacy_policy.needs_initial_consent:
+                request_privacy_consent = getattr(self.renderer, "request_privacy_consent", None)
+                consent = request_privacy_consent() if callable(request_privacy_consent) else None
+                consent = consent or PrivacyConsent()
+                self.privacy_store.save_consent(consent)
+                self.privacy_policy = PrivacyPolicy(consent)
             self.bus.subscribe("PopupDecision", self._render_popup)
             self.bus.start()
             self.renderer.start()
+            if self.analysis_subscriber is not None:
+                self.analysis_subscriber.start()
+            if self.delivery_pump is not None:
+                self.delivery_pump.start()
             return self.renderer.exec()
         finally:
+            if self.delivery_pump is not None:
+                self.delivery_pump.stop()
+            if self.analysis_subscriber is not None:
+                self.analysis_subscriber.stop()
             self.bus.stop()
             if self.renderer is not None:
                 self.renderer.stop()
@@ -99,7 +140,26 @@ class DesktopProcess:
     def _render_popup(self, envelope: EventEnvelope) -> None:
         if self.renderer is None:
             return
-        self.renderer.show(PopupDecision.model_validate(envelope.payload))
+        decision = PopupDecision.model_validate(envelope.payload)
+        notification_id = decision.dedupe_key
+        if (
+            self.notification_service is not None
+            and notification_id
+            and self.notification_service.get_status().do_not_disturb
+        ):
+            self.notification_service.acknowledge(notification_id, "dismissed")
+            return
+        try:
+            accepted = self.renderer.show(decision)
+        except Exception:
+            if self.notification_service is not None and notification_id:
+                self.notification_service.acknowledge(notification_id, "failed")
+            raise
+        if self.notification_service is not None and notification_id:
+            self.notification_service.acknowledge(
+                notification_id,
+                "dismissed" if accepted is False else "shown",
+            )
 
 
 def create_renderer(*, headless: bool = False) -> PopupRenderer:
@@ -112,6 +172,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Nailong desktop pet")
     parser.add_argument("--headless", action="store_true", help="run the process shell without PySide6")
     parser.add_argument("--lock-path", type=Path, default=Path(".runs/nailong-agent.lock"))
+    parser.add_argument("--analysis-url", help="subscribe to the Refactor Agent analysis SSE stream")
+    parser.add_argument(
+        "--notification-database",
+        type=Path,
+        default=Path(".runs/nailong_notifications.sqlite"),
+    )
     args = parser.parse_args(argv)
-    process = DesktopProcess(lock_path=args.lock_path, renderer_factory=lambda: create_renderer(headless=args.headless))
+    notifications = (
+        NotificationService.from_database(args.notification_database)
+        if args.analysis_url
+        else None
+    )
+    subscriber = (
+        AnalysisEventSubscriber(
+            source=HttpxSSEAnalysisEventSource(args.analysis_url),
+            notifications=notifications,
+        )
+        if args.analysis_url and notifications is not None
+        else None
+    )
+    process = DesktopProcess(
+        lock_path=args.lock_path,
+        renderer_factory=lambda: create_renderer(headless=args.headless),
+        notification_service=notifications,
+        analysis_subscriber=subscriber,
+    )
     return process.run()
