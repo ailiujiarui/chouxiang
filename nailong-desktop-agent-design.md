@@ -67,6 +67,76 @@ PopupDecision
 
 事件只携带 task ID、阶段、进度、证据等级、指标摘要和脱敏短文案。完整代码通过分析 API 的受控输入传递，不经过桌宠 EventBus 广播。
 
+## 人格决策输入输出契约
+
+人格决策图不直接接收原始 `ActivityEvent.payload`，而是接收经过采集层或 `observe` 适配器最小化后的 `PetDecisionInput`：
+
+```text
+PetDecisionInput
+  signal: RedactedActivitySignal
+  classification: PetClassificationHint | null
+  context: PetDecisionContext
+```
+
+### 安全活动信号
+
+`RedactedActivitySignal` 只允许：
+
+- 事件 ID 和带时区的发生时间；
+- 来源类型；
+- 归一化应用 ID；
+- 最长 500 字符的脱敏摘要；
+- `public`、`private` 或 `blocked` 敏感级别。
+
+该模型禁止额外字段，因此不能携带原始代码、剪贴板、截图、OCR、终端正文、完整窗口标题、凭据或任意 metadata。人格图应把摘要继续视为不可信数据，字段名为“脱敏摘要”不代表其中的指令可以执行。
+
+### 活动标签到人格场景
+
+公共活动分类类型由活动识别模块定义，人格 Agent 不声明或约束该枚举。活动识别器通过 `PetClassificationHint` 只传递受长度限制的脱敏活动标签、置信度和分类器来源，不得附带原始证据文本。
+
+`classify` 节点将外部活动标签映射为人格层内部的 `PersonalityScenario`，用于选择情绪与措辞。它不是公共活动分类契约：
+
+```text
+coding
+debugging
+test_failed
+test_succeeded
+compile_succeeded
+long_work
+idle
+meeting
+entertainment
+unknown
+```
+
+`classify` 不读取活动提示自行套规则，也不调用 LLM 重新判断桌面活动。没有分类提示或外部活动标签无法映射时，统一映射为 `unknown` 并保持静默。外部模块未来增加活动类型时，不会导致人格输入校验失败。
+
+### 人格措辞 Provider
+
+通用 `LLMProvider.complete_json` 只可选用于 `choose_personality_response` 的短句措辞，不得改变外部活动分类、人格场景、情绪、意图、优先级或弹窗策略。没有 Provider、没有远程调用授权、模型输出无效或模型回显不可信摘要时，必须使用本地固定台词回退。
+
+传给 Provider 的场景、情绪、意图、应用 ID、本地回退台词和脱敏摘要全部放在明确标记的不可信 JSON 区域中。模型只能返回 `message`，多余字段会被拒绝；原始代码、剪贴板、截图、终端正文和凭据始终不得进入提示词。
+
+### 决策上下文
+
+`PetDecisionContext` 只保存人格措辞所需的最近可见消息，用于避免重复口头禅。它不保存冷却时间、每日次数、免打扰或通知持久化状态。
+
+`apply_interruption_policy` 节点保留在人格图中，但只处理敏感活动和 `stay_silent` 等人格层静默条件。冷却、免打扰、每日次数、持久化去重和最终 EventBus 发布统一由现有 `NotificationService`、`NotificationStore` 与 `NotificationDeliveryPump` 负责，避免形成第二套通知策略。
+
+### 输出
+
+人格图最终只输出纯人格内容或静默：
+
+```text
+PetPersonalityResponse | null
+
+persona_version: 人格版本
+message: 奶龙短文案
+intent: encourage | remind | celebrate | ask | stay_silent
+```
+
+`PetPersonalityResponse` 不包含 `emotion`、`priority`、`expires_in_seconds`、弹窗动作或渲染表情。`infer_emotion` 的结果只在人格图内部影响措辞；最终动作表情归渲染模块决定，优先级与有效时间归通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。
+
 ## 人格
 
 ### 奶龙人格规范 v1.1
