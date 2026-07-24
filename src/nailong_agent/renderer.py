@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from nailong_agent.events import PopupDecision
+from nailong_agent.events import PetExpression, PetState, PopupDecision
 from nailong_agent.privacy import PrivacyConsent
 
 
@@ -37,6 +37,37 @@ def place_bubble_above_pet(
     y = max(minimum_y, pet_y - bubble_height - pet_gap)
     tail_x = min(max(pet_center_x - x, tail_margin), max(tail_margin, bubble_width - tail_margin))
     return BubblePlacement(x=x, y=y, tail_x=tail_x)
+
+
+MOUTH_TEXT = {
+    PetExpression.NEUTRAL: "（嘴巴）",
+    PetExpression.HAPPY: "（微笑）",
+    PetExpression.LAUGH: "（大笑）",
+    PetExpression.CONCERNED: "（担忧）",
+    PetExpression.SLEEPY: "（困倦）",
+}
+
+
+def decision_to_pet_state(decision: PopupDecision) -> PetState:
+    reason = decision.reason.casefold()
+    message = (decision.message or "").casefold()
+    context = f"{reason} {message}"
+    if any(word in context for word in ("success", "complete", "passed", "完成", "通过", "成功")):
+        expression = PetExpression.LAUGH
+    elif any(word in context for word in ("fail", "error", "broken", "失败", "错误")):
+        expression = PetExpression.CONCERNED
+    elif any(word in context for word in ("sleep", "idle", "defer", "待机", "困")):
+        expression = PetExpression.SLEEPY
+    elif decision.action == "show":
+        expression = PetExpression.HAPPY
+    else:
+        expression = PetExpression.NEUTRAL
+    return PetState(
+        expression=expression,
+        bubble_text=decision.message,
+        bubble_visible=decision.action == "show" and bool(decision.message),
+        bubble_seconds=decision.display_seconds,
+    )
 
 
 class PopupRenderer(Protocol):
@@ -73,6 +104,7 @@ class NullRenderer:
 
     def __init__(self) -> None:
         self.decisions: list[PopupDecision] = []
+        self.states: list[PetState] = []
         self.started = False
         self.consent_response: PrivacyConsent | None = None
         self.consent_requested = False
@@ -84,6 +116,8 @@ class NullRenderer:
         self.started = True
 
     def show(self, decision: PopupDecision) -> bool:
+        state = decision_to_pet_state(decision)
+        self.states.append(state)
         if decision.action == "show":
             self.decisions.append(decision)
             return True
@@ -118,11 +152,7 @@ class NullRenderer:
 
 
 class PySide6Renderer:
-    """Minimal transparent pet window and popup adapter.
-
-    PySide6 is imported lazily so the core event model remains usable on CI and
-    on machines that only run collectors or headless tests.
-    """
+    """Text-only Nailong face with a status bubble above the pet."""
 
     def __init__(self, *, on_quit: Callable[[], None] | None = None) -> None:
         try:
@@ -141,7 +171,9 @@ class PySide6Renderer:
             )
             from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox, QMenu, QSystemTrayIcon, QWidget
         except ImportError as exc:
-            raise RuntimeError("PySide6 is required for the desktop renderer; install refactor-agent[desktop].") from exc
+            raise RuntimeError(
+                "PySide6 is required for the desktop renderer; install refactor-agent[desktop]."
+            ) from exc
 
         self._QApplication = QApplication
         self._QCheckBox = QCheckBox
@@ -261,13 +293,24 @@ class PySide6Renderer:
         self._pet_window = QWidget()
         self._pet_window.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self._pet_window.setAttribute(Qt.WA_TranslucentBackground)
-        self._pet_window.setFixedSize(180, 120)
-        pet_label = QLabel("奶龙待机中", self._pet_window)
-        pet_label.setAlignment(Qt.AlignCenter)
-        pet_label.setStyleSheet(
-            "background:#FDE68A; color:#713F12; border:2px solid #F59E0B; border-radius:18px; padding:12px;"
+        self._pet_window.setFixedSize(240, 150)
+
+        body = QLabel(self._pet_window)
+        body.setGeometry(0, 0, 240, 150)
+        body.setStyleSheet(
+            "background:#FDE68A; border:2px solid #F59E0B; border-radius:28px;"
         )
-        pet_label.setGeometry(0, 0, 180, 120)
+        face_font = QFont("Microsoft YaHei UI", 13)
+        self._left_eye = QLabel("（眼睛）", self._pet_window)
+        self._right_eye = QLabel("（眼睛）", self._pet_window)
+        self._mouth = QLabel(MOUTH_TEXT[PetExpression.NEUTRAL], self._pet_window)
+        for label in (self._left_eye, self._right_eye, self._mouth):
+            label.setFont(face_font)
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("color:#713F12; background:transparent; border:none;")
+        self._left_eye.setGeometry(24, 36, 88, 34)
+        self._right_eye.setGeometry(128, 36, 88, 34)
+        self._mouth.setGeometry(62, 88, 116, 36)
         self._popups: list[QLabel] = []
         self._on_quit = on_quit
         self._on_clear_activity_history: Callable[[], int] | None = None
@@ -301,10 +344,21 @@ class PySide6Renderer:
         screen = self._app.primaryScreen()
         if screen is not None:
             area = screen.availableGeometry()
-            self._pet_window.move(area.right() - self._pet_window.width() - 24, area.bottom() - self._pet_window.height() - 24)
+            self._pet_window.move(
+                area.right() - self._pet_window.width() - 24,
+                area.bottom() - self._pet_window.height() - 24,
+            )
         self._pet_window.show()
         if self._tray is not None:
             self._tray.show()
+        self.show(
+            PopupDecision(
+                action="show",
+                reason="idle",
+                message="（待机中）",
+                display_seconds=30,
+            )
+        )
 
     def show(self, decision: PopupDecision) -> bool:
         if decision.action == "show":
@@ -358,6 +412,8 @@ class PySide6Renderer:
             self._dnd_action.setEnabled(True)
 
     def _show_on_ui_thread(self, decision: PopupDecision) -> None:
+        state = decision_to_pet_state(decision)
+        self._mouth.setText(MOUTH_TEXT[state.expression])
         pet_geometry = self._pet_window.frameGeometry()
         screen = self._QApplication.screenAt(pet_geometry.center()) or self._app.primaryScreen()
         if screen is None:

@@ -118,7 +118,12 @@ class LocalRepositoryRefactorService:
                 execution_control=control,
             )
             report_path = self.settings.run_root / run_result.record.run_id / "artifacts" / "report.md"
-            inject_persona_report(report_path, run_result, ReportPersona(job.persona))
+            inject_persona_report(
+                report_path,
+                run_result,
+                ReportPersona(job.persona),
+                persona_client=orchestrator.llm_client,
+            )
             status = "DRY_RUN" if run_result.record.status == "SUCCESS" else "FAILED"
             return GitHubAutomationResult(
                 job_id=job.job_id,

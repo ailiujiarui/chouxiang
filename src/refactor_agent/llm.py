@@ -8,7 +8,13 @@ import httpx
 from pydantic import ValidationError
 
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary, select_target_regions
-from refactor_agent.models import LLMRefactorResult, LLMUsage, MetricsSnapshot, RefactorRequest
+from refactor_agent.models import (
+    LLMRefactorResult,
+    LLMUsage,
+    MetricsSnapshot,
+    PersonaCopy,
+    RefactorRequest,
+)
 
 
 class LLMError(RuntimeError):
@@ -147,6 +153,33 @@ class DeepSeekClient:
             }
         )
 
+    def generate_persona_copy(self, facts: str) -> PersonaCopy:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": build_persona_system_prompt()},
+                {"role": "user", "content": facts},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.75,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            return PersonaCopy.model_validate(json.loads(content))
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise LLMError(f"Persona report generation failed: {exc}") from exc
+
     def generate_tests(
         self,
         source: str,
@@ -230,6 +263,20 @@ class MockRefactorClient:
                 total_tokens=0,
                 cost_usd=0,
             ),
+        )
+
+    def generate_persona_copy(self, facts: str) -> PersonaCopy:
+        status = "FAILED" if "Status: FAILED" in facts else "SUCCESS"
+        if status == "SUCCESS":
+            return PersonaCopy(
+                opening_verdict="哼，代码交上来了？我只是顺手检查一下，别急着把它当成夸奖。",
+                commentary="这次代码改动至少落在受控区域里，测试也没有当场翻车。改得还算克制，暂时不用我替你收拾残局。",
+                closing_verdict="勉强通过。别误会，我认可的是证据，不是你原来那套绕路写法。",
+            )
+        return PersonaCopy(
+            opening_verdict="行，失败结果摆在这里了。别装作没看见，我可不会替你遮。",
+            commentary="候选没有通过验证，失败点已经写得够清楚。先把反例和证据补齐，再来谈什么漂亮重构。",
+            closing_verdict="不通过。修好失败路径，再来浪费我的时间。",
         )
 
     def _candidate_for(self, current_code: str, baseline_metrics: MetricsSnapshot) -> tuple[str, str]:
@@ -327,6 +374,26 @@ def build_system_prompt() -> str:
   "thought": "简短实现理由",
   "fixed_code": "完整 Python 文件内容",
   "insult_review": "更毒舌但只针对代码结构的中文 review"
+}
+""".strip()
+
+
+def build_persona_system_prompt() -> str:
+    return """
+你是一个中度傲娇的资深代码审查者。你嘴上嫌弃，手上讲证据。
+
+写作要求：
+1. 输出简体中文，像真实 reviewer 在聊天，不像报告生成器。
+2. 傲娇强度为中度：可以“哼”“别误会”“勉强”，但每段最多一个口头禅；不要戏剧腔、撒泼或连续卖萌。
+3. 先指出具体代码事实，再给态度。必须引用输入中的真实区域、指标、测试或失败原因。
+4. 只批评代码、测试和证据，不评价作者的智力、身份、外貌、能力或群体；禁止脏话、羞辱和威胁。
+5. 禁止“作为AI”“综上所述”“基于当前证据”“本次审查”“建议您”等模板化表达，禁止 emoji。
+6. 不得编造测试结果、改变 Status、提升 Evidence level，不能把失败说成通过。
+7. 输出严格 JSON，不要 Markdown，不要解释字段之外的内容：
+{
+  "opening_verdict": "一句开场，40字以内",
+  "commentary": "2到4句具体吐槽和事实，220字以内",
+  "closing_verdict": "一句收束和下一步，60字以内"
 }
 """.strip()
 

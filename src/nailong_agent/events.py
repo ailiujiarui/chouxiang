@@ -10,6 +10,21 @@ from pydantic import BaseModel, Field
 Sensitivity = Literal["public", "private", "blocked"]
 
 
+class PetExpression(StrEnum):
+    NEUTRAL = "neutral"
+    HAPPY = "happy"
+    LAUGH = "laugh"
+    CONCERNED = "concerned"
+    SLEEPY = "sleepy"
+
+
+class PetState(BaseModel):
+    expression: PetExpression = PetExpression.NEUTRAL
+    bubble_text: str | None = Field(default=None, max_length=500)
+    bubble_visible: bool = False
+    bubble_seconds: int = Field(default=5, ge=0, le=300)
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 

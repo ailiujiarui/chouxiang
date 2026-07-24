@@ -19,6 +19,8 @@ from nailong_agent.events import (
     NotificationKind,
     NotificationStatus,
     PersonalityResponseProposal,
+    PetExpression,
+    PetState,
     PopupDecision,
 )
 from nailong_agent.notification_service import NotificationPort, NotificationService
@@ -59,6 +61,8 @@ __all__ = [
     "PersonalityScenario",
     "PersonalityIntensity",
     "PersonalityResponseProposal",
+    "PetExpression",
+    "PetState",
     "PopupDecision",
     "PrivacyConsent",
     "PrivacyPolicy",
