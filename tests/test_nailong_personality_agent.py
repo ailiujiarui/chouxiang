@@ -78,8 +78,8 @@ def test_personality_graph_runs_the_six_nodes_in_order() -> None:
     assert state["situation"] is PetSituation.TEST_FAILED
     assert state["emotion"] is PetEmotion.CONCERNED
     assert state["response"].intent == "remind"
-    assert state["decision"].action == "show"
-    assert "第一条失败" in (state["decision"].message or "")
+    assert state["output"] is state["response"]
+    assert "第一条失败" in state["output"].message
 
 
 def test_high_confidence_upstream_classification_does_not_call_llm() -> None:
@@ -129,7 +129,8 @@ def test_only_low_confidence_classification_calls_llm_with_untrusted_delimiter()
     assert state["situation"] is PetSituation.DEBUGGING
     assert state["classification_source"] == "llm"
     assert state["llm_used"] is True
-    assert injection not in (state["decision"].message or "")
+    assert state["output"] is not None
+    assert injection not in state["output"].message
 
 
 @pytest.mark.parametrize("sensitivity", ["private", "blocked"])
@@ -146,9 +147,8 @@ def test_sensitive_activity_never_calls_llm_or_shows_personality_content(sensiti
     )
 
     assert provider.calls == []
-    assert state["decision"].action == "drop"
-    assert state["decision"].reason == "sensitive_activity"
-    assert state["decision"].message is None
+    assert state["policy_reason"] == "sensitive_activity"
+    assert state["output"] is None
 
 
 def test_invalid_llm_output_fails_closed_without_exposing_provider_error() -> None:
@@ -167,8 +167,8 @@ def test_invalid_llm_output_fails_closed_without_exposing_provider_error() -> No
     assert state["llm_used"] is True
     assert state["llm_error"] == "ValidationError"
     assert state["situation"] is PetSituation.UNKNOWN
-    assert state["decision"].action == "drop"
-    assert state["decision"].message is None
+    assert state["policy_reason"] == "personality_chose_silence"
+    assert state["output"] is None
 
 
 @pytest.mark.parametrize(
@@ -200,24 +200,25 @@ def test_personality_intensity_changes_wording_but_not_policy_or_facts() -> None
     low = PetPersonalityAgent(intensity=PersonalityIntensity.LOW).run(decision_input)
     high = PetPersonalityAgent(intensity=PersonalityIntensity.HIGH).run(decision_input)
 
-    assert low["decision"].message != high["decision"].message
+    assert low["output"] is not None
+    assert high["output"] is not None
+    assert low["output"].message != high["output"].message
     assert low["situation"] is high["situation"] is PetSituation.COMPILE_SUCCEEDED
-    assert low["decision"].action == high["decision"].action == "show"
-    assert low["decision"].priority == high["decision"].priority == "normal"
-    assert "测试通过" not in (low["decision"].message or "")
-    assert "测试通过" not in (high["decision"].message or "")
+    assert low["output"].priority == high["output"].priority == "normal"
+    assert "测试通过" not in low["output"].message
+    assert "测试通过" not in high["output"].message
 
 
 def test_recent_catchphrase_is_replaced_with_a_characterful_non_repeating_line() -> None:
     context = PetDecisionContext(recent_messages=["看吧，还得是本龙……和你也有那么一点功劳。"])
 
-    decision = PetPersonalityAgent().decide(
+    response = PetPersonalityAgent().decide(
         make_input(hint="test_succeeded", context=context)
     )
 
-    assert decision.action == "show"
-    assert "看吧，还得是本龙" not in (decision.message or "")
-    assert "小爪子" in (decision.message or "")
+    assert response is not None
+    assert "看吧，还得是本龙" not in response.message
+    assert "小爪子" in response.message
 
 
 def test_low_confidence_proactive_activity_stays_silent_but_user_action_gets_reply() -> None:
@@ -228,9 +229,9 @@ def test_low_confidence_proactive_activity_stays_silent_but_user_action_gets_rep
         make_input(hint="ambiguous", signal_confidence=0.1, source="user")
     )
 
-    assert proactive.action == "drop"
-    assert user_requested.action == "show"
-    assert "不乱猜" in (user_requested.message or "")
+    assert proactive is None
+    assert user_requested is not None
+    assert "不乱猜" in user_requested.message
 
 
 def test_deepseek_generic_provider_uses_caller_prompts_without_refactor_prompt(

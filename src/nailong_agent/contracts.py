@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from nailong_agent.events import PopupDecision, Sensitivity, utc_now
+from nailong_agent.events import PersonalityResponseProposal, Sensitivity, utc_now
 
 
 class PetSituation(StrEnum):
@@ -85,4 +85,4 @@ class PetDecisionInput(BaseModel):
     context: PetDecisionContext = Field(default_factory=PetDecisionContext)
 
 
-PetDecisionOutput: TypeAlias = PopupDecision
+PetDecisionOutput: TypeAlias = PersonalityResponseProposal | None

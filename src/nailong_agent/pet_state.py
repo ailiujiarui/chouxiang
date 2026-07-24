@@ -30,7 +30,7 @@ class PersonalityIntensity(StrEnum):
     HIGH = "high"
 
 
-PolicyAction = Literal["show", "defer", "drop"]
+PolicyAction = Literal["show", "drop"]
 
 
 class PetGraphState(TypedDict, total=False):
@@ -47,7 +47,7 @@ class PetGraphState(TypedDict, total=False):
     response: PersonalityResponseProposal
     policy_action: PolicyAction
     policy_reason: str
-    decision: PetDecisionOutput
+    output: PetDecisionOutput
     llm_used: bool
     llm_error: str | None
     node_trace: list[str]

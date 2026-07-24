@@ -119,18 +119,20 @@ unknown
 
 ### 输出
 
-人格图最终只输出现有 `PopupDecision`：
+人格图最终只输出人格响应提案或静默：
 
 ```text
-action: show | defer | drop
-reason: 决策原因
-message: 可选的奶龙短文案
+PersonalityResponseProposal | null
+
+persona_version: 人格版本
+emotion: 奶龙情绪
+message: 奶龙短文案
+intent: encourage | remind | celebrate | ask | stay_silent
 priority: low | normal | high
-display_seconds: 展示秒数
-dedupe_key: 可选去重键
+expires_in_seconds: 提案有效时间
 ```
 
-`PopupDecision` 只是人格图的结构化决策结果；人格图不直接发布 EventBus。正式接入时应由通知服务接管持久化策略与投递，如何播放动作和绘制气泡由桌面进程与渲染层负责。
+敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
 
 ## 人格
 

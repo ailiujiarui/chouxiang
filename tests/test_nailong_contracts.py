@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
@@ -11,7 +12,7 @@ from nailong_agent.contracts import (
     PetSituation,
     RedactedActivitySignal,
 )
-from nailong_agent.events import PopupDecision
+from nailong_agent.events import PersonalityResponseProposal
 
 
 def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
@@ -103,12 +104,13 @@ def test_pet_situation_covers_required_personality_scenarios() -> None:
     } == {item.value for item in PetSituation}
 
 
-def test_pet_decision_output_reuses_popup_decision_contract() -> None:
-    assert PetDecisionOutput is PopupDecision
-    output = PetDecisionOutput(
-        action="show",
-        reason="confirmed test success",
+def test_pet_decision_output_is_an_optional_personality_proposal() -> None:
+    assert set(get_args(PetDecisionOutput)) == {PersonalityResponseProposal, type(None)}
+    output = PersonalityResponseProposal(
+        persona_version="nailong-v1.1-standard",
+        emotion="celebrating",
         message="看吧，还得是本龙。",
+        intent="celebrate",
     )
 
-    assert output.action == "show"
+    assert output.intent == "celebrate"

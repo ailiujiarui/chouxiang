@@ -10,7 +10,7 @@ from nailong_agent.contracts import (
     PetDecisionOutput,
     PetSituation,
 )
-from nailong_agent.events import PersonalityResponseProposal, PopupDecision
+from nailong_agent.events import PersonalityResponseProposal
 from nailong_agent.pet_graph import run_pet_graph
 from nailong_agent.pet_prompts import (
     PET_CLASSIFICATION_SYSTEM_PROMPT,
@@ -158,7 +158,7 @@ class PetPersonalityAgent:
         self.response_confidence_threshold = response_confidence_threshold
 
     def decide(self, decision_input: PetDecisionInput) -> PetDecisionOutput:
-        return self.run(decision_input)["decision"]
+        return self.run(decision_input)["output"]
 
     def run(self, decision_input: PetDecisionInput) -> PetGraphState:
         validated = PetDecisionInput.model_validate(decision_input)
@@ -284,21 +284,8 @@ class PetPersonalityAgent:
         return self._policy_result(state, "show", "personality_response_ready")
 
     def render(self, state: PetGraphState) -> PetGraphState:
-        response = state["response"]
-        action = state["policy_action"]
-        decision = PopupDecision(
-            action=action,
-            reason=state["policy_reason"],
-            message=response.message if action == "show" else None,
-            priority=response.priority,
-            display_seconds={"low": 5, "normal": 7, "high": 10}[response.priority],
-            dedupe_key=(
-                f"pet:{state['situation'].value}:{response.intent}"
-                if action == "show"
-                else None
-            ),
-        )
-        return {**state, "decision": decision}
+        output = state["response"] if state["policy_action"] == "show" else None
+        return {**state, "output": output}
 
     @staticmethod
     def _classified(
@@ -317,7 +304,7 @@ class PetPersonalityAgent:
     @staticmethod
     def _policy_result(
         state: PetGraphState,
-        action: Literal["show", "defer", "drop"],
+        action: Literal["show", "drop"],
         reason: str,
     ) -> PetGraphState:
         return {
