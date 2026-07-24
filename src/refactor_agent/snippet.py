@@ -132,6 +132,7 @@ class SnippetRefactorService:
                 self.settings.run_root / result.record.run_id / "artifacts" / "report.md",
                 result,
                 ReportPersona(job.persona),
+                llm_client,
             )
         return GitHubAutomationResult(
             job_id=job.job_id,
@@ -160,5 +161,6 @@ def _append_persona_commentary(
     report_path: Path,
     result: RefactorRunResult,
     persona: ReportPersona,
+    persona_client: RefactorClient | None = None,
 ) -> None:
-    inject_persona_report(report_path, result, persona)
+    inject_persona_report(report_path, result, persona, persona_client=persona_client)
