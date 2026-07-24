@@ -85,8 +85,6 @@ PetDecisionInput
 - 事件 ID 和带时区的发生时间；
 - 来源类型；
 - 归一化应用 ID；
-- 短活动提示；
-- 0 到 1 的置信度；
 - 最长 500 字符的脱敏摘要；
 - `public`、`private` 或 `blocked` 敏感级别。
 
@@ -111,7 +109,13 @@ entertainment
 unknown
 ```
 
-没有分类提示，或外部活动标签无法映射时，由 `classify` 节点按置信度决定是否使用通用 Provider 辅助映射；信息仍不足则映射为 `unknown` 并保持静默。外部模块未来增加活动类型时，不会导致人格输入校验失败。
+`classify` 不读取活动提示自行套规则，也不调用 LLM 重新判断桌面活动。没有分类提示或外部活动标签无法映射时，统一映射为 `unknown` 并保持静默。外部模块未来增加活动类型时，不会导致人格输入校验失败。
+
+### 人格措辞 Provider
+
+通用 `LLMProvider.complete_json` 只可选用于 `choose_personality_response` 的短句措辞，不得改变外部活动分类、人格场景、情绪、意图、优先级或弹窗策略。没有 Provider、没有远程调用授权、模型输出无效或模型回显不可信摘要时，必须使用本地固定台词回退。
+
+传给 Provider 的场景、情绪、意图、应用 ID、本地回退台词和脱敏摘要全部放在明确标记的不可信 JSON 区域中。模型只能返回 `message`，多余字段会被拒绝；原始代码、剪贴板、截图、终端正文和凭据始终不得进入提示词。
 
 ### 决策上下文
 
@@ -134,7 +138,7 @@ priority: low | normal | high
 expires_in_seconds: 提案有效时间
 ```
 
-其中 `priority` 是共享事件模型已有的兼容字段，人格 Agent 不按活动或人格场景设置它，只保留共享模型默认值；最终优先级由通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管优先级、冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
+其中 `priority` 和 `expires_in_seconds` 是共享事件模型已有的兼容字段，人格 Agent 不设置它们，只保留共享模型默认值；最终优先级与有效时间由通知策略决定。敏感活动或人格层选择静默时输出 `null`。人格图不创建 `PopupDecision`，也不直接发布 EventBus。正式接入时由通知服务接管优先级、有效时间、冷却、免打扰、持久化和投递，最终由 `NotificationDeliveryPump` 转换为 `PopupDecision`。
 
 ## 人格
 

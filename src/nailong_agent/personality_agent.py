@@ -13,8 +13,8 @@ from nailong_agent.contracts import (
 from nailong_agent.events import PersonalityResponseProposal
 from nailong_agent.pet_graph import run_pet_graph
 from nailong_agent.pet_prompts import (
-    PET_CLASSIFICATION_SYSTEM_PROMPT,
-    build_pet_classification_user_prompt,
+    PET_PERSONALITY_SYSTEM_PROMPT,
+    build_pet_personality_user_prompt,
 )
 from nailong_agent.pet_state import (
     PersonalityIntensity,
@@ -24,11 +24,10 @@ from nailong_agent.pet_state import (
 from refactor_agent.llm import LLMProvider
 
 
-class _LLMClassification(BaseModel):
+class _LLMPersonalityResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scenario: PersonalityScenario
-    confidence: float = Field(ge=0.0, le=1.0)
+    message: str = Field(min_length=1, max_length=500)
 
 
 _EMOTIONS = {
@@ -128,23 +127,19 @@ _INTENTS: dict[
 
 
 class PetPersonalityAgent:
-    """Deterministic personality graph with optional low-confidence LLM classification."""
+    """Personality graph that treats upstream activity classification as authoritative."""
 
     def __init__(
         self,
         *,
         provider: LLMProvider | None = None,
         intensity: PersonalityIntensity | str = PersonalityIntensity.STANDARD,
-        high_confidence_threshold: float = 0.75,
         response_confidence_threshold: float = 0.65,
     ) -> None:
-        if not 0.0 <= high_confidence_threshold <= 1.0:
-            raise ValueError("high_confidence_threshold must be between 0 and 1")
         if not 0.0 <= response_confidence_threshold <= 1.0:
             raise ValueError("response_confidence_threshold must be between 0 and 1")
         self.provider = provider
         self.intensity = PersonalityIntensity(intensity)
-        self.high_confidence_threshold = high_confidence_threshold
         self.response_confidence_threshold = response_confidence_threshold
 
     def decide(self, decision_input: PetDecisionInput) -> PetDecisionOutput:
@@ -180,74 +175,20 @@ class PetPersonalityAgent:
                 "collector",
             )
 
-        signal_scenario = _scenario_for_activity_label(signal.activity_hint)
-        if signal_scenario is not PersonalityScenario.UNKNOWN:
-            return self._classified(
-                state,
-                signal_scenario,
-                max(signal.confidence, 0.9),
-                "rules",
-            )
-
-        provided_scenario = _scenario_for_activity_label(
-            provided.activity if provided is not None else None
-        )
-        if (
-            provided is not None
-            and provided_scenario is not PersonalityScenario.UNKNOWN
-            and provided.confidence >= self.high_confidence_threshold
-        ):
-            return self._classified(
-                state,
-                provided_scenario,
-                provided.confidence,
-                provided.classifier,
-            )
-
-        if self.provider is None:
-            if (
-                provided is not None
-                and provided_scenario is not PersonalityScenario.UNKNOWN
-            ):
-                return self._classified(
-                    state,
-                    provided_scenario,
-                    provided.confidence,
-                    provided.classifier,
-                )
+        if provided is None:
             return self._classified(
                 state,
                 PersonalityScenario.UNKNOWN,
                 0.0,
-                "classifier",
+                "unavailable",
             )
 
-        try:
-            raw_result = self.provider.complete_json(
-                system_prompt=PET_CLASSIFICATION_SYSTEM_PROMPT,
-                user_prompt=build_pet_classification_user_prompt(signal),
-                temperature=0.0,
-            )
-            result = _LLMClassification.model_validate(raw_result)
-        except Exception as exc:
-            has_fallback = (
-                provided is not None
-                and provided_scenario is not PersonalityScenario.UNKNOWN
-            )
-            fallback = (
-                provided_scenario if has_fallback else PersonalityScenario.UNKNOWN
-            )
-            confidence = provided.confidence if has_fallback else 0.0
-            source = provided.classifier if has_fallback else "classifier"
-            return {
-                **self._classified(state, fallback, confidence, source),
-                "llm_used": True,
-                "llm_error": type(exc).__name__,
-            }
-        return {
-            **self._classified(state, result.scenario, result.confidence, "llm"),
-            "llm_used": True,
-        }
+        return self._classified(
+            state,
+            _scenario_for_activity_label(provided.activity),
+            provided.confidence,
+            provided.classifier,
+        )
 
     def infer_emotion(self, state: PetGraphState) -> PetGraphState:
         return {
@@ -274,14 +215,46 @@ class PetPersonalityAgent:
             intent = "ask"
             message = "哼，本龙听见了。本龙先不乱猜，你想让本龙陪你看什么？"
 
+        llm_update: dict[str, bool | str | None] = {}
+        if (
+            self.provider is not None
+            and signal.sensitivity == "public"
+            and intent != "stay_silent"
+        ):
+            try:
+                raw_result = self.provider.complete_json(
+                    system_prompt=PET_PERSONALITY_SYSTEM_PROMPT,
+                    user_prompt=build_pet_personality_user_prompt(
+                        signal=signal,
+                        scenario=scenario,
+                        emotion=state["emotion"],
+                        intent=intent,
+                        intensity=self.intensity,
+                        fallback_message=message,
+                    ),
+                    temperature=0.6,
+                )
+                generated = _LLMPersonalityResponse.model_validate(raw_result)
+                if _echoes_untrusted_summary(
+                    generated.message,
+                    signal.redacted_summary,
+                ):
+                    raise ValueError("LLM response echoed untrusted summary")
+                message = generated.message
+                llm_update = {"llm_used": True, "llm_error": None}
+            except Exception as exc:
+                llm_update = {
+                    "llm_used": True,
+                    "llm_error": type(exc).__name__,
+                }
+
         response = PersonalityResponseProposal(
             persona_version=f"nailong-v1.1-{self.intensity.value}",
             emotion=state["emotion"].value,
             message=message,
             intent=intent,
-            expires_in_seconds=300,
         )
-        return {**state, "response": response}
+        return {**state, **llm_update, "response": response}
 
     def apply_interruption_policy(self, state: PetGraphState) -> PetGraphState:
         signal = state["signal"]
@@ -329,6 +302,13 @@ def _scenario_for_activity_label(activity_label: str | None) -> PersonalityScena
         return PersonalityScenario.UNKNOWN
     normalized = activity_label.strip().lower().replace("-", "_").replace(" ", "_")
     return _SCENARIO_BY_ACTIVITY_LABEL.get(normalized, PersonalityScenario.UNKNOWN)
+
+
+def _echoes_untrusted_summary(message: str, summary: str | None) -> bool:
+    if summary is None:
+        return False
+    normalized_summary = summary.strip().casefold()
+    return len(normalized_summary) >= 8 and normalized_summary in message.casefold()
 
 
 def _should_avoid_catchphrase(candidate: str, recent_messages: list[str]) -> bool:

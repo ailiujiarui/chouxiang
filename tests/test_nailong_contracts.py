@@ -20,8 +20,6 @@ def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
         signal=RedactedActivitySignal(
             source="ide",
             application_id="vscode",
-            activity_hint="test-result",
-            confidence=0.98,
             redacted_summary="pytest reported a failure",
         ),
         classification=PetClassificationHint(
@@ -47,6 +45,8 @@ def test_pet_decision_input_accepts_only_redacted_activity_data() -> None:
         "window_title",
         "credentials",
         "metadata",
+        "activity_hint",
+        "confidence",
     ],
 )
 def test_redacted_signal_rejects_forbidden_extra_fields(forbidden_field: str) -> None:
@@ -62,10 +62,10 @@ def test_redacted_signal_rejects_forbidden_extra_fields(forbidden_field: str) ->
 
 def test_redacted_signal_enforces_bounds_and_aware_time() -> None:
     with pytest.raises(ValidationError):
-        RedactedActivitySignal(
-            source="ide",
-            application_id="vscode",
+        PetClassificationHint(
+            activity="test_failed",
             confidence=1.1,
+            classifier="rules",
         )
     with pytest.raises(ValidationError, match="timezone-aware"):
         RedactedActivitySignal(
@@ -93,10 +93,11 @@ def test_upstream_activity_label_is_not_restricted_by_personality_contract() -> 
     hint = PetClassificationHint(
         activity="future_team_defined_activity",
         confidence=0.8,
-        classifier="classifier",
+        classifier="future_team_defined_classifier",
     )
 
     assert hint.activity == "future_team_defined_activity"
+    assert hint.classifier == "future_team_defined_classifier"
 
 
 def test_internal_personality_scenario_covers_required_responses() -> None:

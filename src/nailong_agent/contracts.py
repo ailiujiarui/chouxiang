@@ -26,7 +26,10 @@ class PersonalityScenario(StrEnum):
 
 
 PetSignalSource = Literal["window", "process", "idle", "ide", "analysis", "user", "system"]
-PetClassificationSource = Literal["collector", "rules", "classifier", "llm", "analysis", "user"]
+PetClassificationSource = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
 RecentMessage = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 
@@ -44,8 +47,6 @@ class RedactedActivitySignal(BaseModel):
     occurred_at: datetime = Field(default_factory=utc_now)
     source: PetSignalSource
     application_id: str = Field(min_length=1, max_length=128)
-    activity_hint: str | None = Field(default=None, max_length=100)
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     redacted_summary: str | None = Field(default=None, max_length=500)
     sensitivity: Sensitivity = "public"
 
