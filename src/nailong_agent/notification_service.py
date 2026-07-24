@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -13,6 +13,7 @@ from nailong_agent.events import (
 from nailong_agent.contracts import PetPersonalityResponse
 from nailong_agent.notification_policy import NotificationCandidate, NotificationPolicy
 from nailong_agent.notification_store import NotificationStore
+from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from refactor_agent.analysis_events import AnalysisEvent
 
 
@@ -26,6 +27,16 @@ class NotificationPort(Protocol):
         occurred_at: datetime,
         response: PetPersonalityResponse,
     ) -> NotificationIngestReceipt: ...
+
+    def update_personality_state(
+        self,
+        *,
+        emotion: PetEmotion,
+        task_id: str,
+        expires_in_seconds: int,
+    ) -> PetPersonalityState: ...
+
+    def get_personality_state(self) -> PetPersonalityState: ...
 
     def poll_long_tasks(self) -> NotificationIntent | None: ...
 
@@ -118,6 +129,28 @@ class NotificationService:
             cooldown_seconds=self._cooldown_seconds(self._effective_preferences()),
             preferences=self._effective_preferences(),
         )
+
+    def update_personality_state(
+        self,
+        *,
+        emotion: PetEmotion,
+        task_id: str,
+        expires_in_seconds: int,
+    ) -> PetPersonalityState:
+        if expires_in_seconds < 1:
+            raise ValueError("personality state expiry must be positive")
+        now = self.clock()
+        state = PetPersonalityState(
+            emotion=emotion,
+            task_id=task_id,
+            updated_at=now,
+            expires_at=now + timedelta(seconds=expires_in_seconds),
+        )
+        self.store.save_personality_state(state)
+        return state
+
+    def get_personality_state(self) -> PetPersonalityState:
+        return self.store.get_personality_state(now=self.clock())
 
     def acknowledge(self, notification_id: str, outcome: str) -> bool:
         return self.store.acknowledge(notification_id, outcome, now=self.clock())

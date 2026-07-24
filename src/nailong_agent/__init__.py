@@ -41,6 +41,7 @@ from nailong_agent.pet_state import (
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
+    PetPersonalityState,
 )
 from nailong_agent.privacy import CollectionDecision, PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
@@ -75,6 +76,7 @@ __all__ = [
     "PetDecisionOutput",
     "PetEmotion",
     "PetGraphState",
+    "PetPersonalityState",
     "PetPersonalityAgent",
     "PetPersonalityResponse",
     "PersonalityScenario",

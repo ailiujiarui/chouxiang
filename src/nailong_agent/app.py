@@ -139,6 +139,9 @@ class DesktopProcess:
             if self.activity_collector is not None:
                 self.activity_collector.start()
             self.renderer.start()
+            restore_personality_state = getattr(self.renderer, "apply_personality_state", None)
+            if callable(restore_personality_state) and self.notification_service is not None:
+                restore_personality_state(self.notification_service.get_personality_state())
             if self.analysis_subscriber is not None:
                 self.analysis_subscriber.start()
             if self.delivery_pump is not None:
