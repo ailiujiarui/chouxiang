@@ -7,6 +7,7 @@ name = "refactor-agent"
 version = "0.1.0"
 description = "Local closed-loop code refactoring agent with metrics, pytest verification, and self-healing retries."
 readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11"
 dependencies = [
     "GitPython>=3.1",
@@ -34,6 +35,10 @@ desktop = [
 dev = [
     "pytest>=8.0",
     "streamlit>=1.36",
+]
+
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
 ]
 
 [project.scripts]

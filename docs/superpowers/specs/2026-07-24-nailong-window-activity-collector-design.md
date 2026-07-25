@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a Windows-first desktop activity collector that emits only minimized foreground application and idle-state signals. It must never read or persist window-title text, editor contents, terminal contents, screenshots, OCR, clipboard data, source code, or credentials.
+Add a Windows-first desktop activity collector that emits only minimized foreground application and idle-state signals. The current implementation may read a foreground window title only in memory for local sensitive/meeting filtering and bounded IDE-state recognition; it must never persist, publish, log, or remotely send window-title text, editor contents, terminal contents, screenshots, OCR, clipboard data, source code, or credentials. This document records the earlier foreground-only design and is superseded on title handling by `docs/designs/2026-07-25-nailong-completion.md`.
 
 ## Scope
 
@@ -35,7 +35,7 @@ The collector applies gates in this order:
 5. `PrivacyPolicy` must authorize and minimize the candidate.
 6. The collector persists and publishes only the minimized event.
 
-The raw executable path is used only to derive an application category and is discarded. The collector never requests a window title.
+The raw executable path is used only to derive an application category and is discarded. The current implementation may additionally request a foreground title ephemerally for local privacy classification; the title is discarded before any event or persistence boundary.
 
 ## Event Rate and Deduplication
 
@@ -73,7 +73,7 @@ class WindowActivityCollector:
 ## Acceptance Criteria
 
 - Unanswered or declined consent produces no stored or published activity event.
-- The collector does not request or store window-title text.
+- The historical collector scope did not request window-title text. The implemented scope may read it ephemerally for local privacy checks, but never stores, publishes, logs, or uploads it.
 - Manual pause, disabled listening, meeting/fullscreen, and blacklisted applications suppress collection.
 - A nonempty allowlist suppresses applications not explicitly allowed.
 - The same foreground application is emitted at most once per five-second in-memory window.
