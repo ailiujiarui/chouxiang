@@ -79,6 +79,36 @@ def test_allowed_signal_becomes_unified_minimized_activity() -> None:
     assert policy.prepare_remote_summary(decision.event) is None
 
 
+@pytest.mark.parametrize(
+    ("activity_hint", "expected_activity"),
+    [
+        ("pytest failed", ActivityType.TEST_FAILED),
+        ("pytest passed", ActivityType.TEST_SUCCEEDED),
+        ("build succeeded", ActivityType.COMPILE_SUCCEEDED),
+    ],
+)
+def test_terminal_status_hints_are_minimized_to_activity_enums(
+    activity_hint: str,
+    expected_activity: ActivityType,
+) -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(
+            source="ide",
+            application_id="Code.exe",
+            activity_hint=activity_hint,
+        )
+    )
+
+    assert decision.event is not None
+    assert decision.event.activity is expected_activity
+    assert decision.event.confidence == 0.9
+    assert decision.event.summary == (
+        f"application=code; activity={expected_activity.value}; source=ide"
+    )
+
+
 def test_unknown_application_is_reduced_to_a_nonidentifying_category() -> None:
     policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
 

@@ -8,6 +8,7 @@ from typing import Callable
 
 from nailong_agent.activity_collector import WindowActivityCollector
 from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
+from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
@@ -20,6 +21,7 @@ from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
 from nailong_agent.windows_activity import create_foreground_source, create_idle_source
+from refactor_agent.llm import DeepSeekClient
 
 
 class SingleInstanceLock:
@@ -253,6 +255,14 @@ def main(argv: list[str] | None = None) -> int:
                 intensity=notification_store.get_preferences().personality_intensity.lower(),
             ),
             notifications=notifications,
+            recognizer=ActivityRecognizer(
+                privacy_policy=privacy_policy,
+                provider_factory=(
+                    lambda: DeepSeekClient(model=settings.deepseek_model)
+                    if os.getenv("DEEPSEEK_API_KEY")
+                    else None
+                ),
+            ),
         )
         if settings.activity_listener_enabled and notifications is not None and notification_store is not None
         else None

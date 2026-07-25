@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from nailong_agent.activity_aggregator import ActivityEventAggregator
+from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.contracts import (
     PetClassificationHint,
     PetDecisionContext,
@@ -22,6 +23,7 @@ class ActivityPersonalityOrchestrator:
         personality_agent: PetPersonalityAgent,
         notifications: NotificationPort,
         aggregator: ActivityEventAggregator | None = None,
+        recognizer: ActivityRecognizer | None = None,
         aggregator_window_seconds: int = 60,
     ) -> None:
         self.aggregator = aggregator or ActivityEventAggregator(
@@ -29,6 +31,7 @@ class ActivityPersonalityOrchestrator:
         )
         self.personality_agent = personality_agent
         self.notifications = notifications
+        self.recognizer = recognizer or ActivityRecognizer()
         self._recent_messages: list[str] = []
 
     def subscribe(self, bus: EventBus) -> None:
@@ -46,6 +49,7 @@ class ActivityPersonalityOrchestrator:
             self._handle_window(window)
 
     def _handle_window(self, window: ActivityWindow) -> None:
+        classification = self.recognizer.classify(window)
         response = self.personality_agent.decide(
             PetDecisionInput(
                 signal=RedactedActivitySignal(
@@ -56,9 +60,9 @@ class ActivityPersonalityOrchestrator:
                     redacted_summary=window.summary,
                 ),
                 classification=PetClassificationHint(
-                    activity=window.dominant_activity.value,
-                    confidence=window.confidence,
-                    classifier="activity_aggregator",
+                    activity=classification.activity.value,
+                    confidence=classification.confidence,
+                    classifier=classification.classifier,
                 ),
                 context=PetDecisionContext(recent_messages=self._recent_messages),
             )

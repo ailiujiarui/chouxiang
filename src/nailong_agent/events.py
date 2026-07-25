@@ -14,6 +14,9 @@ ActivitySource = Literal["window", "process", "idle", "ide"]
 class ActivityType(StrEnum):
     CODING = "coding"
     DEBUGGING = "debugging"
+    TEST_FAILED = "test_failed"
+    TEST_SUCCEEDED = "test_succeeded"
+    COMPILE_SUCCEEDED = "compile_succeeded"
     READING = "reading"
     WRITING = "writing"
     MEETING = "meeting"
@@ -156,7 +159,7 @@ class ActivityClassification(BaseModel):
     activity: ActivityType
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: list[str] = Field(default_factory=list)
-    classifier: Literal["rules", "llm"] = "rules"
+    classifier: Literal["rules", "lightweight", "llm"] = "rules"
 
     def envelope(self) -> EventEnvelope:
         return EventEnvelope.from_payload(self, source="activity_classifier")
