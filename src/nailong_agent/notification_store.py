@@ -15,6 +15,7 @@ from nailong_agent.events import (
     PetPreferences,
 )
 from nailong_agent.notification_policy import NotificationCandidate
+from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 
@@ -81,6 +82,48 @@ class NotificationStore:
                 "INSERT INTO pet_app_rules (application_id, rule) VALUES (?, ?)",
                 sorted(normalized.items()),
             )
+
+    def save_personality_state(self, state: PetPersonalityState) -> None:
+        validated = PetPersonalityState.model_validate(state)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE pet_personality_state
+                SET emotion = ?, task_id = ?, updated_at = ?, expires_at = ?
+                WHERE id = 1
+                """,
+                (
+                    validated.emotion.value,
+                    validated.task_id,
+                    validated.updated_at.isoformat() if validated.updated_at else None,
+                    validated.expires_at.isoformat() if validated.expires_at else None,
+                ),
+            )
+
+    def get_personality_state(self, *, now: datetime | None = None) -> PetPersonalityState:
+        current_time = _as_utc(now or datetime.now(timezone.utc))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT emotion, task_id, updated_at, expires_at FROM pet_personality_state WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("pet personality state row is missing")
+            state = _personality_state_from_row(row)
+            if state.expires_at is not None and state.expires_at <= current_time:
+                state = PetPersonalityState(
+                    emotion=PetEmotion.NEUTRAL,
+                    updated_at=current_time,
+                )
+                connection.execute(
+                    """
+                    UPDATE pet_personality_state
+                    SET emotion = ?, task_id = NULL, updated_at = ?, expires_at = NULL
+                    WHERE id = 1
+                    """,
+                    (state.emotion.value, state.updated_at.isoformat()),
+                )
+        return state
 
     def process_event(
         self,
@@ -684,6 +727,15 @@ def _intent_from_row(row: sqlite3.Row) -> NotificationIntent:
         source_event_id=row["source_event_id"],
         created_at=datetime.fromisoformat(row["created_at"]),
         available_at=datetime.fromisoformat(row["available_at"]),
+    )
+
+
+def _personality_state_from_row(row: sqlite3.Row) -> PetPersonalityState:
+    return PetPersonalityState(
+        emotion=PetEmotion(row["emotion"]),
+        task_id=row["task_id"],
+        updated_at=_parse_datetime(row["updated_at"]),
+        expires_at=_parse_datetime(row["expires_at"]),
     )
 
 

@@ -25,13 +25,17 @@ class ActivityPersonalityOrchestrator:
         aggregator: ActivityEventAggregator | None = None,
         recognizer: ActivityRecognizer | None = None,
         aggregator_window_seconds: int = 60,
+        personality_state_ttl_seconds: int = 300,
     ) -> None:
+        if personality_state_ttl_seconds < 1:
+            raise ValueError("personality state expiry must be positive")
         self.aggregator = aggregator or ActivityEventAggregator(
             window_seconds=aggregator_window_seconds
         )
         self.personality_agent = personality_agent
         self.notifications = notifications
         self.recognizer = recognizer or ActivityRecognizer()
+        self.personality_state_ttl_seconds = personality_state_ttl_seconds
         self._recent_messages: list[str] = []
 
     def subscribe(self, bus: EventBus) -> None:
@@ -50,7 +54,7 @@ class ActivityPersonalityOrchestrator:
 
     def _handle_window(self, window: ActivityWindow) -> None:
         classification = self.recognizer.classify(window)
-        response = self.personality_agent.decide(
+        state = self.personality_agent.run(
             PetDecisionInput(
                 signal=RedactedActivitySignal(
                     event_id=_window_event_id(window),
@@ -67,6 +71,12 @@ class ActivityPersonalityOrchestrator:
                 context=PetDecisionContext(recent_messages=self._recent_messages),
             )
         )
+        self.notifications.update_personality_state(
+            emotion=state["emotion"],
+            task_id=_window_event_id(window),
+            expires_in_seconds=self.personality_state_ttl_seconds,
+        )
+        response = state["output"]
         if response is None:
             return
         self._recent_messages = [*self._recent_messages[-19:], response.message]

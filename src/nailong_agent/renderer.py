@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from nailong_agent.events import PetExpression, PetState, PopupDecision
+from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from nailong_agent.privacy import PrivacyConsent
 
 
@@ -70,6 +71,22 @@ def decision_to_pet_state(decision: PopupDecision) -> PetState:
     )
 
 
+def personality_state_to_pet_state(state: PetPersonalityState) -> PetState:
+    expressions = {
+        PetEmotion.CHEERFUL: PetExpression.HAPPY,
+        PetEmotion.CURIOUS: PetExpression.HAPPY,
+        PetEmotion.CONCERNED: PetExpression.CONCERNED,
+        PetEmotion.SLEEPY: PetExpression.SLEEPY,
+        PetEmotion.CELEBRATING: PetExpression.LAUGH,
+        PetEmotion.NEUTRAL: PetExpression.NEUTRAL,
+    }
+    return PetState(
+        expression=expressions[state.emotion],
+        bubble_visible=False,
+        bubble_seconds=0,
+    )
+
+
 class PopupRenderer(Protocol):
     def start(self) -> None: ...
 
@@ -122,6 +139,9 @@ class NullRenderer:
             self.decisions.append(decision)
             return True
         return False
+
+    def apply_personality_state(self, state: PetPersonalityState) -> None:
+        self.states.append(personality_state_to_pet_state(state))
 
     def stop(self) -> None:
         self.started = False
@@ -365,6 +385,9 @@ class PySide6Renderer:
             self._bridge.decision.emit(decision)
             return True
         return False
+
+    def apply_personality_state(self, state: PetPersonalityState) -> None:
+        self._mouth.setText(MOUTH_TEXT[personality_state_to_pet_state(state).expression])
 
     def stop(self) -> None:
         if self._tray is not None:
