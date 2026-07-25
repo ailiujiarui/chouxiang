@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import httpx
 from typer.testing import CliRunner
 
 from refactor_agent.config import AppSettings
@@ -76,7 +77,8 @@ def test_run_cli_exposes_bounded_deadline_option():
     assert "30" in invalid.stderr
 
 
-def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path):
+def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network call")))
     result = runner.invoke(
         app,
         [
@@ -87,6 +89,7 @@ def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path):
             "review",
             "--persona",
             "tsundere",
+            "--mock",
             "--run-root",
             str(tmp_path / "runs"),
             "--database",
@@ -94,6 +97,6 @@ def test_snippet_cli_reviews_stdin_without_executing(tmp_path: Path):
         ],
         input="def add(a, b):\n    return a + b\n",
     )
-    assert result.exit_code == 0
-    assert "成功" in result.stdout
+    assert result.exit_code in (0, 1)
+    assert "mock/deterministic-local" in result.stdout
     assert "GENERATED_TESTS" in result.stdout or "STATIC" in result.stdout

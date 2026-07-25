@@ -18,7 +18,8 @@ def test_one_click_script_checks_docker_and_health_and_has_safe_stop():
     assert "PYTHON_BASE_IMAGE=$PythonBaseImage" in script
     assert "PIP_INDEX_URL=$PipIndexUrl" in script
     assert "PipIndexUrl" in script
-    assert 'if ($env:DEEPSEEK_API_KEY) { "false" } else { "true" }' in script
+    assert '$env:REFACTOR_AGENT_MOCK_LLM = "false"' in script
+    assert "DEEPSEEK_API_KEY is required for runtime DeepSeek mode" in script
     assert "Product Mode:" in script
     assert "single-user; no Admin Token" in script
     assert "Bearer token enabled" in script
@@ -44,7 +45,7 @@ def test_compose_starts_api_before_dashboard_with_localhost_ports():
     assert '"--api-url", "http://api:8000"' in compose
     assert '127.0.0.1:${REFACTOR_AGENT_API_PORT:-8000}:8000' in compose
     assert '127.0.0.1:${REFACTOR_AGENT_DASHBOARD_PORT:-8501}:8501' in compose
-    assert "REFACTOR_AGENT_MOCK_LLM: ${REFACTOR_AGENT_MOCK_LLM:-true}" in compose
+    assert "REFACTOR_AGENT_MOCK_LLM: ${REFACTOR_AGENT_MOCK_LLM:-false}" in compose
     assert "DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}" in compose
     assert "PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}" in compose
     assert "REFACTOR_AGENT_SANDBOX_VOLUME: refactor-agent-local_refactor-agent-memory" in compose

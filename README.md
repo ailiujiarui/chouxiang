@@ -44,7 +44,7 @@ Input Adapter
 
 默认是仅绑定 localhost 的本地单用户模式，不设置管理员令牌，Dashboard 可直接提交和管理本地任务。这个默认值不代表网络部署安全；不要把端口转发到不可信网络。
 
-默认使用 mock LLM，仅适合内置演示和离线回归。停止服务但保留本地数据：
+默认使用真实 DeepSeek LLM，必须先设置 `DEEPSEEK_API_KEY`。缺少 Key 时启动会明确失败，不会静默切换到 mock。仅在明确的离线演示或测试场景设置 `REFACTOR_AGENT_MOCK_LLM=true`。停止服务但保留本地数据：
 
 ```powershell
 .\scripts\start.ps1 -Down
@@ -97,6 +97,13 @@ $env:REFACTOR_AGENT_ADMIN_TOKEN="<strong-random-secret>"
 ```powershell
 $env:DEEPSEEK_API_KEY="<set-in-environment>"
 $env:REFACTOR_AGENT_MOCK_LLM="false"
+.\scripts\start.ps1
+```
+
+离线演示（不会调用 DeepSeek）：
+
+```powershell
+$env:REFACTOR_AGENT_MOCK_LLM="true"
 .\scripts\start.ps1
 ```
 

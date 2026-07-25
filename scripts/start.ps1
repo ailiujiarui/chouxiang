@@ -36,12 +36,16 @@ $env:REFACTOR_AGENT_DASHBOARD_PORT = $DashboardPort
 $env:PYTHON_BASE_IMAGE = $PythonBaseImage
 $env:PIP_INDEX_URL = $PipIndexUrl
 if (-not $env:REFACTOR_AGENT_MOCK_LLM) {
-    $env:REFACTOR_AGENT_MOCK_LLM = if ($env:DEEPSEEK_API_KEY) { "false" } else { "true" }
+    $env:REFACTOR_AGENT_MOCK_LLM = "false"
 }
 
 if ($Down) {
     & docker @compose down
     exit $LASTEXITCODE
+}
+
+if ($env:REFACTOR_AGENT_MOCK_LLM -ne "true" -and -not $env:DEEPSEEK_API_KEY) {
+    throw "DEEPSEEK_API_KEY is required for runtime DeepSeek mode. Set it, or explicitly set REFACTOR_AGENT_MOCK_LLM=true for offline demo mode."
 }
 
 foreach ($port in @($ApiPort, $DashboardPort)) {
