@@ -9,7 +9,7 @@ from nailong_agent.events import EventEnvelope, PetApplicationRule, PetPreferenc
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent import windows_activity
-from nailong_agent.windows_activity import create_foreground_source
+from nailong_agent.windows_activity import _ide_activity_hint, create_foreground_source
 
 
 class FakeForegroundSource:
@@ -125,6 +125,37 @@ def test_collector_throttles_repeated_foreground_application(tmp_path: Path) -> 
     bus.stop()
 
 
+def test_window_title_and_ide_hint_are_used_only_for_local_minimization(tmp_path: Path) -> None:
+    source = FakeForegroundSource()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    bus = EventBus()
+    received: list[EventEnvelope] = []
+    bus.subscribe("ActivityEvent", received.append)
+    bus.start()
+    collector = WindowActivityCollector(
+        source=source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=store,
+        event_bus=bus,
+        preferences=lambda: PetPreferences(),
+        application_rules=lambda: [],
+    )
+    collector.start()
+    source.emit(ForegroundWindow(
+        process_id=1,
+        executable_name="Code.exe",
+        window_title_hint="customer-project - main.py - Visual Studio Code",
+        ide_activity_hint="coding",
+    ))
+    assert bus.wait_idle(1.0)
+    assert received[0].payload["activity"] == "coding"
+    serialized = received[0].model_dump_json()
+    assert "customer-project" not in serialized
+    assert "main.py" not in serialized
+    collector.stop()
+    bus.stop()
+
+
 def test_collector_persists_idle_state_after_threshold(tmp_path: Path) -> None:
     foreground_source = FakeForegroundSource()
     idle_source = FakeIdleSource()
@@ -163,6 +194,12 @@ def test_non_windows_foreground_source_is_a_noop(monkeypatch) -> None:
 
     source.start(lambda _: (_ for _ in ()).throw(AssertionError("unexpected callback")))
     source.stop()
+
+
+def test_ide_activity_hint_is_bounded_to_known_editor_states() -> None:
+    assert _ide_activity_hint("main.py - Visual Studio Code", "Code.exe") == "coding"
+    assert _ide_activity_hint("debug - Visual Studio Code", "Code.exe") == "debugging"
+    assert _ide_activity_hint("chat - Teams", "Teams.exe") is None
 
 
 def test_idle_seconds_handles_tick_counter_wraparound() -> None:

@@ -125,6 +125,8 @@ class DesktopProcess:
                 configure_notification_controls(
                     on_set_do_not_disturb=lambda enabled: self.notification_service.set_do_not_disturb(enabled),
                     get_do_not_disturb=lambda: self.notification_service.get_status().do_not_disturb,
+                    on_set_manual_pause=self.notification_service.set_manual_pause,
+                    get_manual_pause=lambda: self.notification_service.get_status().manual_pause_enabled,
                 )
             if self.privacy_policy.needs_initial_consent:
                 request_privacy_consent = getattr(self.renderer, "request_privacy_consent", None)

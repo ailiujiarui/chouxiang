@@ -89,7 +89,7 @@ def create_idle_source() -> IdleStateSource:
 
 
 class WindowsForegroundActivitySource:
-    """Dedicated Win32 foreground hook thread that never reads window titles."""
+    """Dedicated Win32 foreground hook thread with ephemeral local hints."""
 
     _EVENT_SYSTEM_FOREGROUND = 0x0003
     _WINEVENT_OUTOFCONTEXT = 0
@@ -246,11 +246,29 @@ def _foreground_window(user32, kernel32, hwnd, access: int) -> ForegroundWindow 
         length = ctypes.c_ulong(len(buffer))
         if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(length)):
             return None
+        title_buffer = ctypes.create_unicode_buffer(1024)
+        user32.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
+        title_hint = title_buffer.value or None
+        ide_hint = _ide_activity_hint(title_hint, Path(buffer.value).name)
         return ForegroundWindow(
             process_id=process_id.value,
             executable_name=Path(buffer.value).name,
             idle_seconds=read_idle_seconds(user32, kernel32),
             is_fullscreen=read_fullscreen_state(user32, hwnd),
+            window_title_hint=title_hint,
+            ide_activity_hint=ide_hint,
         )
     finally:
         kernel32.CloseHandle(process)
+
+
+def _ide_activity_hint(title: str | None, executable_name: str) -> str | None:
+    """Return a bounded local hint; the raw title is discarded by the privacy gate."""
+    if executable_name.casefold() not in {"code.exe", "cursor.exe", "pycharm64.exe", "idea64.exe"}:
+        return None
+    value = (title or "").casefold()
+    if any(marker in value for marker in ("debug", "调试", "breakpoint", "断点")):
+        return "debugging"
+    if any(marker in value for marker in ("code", "editor", "编辑", ".py", ".js", ".ts")):
+        return "coding"
+    return "unknown"

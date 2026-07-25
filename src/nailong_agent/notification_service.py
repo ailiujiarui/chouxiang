@@ -42,6 +42,8 @@ class NotificationPort(Protocol):
 
     def set_do_not_disturb(self, enabled: bool) -> NotificationIntent | None: ...
 
+    def set_manual_pause(self, enabled: bool) -> None: ...
+
     def get_status(self) -> NotificationStatus: ...
 
     def lease_next(self) -> NotificationIntent | None: ...
@@ -102,6 +104,10 @@ class NotificationService:
             now=self.clock(),
             summary_factory=self.policy.quiet_summary_candidate if not enabled else None,
         )
+
+    def set_manual_pause(self, enabled: bool) -> None:
+        preferences = self.store.get_preferences()
+        self.store.save_preferences(preferences.model_copy(update={"manual_pause_enabled": enabled}))
 
     def get_status(self) -> NotificationStatus:
         return self.store.status(now=self.clock())

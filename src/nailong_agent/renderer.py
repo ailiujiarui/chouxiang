@@ -113,6 +113,8 @@ class NotificationControlsRenderer(Protocol):
         *,
         on_set_do_not_disturb: Callable[[bool], None],
         get_do_not_disturb: Callable[[], bool],
+        on_set_manual_pause: Callable[[bool], None] | None = None,
+        get_manual_pause: Callable[[], bool] | None = None,
     ) -> None: ...
 
 
@@ -127,6 +129,8 @@ class NullRenderer:
         self.consent_requested = False
         self._on_clear_activity_history: Callable[[], int] | None = None
         self._on_set_do_not_disturb: Callable[[bool], None] | None = None
+        self._on_set_manual_pause: Callable[[bool], None] | None = None
+        self._get_manual_pause: Callable[[], bool] | None = None
         self._get_do_not_disturb: Callable[[], bool] | None = None
 
     def start(self) -> None:
@@ -161,8 +165,12 @@ class NullRenderer:
         *,
         on_set_do_not_disturb: Callable[[bool], None],
         get_do_not_disturb: Callable[[], bool],
+        on_set_manual_pause: Callable[[bool], None] | None = None,
+        get_manual_pause: Callable[[], bool] | None = None,
     ) -> None:
         self._on_set_do_not_disturb = on_set_do_not_disturb
+        self._on_set_manual_pause = on_set_manual_pause
+        self._get_manual_pause = get_manual_pause
         self._get_do_not_disturb = get_do_not_disturb
 
     def set_do_not_disturb(self, enabled: bool) -> None:
@@ -170,11 +178,21 @@ class NullRenderer:
             raise RuntimeError("notification controls are not configured")
         self._on_set_do_not_disturb(enabled)
 
+    def set_manual_pause(self, enabled: bool) -> None:
+        if self._on_set_manual_pause is None:
+            raise RuntimeError("manual pause controls are not configured")
+        self._on_set_manual_pause(enabled)
+
 
 class PySide6Renderer:
     """Text-only Nailong face with a status bubble above the pet."""
 
-    def __init__(self, *, on_quit: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        on_quit: Callable[[], None] | None = None,
+        on_click: Callable[[], None] | None = None,
+    ) -> None:
         try:
             from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
             from PySide6.QtGui import (
@@ -314,12 +332,14 @@ class PySide6Renderer:
         self._pet_window.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self._pet_window.setAttribute(Qt.WA_TranslucentBackground)
         self._pet_window.setFixedSize(240, 150)
+        self._on_click = on_click
 
         body = QLabel(self._pet_window)
         body.setGeometry(0, 0, 240, 150)
         body.setStyleSheet(
             "background:#FDE68A; border:2px solid #F59E0B; border-radius:28px;"
         )
+        body.mousePressEvent = lambda event: self._handle_pet_click()
         face_font = QFont("Microsoft YaHei UI", 13)
         self._left_eye = QLabel("（眼睛）", self._pet_window)
         self._right_eye = QLabel("（眼睛）", self._pet_window)
@@ -335,6 +355,8 @@ class PySide6Renderer:
         self._on_quit = on_quit
         self._on_clear_activity_history: Callable[[], int] | None = None
         self._on_set_do_not_disturb: Callable[[bool], None] | None = None
+        self._on_set_manual_pause: Callable[[bool], None] | None = None
+        self._get_manual_pause: Callable[[], bool] | None = None
         self._tray = None
         self._dnd_action = None
 
@@ -352,6 +374,10 @@ class PySide6Renderer:
             self._dnd_action.setEnabled(False)
             self._dnd_action.triggered.connect(self._set_do_not_disturb)
             menu.addAction(self._dnd_action)
+            self._pause_action = QAction("暂停监听", menu)
+            self._pause_action.setCheckable(True)
+            self._pause_action.triggered.connect(self._set_manual_pause)
+            menu.addAction(self._pause_action)
             clear_history_action = QAction("删除本地活动记录", menu)
             clear_history_action.triggered.connect(self._clear_activity_history)
             menu.addAction(clear_history_action)
@@ -385,6 +411,19 @@ class PySide6Renderer:
             self._bridge.decision.emit(decision)
             return True
         return False
+
+    def _handle_pet_click(self) -> None:
+        if self._on_click is not None:
+            self._on_click()
+            return
+        self.show(
+            PopupDecision(
+                action="show",
+                reason="pet_click",
+                message="哼，本龙听见了。有什么事就说。",
+                display_seconds=5,
+            )
+        )
 
     def apply_personality_state(self, state: PetPersonalityState) -> None:
         self._mouth.setText(MOUTH_TEXT[personality_state_to_pet_state(state).expression])
@@ -428,11 +467,21 @@ class PySide6Renderer:
         *,
         on_set_do_not_disturb: Callable[[bool], None],
         get_do_not_disturb: Callable[[], bool],
+        on_set_manual_pause: Callable[[bool], None] | None = None,
+        get_manual_pause: Callable[[], bool] | None = None,
     ) -> None:
         self._on_set_do_not_disturb = on_set_do_not_disturb
+        self._on_set_manual_pause = on_set_manual_pause
+        self._get_manual_pause = get_manual_pause
         if self._dnd_action is not None:
             self._dnd_action.setChecked(get_do_not_disturb())
             self._dnd_action.setEnabled(True)
+        if hasattr(self, "_pause_action") and self._pause_action is not None:
+            self._pause_action.setChecked(get_manual_pause() if get_manual_pause else False)
+
+    def _set_manual_pause(self, enabled: bool) -> None:
+        if self._on_set_manual_pause is not None:
+            self._on_set_manual_pause(enabled)
 
     def _show_on_ui_thread(self, decision: PopupDecision) -> None:
         state = decision_to_pet_state(decision)

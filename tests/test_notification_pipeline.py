@@ -291,6 +291,14 @@ def test_preferences_and_application_rules_survive_store_reopen(tmp_path: Path) 
     assert reopened.list_application_rules() == [PetApplicationRule(application_id="game", rule="block")]
 
 
+def test_notification_service_manual_pause_persists_and_is_exposed_in_status(tmp_path: Path) -> None:
+    store = NotificationStore(tmp_path / "notifications.sqlite")
+    service = NotificationService(store=store)
+    service.set_manual_pause(True)
+    assert service.get_status().manual_pause_enabled is True
+    assert NotificationStore(store.database_path).get_preferences().manual_pause_enabled is True
+
+
 def test_daily_popup_budget_is_durable_and_only_counts_displaying_intents(tmp_path: Path) -> None:
     clock = MutableClock(_now())
     store = NotificationStore(tmp_path / "notifications.sqlite")

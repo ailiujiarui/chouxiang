@@ -19,6 +19,8 @@ class ForegroundWindow:
     idle_seconds: float | None = None
     is_fullscreen: bool = False
     is_meeting_likely: bool = False
+    window_title_hint: str | None = None
+    ide_activity_hint: str | None = None
 
 
 class ForegroundActivitySource(Protocol):
@@ -126,6 +128,8 @@ class WindowActivityCollector:
         signal = RawActivitySignal(
             source="window",
             application_id=application_id,
+            window_title_summary=window.window_title_hint,
+            activity_hint=window.ide_activity_hint,
             metadata=metadata,
         )
         if self._persist_and_publish(signal):

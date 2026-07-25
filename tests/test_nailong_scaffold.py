@@ -179,6 +179,28 @@ def test_null_renderer_records_mapped_state() -> None:
     assert renderer.states[-1].bubble_text == "（工作中）"
 
 
+def test_null_renderer_manual_pause_control_callback() -> None:
+    renderer = NullRenderer()
+    changes: list[bool] = []
+    renderer.configure_notification_controls(
+        on_set_do_not_disturb=lambda enabled: None,
+        get_do_not_disturb=lambda: False,
+        on_set_manual_pause=changes.append,
+        get_manual_pause=lambda: False,
+    )
+    renderer.set_manual_pause(True)
+    assert changes == [True]
+
+
+def test_pyside_renderer_click_callback_is_local_only() -> None:
+    renderer_type = __import__("nailong_agent.renderer", fromlist=["PySide6Renderer"]).PySide6Renderer
+    renderer = renderer_type.__new__(renderer_type)
+    clicked: list[bool] = []
+    renderer._on_click = lambda: clicked.append(True)
+    renderer._handle_pet_click()
+    assert clicked == [True]
+
+
 def test_single_instance_lock_rejects_second_owner(tmp_path) -> None:
     path = tmp_path / "nailong.lock"
     first = SingleInstanceLock(path)
