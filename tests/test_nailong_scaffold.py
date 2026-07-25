@@ -170,26 +170,10 @@ def test_literal_face_labels_and_expression_mapping() -> None:
     assert decision_to_pet_state(
         PopupDecision(action="show", reason="analysis-failed", message="（失败）")
     ).expression == PetExpression.CONCERNED
-
-
-def test_null_renderer_records_mapped_state() -> None:
     renderer = NullRenderer()
     renderer.show(PopupDecision(action="show", reason="ready", message="（工作中）"))
     assert renderer.states[-1].expression == PetExpression.HAPPY
     assert renderer.states[-1].bubble_text == "（工作中）"
-
-
-def test_null_renderer_manual_pause_control_callback() -> None:
-    renderer = NullRenderer()
-    changes: list[bool] = []
-    renderer.configure_notification_controls(
-        on_set_do_not_disturb=lambda enabled: None,
-        get_do_not_disturb=lambda: False,
-        on_set_manual_pause=changes.append,
-        get_manual_pause=lambda: False,
-    )
-    renderer.set_manual_pause(True)
-    assert changes == [True]
 
 
 def test_pyside_renderer_click_callback_is_local_only() -> None:

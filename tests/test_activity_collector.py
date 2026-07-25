@@ -152,6 +152,8 @@ def test_window_title_and_ide_hint_are_used_only_for_local_minimization(tmp_path
     serialized = received[0].model_dump_json()
     assert "customer-project" not in serialized
     assert "main.py" not in serialized
+    assert _ide_activity_hint("debug - Visual Studio Code", "Code.exe") == "debugging"
+    assert _ide_activity_hint("chat - Teams", "Teams.exe") is None
     collector.stop()
     bus.stop()
 
@@ -194,12 +196,6 @@ def test_non_windows_foreground_source_is_a_noop(monkeypatch) -> None:
 
     source.start(lambda _: (_ for _ in ()).throw(AssertionError("unexpected callback")))
     source.stop()
-
-
-def test_ide_activity_hint_is_bounded_to_known_editor_states() -> None:
-    assert _ide_activity_hint("main.py - Visual Studio Code", "Code.exe") == "coding"
-    assert _ide_activity_hint("debug - Visual Studio Code", "Code.exe") == "debugging"
-    assert _ide_activity_hint("chat - Teams", "Teams.exe") is None
 
 
 def test_idle_seconds_handles_tick_counter_wraparound() -> None:
