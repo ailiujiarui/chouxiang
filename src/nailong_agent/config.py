@@ -12,6 +12,7 @@ class NailongSettings(BaseModel):
     data_dir: Path = Path(".runs")
     analysis_url: str | None = None
     deepseek_model: str | None = None
+    activity_listener_enabled: bool = True
     maximum_popups_per_day: int | None = Field(default=None, ge=0)
     minimum_cooldown_seconds: int | None = Field(default=None, ge=0)
     maximum_cooldown_seconds: int | None = Field(default=None, ge=0)
@@ -25,6 +26,7 @@ class NailongSettings(BaseModel):
             data_dir=Path(os.getenv("NAILONG_DATA_DIR", ".runs")),
             analysis_url=os.getenv("NAILONG_ANALYSIS_URL"),
             deepseek_model=os.getenv("NAILONG_DEEPSEEK_MODEL"),
+            activity_listener_enabled=_optional_bool("NAILONG_ACTIVITY_LISTENER_ENABLED", default=True),
             maximum_popups_per_day=_optional_int("NAILONG_MAXIMUM_POPUPS_PER_DAY"),
             minimum_cooldown_seconds=_optional_int("NAILONG_MINIMUM_COOLDOWN_SECONDS"),
             maximum_cooldown_seconds=_optional_int("NAILONG_MAXIMUM_COOLDOWN_SECONDS"),
@@ -36,6 +38,7 @@ class NailongSettings(BaseModel):
         data_dir: Path | None = None,
         analysis_url: str | None = None,
         deepseek_model: str | None = None,
+        activity_listener_enabled: bool | None = None,
         maximum_popups_per_day: int | None = None,
         minimum_cooldown_seconds: int | None = None,
         maximum_cooldown_seconds: int | None = None,
@@ -47,6 +50,7 @@ class NailongSettings(BaseModel):
             "data_dir": data_dir,
             "analysis_url": analysis_url,
             "deepseek_model": deepseek_model,
+            "activity_listener_enabled": activity_listener_enabled,
             "maximum_popups_per_day": maximum_popups_per_day,
             "minimum_cooldown_seconds": minimum_cooldown_seconds,
             "maximum_cooldown_seconds": maximum_cooldown_seconds,
@@ -81,3 +85,15 @@ class NailongSettings(BaseModel):
 def _optional_int(name: str) -> int | None:
     value = os.getenv(name)
     return int(value) if value else None
+
+
+def _optional_bool(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")

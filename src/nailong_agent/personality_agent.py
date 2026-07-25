@@ -220,6 +220,7 @@ class PetPersonalityAgent:
             self.provider is not None
             and signal.sensitivity == "public"
             and intent != "stay_silent"
+            and confidence < self.response_confidence_threshold
         ):
             try:
                 raw_result = self.provider.complete_json(

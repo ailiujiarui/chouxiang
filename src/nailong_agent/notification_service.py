@@ -7,15 +7,25 @@ from typing import Callable, Protocol
 from nailong_agent.events import (
     NotificationIngestReceipt,
     NotificationIntent,
+    NotificationKind,
     NotificationStatus,
 )
-from nailong_agent.notification_policy import NotificationPolicy
+from nailong_agent.contracts import PetPersonalityResponse
+from nailong_agent.notification_policy import NotificationCandidate, NotificationPolicy
 from nailong_agent.notification_store import NotificationStore
 from refactor_agent.analysis_events import AnalysisEvent
 
 
 class NotificationPort(Protocol):
     def ingest_analysis_event(self, event: AnalysisEvent) -> NotificationIngestReceipt: ...
+
+    def ingest_personality_response(
+        self,
+        *,
+        event_id: str,
+        occurred_at: datetime,
+        response: PetPersonalityResponse,
+    ) -> NotificationIngestReceipt: ...
 
     def poll_long_tasks(self) -> NotificationIntent | None: ...
 
@@ -92,6 +102,23 @@ class NotificationService:
             preferences=self._effective_preferences(),
         )
 
+    def ingest_personality_response(
+        self,
+        *,
+        event_id: str,
+        occurred_at: datetime,
+        response: PetPersonalityResponse,
+    ) -> NotificationIngestReceipt:
+        candidate = _candidate_for_personality_response(response)
+        return self.store.process_personality_event(
+            event_id=event_id,
+            occurred_at=occurred_at,
+            candidate=candidate,
+            now=self.clock(),
+            cooldown_seconds=self._cooldown_seconds(self._effective_preferences()),
+            preferences=self._effective_preferences(),
+        )
+
     def acknowledge(self, notification_id: str, outcome: str) -> bool:
         return self.store.acknowledge(notification_id, outcome, now=self.clock())
 
@@ -105,3 +132,13 @@ class NotificationService:
             minimum=preferences.minimum_cooldown_seconds,
             maximum=preferences.maximum_cooldown_seconds,
         )
+
+
+def _candidate_for_personality_response(response: PetPersonalityResponse):
+    kinds = {
+        "encourage": NotificationKind.ENCOURAGEMENT,
+        "remind": NotificationKind.DEBUG_HINT,
+        "celebrate": NotificationKind.PYTEST_CELEBRATION,
+        "ask": NotificationKind.LIGHT_TEASE,
+    }
+    return NotificationCandidate(kinds[response.intent], response.message)

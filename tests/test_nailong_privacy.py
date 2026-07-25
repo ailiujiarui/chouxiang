@@ -47,6 +47,16 @@ def test_sensitive_and_meeting_windows_are_blocked_before_unified_event_creation
     assert (meeting.allowed, meeting.reason) == (False, "meeting_window")
 
 
+def test_false_meeting_signal_does_not_block_collection() -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(source="window", application_id="code", metadata={"is_meeting_likely": False})
+    )
+
+    assert decision.allowed is True
+
+
 def test_allowed_signal_becomes_unified_minimized_activity() -> None:
     signal = RawActivitySignal(
         source="window",

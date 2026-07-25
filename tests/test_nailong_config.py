@@ -46,6 +46,14 @@ def test_runtime_preference_overrides_include_only_configured_values() -> None:
     }
 
 
+def test_settings_load_activity_listener_switch(monkeypatch) -> None:
+    monkeypatch.setenv("NAILONG_ACTIVITY_LISTENER_ENABLED", "false")
+
+    settings = NailongSettings.from_env()
+
+    assert settings.activity_listener_enabled is False
+
+
 def test_headless_entrypoint_uses_data_directory_for_lock_and_privacy_store(tmp_path: Path) -> None:
     data_dir = tmp_path / "pet-data"
 

@@ -5,6 +5,7 @@ from threading import Event
 
 import pytest
 
+import nailong_agent.app as desktop_app
 from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
 from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetExpression, PopupDecision
@@ -338,6 +339,86 @@ def test_desktop_process_starts_and_stops_injected_analysis_subscriber(tmp_path)
 
     assert process.run() == 0
     assert (subscriber.starts, subscriber.stops) == (1, 1)
+
+
+def test_desktop_process_starts_and_stops_injected_activity_collector(tmp_path) -> None:
+    class CollectorProbe:
+        starts = 0
+        stops = 0
+
+        def start(self) -> None:
+            self.starts += 1
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    collector = CollectorProbe()
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=NullRenderer,
+        activity_collector=collector,  # type: ignore[arg-type]
+    )
+
+    assert process.run() == 0
+    assert (collector.starts, collector.stops) == (1, 1)
+
+
+def test_desktop_process_stops_activity_collection_before_delivery(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    class CollectorProbe:
+        def start(self) -> None:
+            lifecycle.append("collector:start")
+
+        def stop(self) -> None:
+            lifecycle.append("collector:stop")
+
+    class DeliveryProbe:
+        def start(self) -> None:
+            lifecycle.append("delivery:start")
+
+        def stop(self) -> None:
+            lifecycle.append("delivery:stop")
+
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=NullRenderer,
+        activity_collector=CollectorProbe(),  # type: ignore[arg-type]
+        delivery_pump=DeliveryProbe(),  # type: ignore[arg-type]
+    )
+
+    assert process.run() == 0
+    assert lifecycle.index("collector:stop") < lifecycle.index("delivery:stop")
+
+
+def test_entrypoint_creates_enabled_activity_collector(monkeypatch, tmp_path) -> None:
+    source = object()
+    idle_source = object()
+
+    class CollectorProbe:
+        instances: list["CollectorProbe"] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.starts = 0
+            self.stops = 0
+            self.instances.append(self)
+
+        def start(self) -> None:
+            self.starts += 1
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    monkeypatch.setattr(desktop_app, "create_foreground_source", lambda: source)
+    monkeypatch.setattr(desktop_app, "create_idle_source", lambda: idle_source)
+    monkeypatch.setattr(desktop_app, "WindowActivityCollector", CollectorProbe)
+
+    assert main(["--headless", "--data-dir", str(tmp_path / "pet-data")]) == 0
+    assert len(CollectorProbe.instances) == 1
+    assert CollectorProbe.instances[0].kwargs["source"] is source
+    assert CollectorProbe.instances[0].kwargs["idle_source"] is idle_source
+    assert (CollectorProbe.instances[0].starts, CollectorProbe.instances[0].stops) == (1, 1)
 
 
 def test_module_entrypoint_supports_headless_mode(tmp_path) -> None:

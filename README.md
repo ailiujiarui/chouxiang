@@ -71,6 +71,14 @@ python -m pip install -e ".[desktop]"
 
 桌面端通过现有分析事件流接收任务状态，按冷却、免打扰和终态优先级规则显示弹窗。默认数据目录为 `.runs`，其中包含 `nailong-agent.lock`、`nailong_privacy.sqlite` 和 `nailong_notifications.sqlite`；可通过 `NAILONG_DATA_DIR` 或启动脚本的 `-NailongDataDir` 修改。`NAILONG_ANALYSIS_URL` 和 `NAILONG_DEEPSEEK_MODEL` 可提供桌面端默认连接配置。桌宠数据库不会保存 API Key、源代码、原始窗口内容、截图、OCR、剪贴板或终端正文。完整的事件映射、接口和验证方式见 [`docs/designs/2026-07-24-nailong-proactive-notifications-update.md`](docs/designs/2026-07-24-nailong-proactive-notifications-update.md)。
 
+#### Nailong 活动监听
+
+活动监听默认由 `NAILONG_ACTIVITY_LISTENER_ENABLED=true` 创建；可设置为 `false`，或在本次启动使用 `--no-activity-listener` 关闭。该开关只控制是否创建监听器，已持久化的 `activity_listener_enabled`、手动暂停和应用白名单/黑名单仍在每次事件处理时生效。
+
+首次启动必须由用户明确授权活动采集。Windows 实现响应前台窗口变化，并每 15 秒采样系统空闲秒数：连续空闲达到 5 分钟时只发布一次 idle 事件，恢复活动后才允许下一次发布；同时读取进程可执行文件名和窗口是否覆盖当前显示器。它不会读取窗口标题、编辑器或终端文本、代码、剪贴板、截图或 OCR。会议应用和敏感应用会在入库前被隐私策略阻止。非 Windows 平台使用空实现，不采集任何活动。
+
+只允许通过隐私策略后的统一最小化事件写入 `nailong_privacy.sqlite`，其中只包含归一化应用类别、活动类型、置信度和固定格式摘要。空闲、全屏、会议等原始采集信号只在本地隐私边界内用于分类和拦截，不会写入统一事件。可在桌宠隐私控制中使用“删除本地活动记录”清除活动事件和聚合记录，首次授权选择不会被删除。
+
 ## 可选认证
 
 本地单用户启动不需要管理员令牌。需要额外保护提交、取消、重试和 allowlist 管理操作时，可在启动前显式设置：
