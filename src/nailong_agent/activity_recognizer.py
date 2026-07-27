@@ -93,18 +93,39 @@ class ActivityRecognizer:
             window.dominant_application,
             (ActivityType.UNKNOWN, max(window.confidence, 0.25)),
         )
+        if activity == ActivityType.UNKNOWN:
+            parsed = ActivityRecognizer._parse_summary_activity(window.summary)
+            if parsed is not None and parsed != ActivityType.UNKNOWN:
+                activity = parsed
+                confidence = max(window.confidence, 0.55)
         confidence = ActivityRecognizer._adjust_by_event_count(
             activity, confidence, window.event_count
         )
+        evidence = [
+            f"lightweight:application={window.dominant_application}",
+            f"event_count={window.event_count}",
+        ]
+        if activity == ActivityType.UNKNOWN and window.summary:
+            evidence.append(f"summary={window.summary}")
         return ActivityClassification(
             activity=activity,
             confidence=confidence,
-            evidence=[
-                f"lightweight:application={window.dominant_application}",
-                f"event_count={window.event_count}",
-            ],
+            evidence=evidence,
             classifier="lightweight",
         )
+
+    @staticmethod
+    def _parse_summary_activity(summary: str | None) -> ActivityType | None:
+        if not summary:
+            return None
+        for part in summary.split("; "):
+            if part.startswith("activity="):
+                value = part.split("=", 1)[1]
+                try:
+                    return ActivityType(value)
+                except ValueError:
+                    return None
+        return None
 
     @staticmethod
     def _adjust_by_event_count(

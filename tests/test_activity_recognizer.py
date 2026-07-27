@@ -201,6 +201,64 @@ def test_event_count_recorded_in_evidence() -> None:
     assert result.classifier == "lightweight"
 
 
+def test_summary_activity_parsed_when_application_unknown() -> None:
+    """When app mapping gives UNKNOWN, parse summary for activity hint."""
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(
+            application="other",
+            summary="application=other; activity=coding; source=window",
+            confidence=0.2,
+        )
+    )
+
+    assert result.activity is ActivityType.CODING
+    assert result.classifier == "lightweight"
+
+
+def test_summary_parsing_skips_unknown_value() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(
+            application="other",
+            summary="application=other; activity=unknown; source=window",
+            confidence=0.2,
+        )
+    )
+
+    assert result.activity is ActivityType.UNKNOWN
+
+
+def test_summary_parsing_still_gets_event_count_adjustment() -> None:
+    """Parsed activity should still go through event_count adjustment."""
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(
+            application="other",
+            summary="application=other; activity=coding; source=window",
+            event_count=15,
+            confidence=0.2,
+        )
+    )
+
+    assert result.activity is ActivityType.CODING
+    assert result.confidence >= 0.78  # boosted by high event_count
+
+
+def test_missing_summary_handled_gracefully() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="other", summary=None, confidence=0.2)
+    )
+
+    assert result.activity is ActivityType.UNKNOWN
+    assert result.classifier == "lightweight"
+
+
 def _window(
     *,
     application: str = "code",
