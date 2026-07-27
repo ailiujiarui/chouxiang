@@ -29,6 +29,8 @@ class LLMErrorCode(StrEnum):
     TIMEOUT = "TIMEOUT"
     CLIENT_ERROR = "CLIENT_ERROR"
     PARSE_ERROR = "PARSE_ERROR"
+    INPUT_TOO_LARGE = "INPUT_TOO_LARGE"
+    INJECTION_DETECTED = "INJECTION_DETECTED"
 
 
 class LLMError(RuntimeError):
@@ -65,6 +67,19 @@ class LLMProvider(Protocol):
 class DeepSeekClient:
     _MAX_RETRIES = 3
     _BACKOFF_BASE = 1.0
+    _DEFAULT_MAX_INPUT_CHARS = 192_000
+
+    _INJECTION_MARKERS = (
+        "ignore all previous instructions",
+        "ignore previous instructions",
+        "disregard all previous",
+        "you are now",
+        "new instructions:",
+        "system:",
+        "<|im_start|>",
+        "<|im_end|>",
+        "do not follow",
+    )
 
     def __init__(
         self,
@@ -72,6 +87,7 @@ class DeepSeekClient:
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 60.0,
+        max_input_chars: int | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         if not self.api_key:
@@ -79,6 +95,7 @@ class DeepSeekClient:
         self.base_url = (base_url or os.getenv("DEEPSEEK_BASE_URL") or "https://api.deepseek.com").rstrip("/")
         self.model = model or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
         self.timeout = timeout
+        self.max_input_chars = max_input_chars or self._DEFAULT_MAX_INPUT_CHARS
 
     # ------------------------------------------------------------------
     # unified HTTP transport
@@ -90,12 +107,17 @@ class DeepSeekClient:
         messages: list[dict[str, str]],
         temperature: float = 0.0,
         response_format: dict[str, str] | None = None,
+        check_injection: bool = False,
     ) -> httpx.Response:
         """Send a chat completion request with retry and error classification.
 
         Retries 429 and 5xx with exponential backoff.  Does **not** log
         prompt text, API keys, or source code.
         """
+        _check_input_size(messages, self.max_input_chars)
+        if check_injection:
+            _check_injection(messages)
+
         payload: dict[str, object] = {
             "model": self.model,
             "messages": messages,
@@ -208,6 +230,7 @@ class DeepSeekClient:
             ],
             temperature=0.2,
             response_format={"type": "json_object"},
+            check_injection=True,
         )
         try:
             body = response.json()
@@ -269,6 +292,7 @@ class DeepSeekClient:
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
+            check_injection=True,
         )
         try:
             content = response.json()["choices"][0]["message"]["content"]
@@ -398,6 +422,29 @@ def _usage_float(usage: object, key: str) -> float | None:
         return None
     value = usage.get(key)
     return float(value) if isinstance(value, (int, float)) and value >= 0 else None
+
+
+def _check_input_size(messages: list[dict[str, str]], max_chars: int) -> None:
+    total = sum(len(m.get("content", "")) for m in messages)
+    if total > max_chars:
+        raise LLMError(
+            f"input too large: {total} chars exceeds limit of {max_chars}",
+            code=LLMErrorCode.INPUT_TOO_LARGE,
+        )
+
+
+def _check_injection(messages: list[dict[str, str]]) -> None:
+    markers = DeepSeekClient._INJECTION_MARKERS
+    for m in messages:
+        if m.get("role") != "user":
+            continue
+        content = m.get("content", "").casefold()
+        for marker in markers:
+            if marker in content:
+                raise LLMError(
+                    f"injection marker detected in user message: {marker!r}",
+                    code=LLMErrorCode.INJECTION_DETECTED,
+                )
 
 
 def _parse_retry_after(response: httpx.Response) -> float | None:
