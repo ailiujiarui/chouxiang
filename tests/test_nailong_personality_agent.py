@@ -278,6 +278,8 @@ def test_deepseek_generic_provider_uses_caller_prompts_without_refactor_prompt(
     request_payload: dict[str, object] = {}
 
     class Response:
+        status_code = 200
+
         def raise_for_status(self) -> None:
             return None
 

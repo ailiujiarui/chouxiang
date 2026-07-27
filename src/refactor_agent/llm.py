@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
+from enum import StrEnum
 from typing import Protocol
 
 import httpx
@@ -16,9 +19,22 @@ from refactor_agent.models import (
     RefactorRequest,
 )
 
+logger = logging.getLogger(__name__)
+
+
+class LLMErrorCode(StrEnum):
+    AUTH_FAILED = "LLM_AUTH_FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
+    SERVER_ERROR = "SERVER_ERROR"
+    TIMEOUT = "TIMEOUT"
+    CLIENT_ERROR = "CLIENT_ERROR"
+    PARSE_ERROR = "PARSE_ERROR"
+
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: LLMErrorCode | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class RefactorClient(Protocol):
@@ -47,6 +63,9 @@ class LLMProvider(Protocol):
 
 
 class DeepSeekClient:
+    _MAX_RETRIES = 3
+    _BACKOFF_BASE = 1.0
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -61,6 +80,97 @@ class DeepSeekClient:
         self.model = model or os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"
         self.timeout = timeout
 
+    # ------------------------------------------------------------------
+    # unified HTTP transport
+    # ------------------------------------------------------------------
+
+    def _chat_completion(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float = 0.0,
+        response_format: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Send a chat completion request with retry and error classification.
+
+        Retries 429 and 5xx with exponential backoff.  Does **not** log
+        prompt text, API keys, or source code.
+        """
+        payload: dict[str, object] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if response_format is not None:
+            payload["response_format"] = response_format
+
+        last_exc: Exception | None = None
+        for attempt in range(1 + self._MAX_RETRIES):
+            started = time.monotonic()
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            except httpx.TimeoutException as exc:
+                last_exc = exc
+                logger.warning(
+                    "deepseek timeout attempt=%d/%d model=%s elapsed=%.1fs",
+                    attempt + 1, 1 + self._MAX_RETRIES, self.model, time.monotonic() - started,
+                )
+                if attempt < self._MAX_RETRIES:
+                    time.sleep(self._BACKOFF_BASE * (2 ** attempt))
+                    continue
+                raise LLMError(f"DeepSeek request timed out after {1 + self._MAX_RETRIES} attempts", code=LLMErrorCode.TIMEOUT) from exc
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                logger.warning(
+                    "deepseek transport error attempt=%d/%d model=%s",
+                    attempt + 1, 1 + self._MAX_RETRIES, self.model,
+                )
+                if attempt < self._MAX_RETRIES:
+                    time.sleep(self._BACKOFF_BASE * (2 ** attempt))
+                    continue
+                raise LLMError(f"DeepSeek transport failed: {exc}", code=LLMErrorCode.CLIENT_ERROR) from exc
+
+            elapsed = time.monotonic() - started
+            status = response.status_code
+
+            if status == 401:
+                raise LLMError("DeepSeek authentication failed — check DEEPSEEK_API_KEY", code=LLMErrorCode.AUTH_FAILED)
+            if status == 429:
+                retry_after = _parse_retry_after(response)
+                wait = retry_after if retry_after is not None else self._BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "deepseek rate-limited attempt=%d/%d model=%s wait=%.1fs",
+                    attempt + 1, 1 + self._MAX_RETRIES, self.model, wait,
+                )
+                if attempt < self._MAX_RETRIES:
+                    time.sleep(wait)
+                    continue
+                raise LLMError(f"DeepSeek rate-limited after {1 + self._MAX_RETRIES} attempts", code=LLMErrorCode.RATE_LIMITED)
+            if status >= 500:
+                logger.warning(
+                    "deepseek server error status=%d attempt=%d/%d model=%s elapsed=%.1fs",
+                    status, attempt + 1, 1 + self._MAX_RETRIES, self.model, elapsed,
+                )
+                if attempt < self._MAX_RETRIES:
+                    time.sleep(self._BACKOFF_BASE * (2 ** attempt))
+                    continue
+                raise LLMError(f"DeepSeek server error {status} after {1 + self._MAX_RETRIES} attempts", code=LLMErrorCode.SERVER_ERROR)
+            if status >= 400:
+                raise LLMError(f"DeepSeek client error {status}", code=LLMErrorCode.CLIENT_ERROR)
+
+            _log_usage(response, self.model, elapsed)
+            return response
+
+        raise LLMError("unreachable")  # pragma: no cover
+
     def complete_json(
         self,
         *,
@@ -69,33 +179,21 @@ class DeepSeekClient:
         temperature: float = 0.0,
     ) -> dict[str, object]:
         """Return a validated JSON object without imposing a task-specific prompt."""
-
-        payload = {
-            "model": self.model,
-            "messages": [
+        response = self._chat_completion(
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": temperature,
-        }
+            temperature=temperature,
+            response_format={"type": "json_object"},
+        )
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise LLMError(f"LLM JSON completion failed: {exc}") from exc
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise LLMError(f"LLM JSON completion failed: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
         if not isinstance(parsed, dict):
-            raise LLMError("LLM JSON completion must return an object.")
+            raise LLMError("LLM JSON completion must return an object.", code=LLMErrorCode.PARSE_ERROR)
         return parsed
 
     def refactor(
@@ -106,40 +204,21 @@ class DeepSeekClient:
         previous_error: str | None,
         attempt: int,
     ) -> LLMRefactorResult:
-        payload = {
-            "model": self.model,
-            "messages": [
+        response = self._chat_completion(
+            messages=[
                 {"role": "system", "content": build_system_prompt()},
-                {
-                    "role": "user",
-                    "content": build_user_prompt(request, current_code, baseline_metrics, previous_error, attempt),
-                },
+                {"role": "user", "content": build_user_prompt(request, current_code, baseline_metrics, previous_error, attempt)},
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.2,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise LLMError(f"DeepSeek request failed: {exc}") from exc
-
-        try:
-            payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
+            body = response.json()
+            content = body["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError("DeepSeek response did not contain choices[0].message.content.") from exc
+            raise LLMError("DeepSeek response did not contain choices[0].message.content.", code=LLMErrorCode.PARSE_ERROR) from exc
 
-        usage = payload.get("usage") if isinstance(payload, dict) else None
+        usage = body.get("usage") if isinstance(body, dict) else None
         return parse_llm_result(content).model_copy(
             update={
                 "usage": LLMUsage(
@@ -154,31 +233,19 @@ class DeepSeekClient:
         )
 
     def generate_persona_copy(self, facts: str) -> PersonaCopy:
-        payload = {
-            "model": self.model,
-            "messages": [
+        response = self._chat_completion(
+            messages=[
                 {"role": "system", "content": build_persona_system_prompt()},
                 {"role": "user", "content": facts},
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.75,
-        }
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+            temperature=0.75,
+            response_format={"type": "json_object"},
+        )
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             return PersonaCopy.model_validate(json.loads(content))
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
-            raise LLMError(f"Persona report generation failed: {exc}") from exc
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError, ValidationError) as exc:
+            raise LLMError(f"Persona report generation failed: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
 
     def generate_tests(
         self,
@@ -186,9 +253,8 @@ class DeepSeekClient:
         instruction: str,
         module_name: str = "snippet",
     ) -> str:
-        payload = {
-            "model": self.model,
-            "messages": [
+        response = self._chat_completion(
+            messages=[
                 {
                     "role": "system",
                     "content": (
@@ -204,25 +270,15 @@ class DeepSeekClient:
                     ),
                 },
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1,
-        }
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
         try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             tests = str(parsed.get("pytest_code") or "")
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-            raise LLMError(f"DeepSeek adversarial test generation failed: {exc}") from exc
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise LLMError(f"DeepSeek adversarial test generation failed: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
         if len(tests.encode("utf-8")) > 65536:
             raise LLMError("DeepSeek adversarial tests exceeded 65536 bytes.")
         try:
@@ -345,6 +401,36 @@ def _usage_float(usage: object, key: str) -> float | None:
         return None
     value = usage.get(key)
     return float(value) if isinstance(value, (int, float)) and value >= 0 else None
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _log_usage(response: httpx.Response, model: str, elapsed: float) -> None:
+    try:
+        body = response.json()
+        usage = body.get("usage") if isinstance(body, dict) else None
+        prompt_tokens = _usage_int(usage, "prompt_tokens")
+        completion_tokens = _usage_int(usage, "completion_tokens")
+        total_tokens = _usage_int(usage, "total_tokens")
+        logger.info(
+            "deepseek ok model=%s status=%d elapsed=%.1fs prompt=%s completion=%s total=%s",
+            model,
+            response.status_code,
+            elapsed,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        )
+    except Exception:
+        logger.info("deepseek ok model=%s status=%d elapsed=%.1fs", model, response.status_code, elapsed)
 
 
 def build_system_prompt() -> str:

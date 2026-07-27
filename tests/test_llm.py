@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import httpx
 import pytest
 
 from refactor_agent.llm import (
     DeepSeekClient,
     LLMError,
+    LLMErrorCode,
     MockRefactorClient,
     build_persona_system_prompt,
     build_user_prompt,
@@ -93,6 +95,8 @@ def test_deepseek_client_allows_missing_usage(monkeypatch, tmp_path: Path):
 
 def test_deepseek_client_generates_bounded_pytest(monkeypatch):
     class TestResponse:
+        status_code = 200
+
         def raise_for_status(self):
             return None
 
@@ -120,6 +124,8 @@ def test_deepseek_client_generates_bounded_pytest(monkeypatch):
 
 
 class _DeepSeekResponse:
+    status_code = 200
+
     def __init__(self, usage=None):
         self.usage = usage
 
@@ -186,3 +192,114 @@ def test_build_user_prompt_includes_ast_hotspots(tmp_path):
     assert "AST 热点子树" in prompt
     assert "`messy`" in prompt
     assert "结构熵" in prompt
+
+
+# ---------------------------------------------------------------------------
+# gateway tests: retry, error classification, log safety
+# ---------------------------------------------------------------------------
+
+
+class _MockTransport:
+    """Callable replacement for httpx.post that returns responses by sequence."""
+
+    def __init__(self, *responses: httpx.Response | Exception) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> httpx.Response:
+        self.calls.append(kwargs)
+        if not self._responses:
+            raise RuntimeError("no more mock responses")
+        item = self._responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _make_response(status: int, body: dict[str, object] | None = None, headers: dict[str, str] | None = None) -> httpx.Response:
+    return httpx.Response(
+        status,
+        json=body or {"choices": [{"message": {"content": '{"activity":"coding","confidence":0.8}'}}]},
+        headers=headers or {},
+        request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+    )
+
+
+def test_retries_on_429_then_succeeds(monkeypatch):
+    transport = _MockTransport(
+        _make_response(429, headers={"Retry-After": "0.01"}),
+        _make_response(200),
+    )
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    result = DeepSeekClient(api_key="test-key").complete_json(
+        system_prompt="s", user_prompt="u",
+    )
+    assert result["activity"] == "coding"
+    assert len(transport.calls) == 2
+
+
+def test_retries_on_500_then_succeeds(monkeypatch):
+    transport = _MockTransport(
+        _make_response(500),
+        _make_response(200),
+    )
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    result = DeepSeekClient(api_key="test-key").complete_json(
+        system_prompt="s", user_prompt="u",
+    )
+    assert result["activity"] == "coding"
+    assert len(transport.calls) == 2
+
+
+def test_raises_rate_limited_after_max_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    transport = _MockTransport(*[_make_response(429)] * 5)
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    with pytest.raises(LLMError) as exc_info:
+        DeepSeekClient(api_key="test-key").complete_json(system_prompt="s", user_prompt="u")
+    assert exc_info.value.code == LLMErrorCode.RATE_LIMITED
+    assert len(transport.calls) == 4  # 1 original + 3 retries
+
+
+def test_raises_auth_failed_on_401(monkeypatch):
+    transport = _MockTransport(_make_response(401))
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    with pytest.raises(LLMError) as exc_info:
+        DeepSeekClient(api_key="test-key").complete_json(system_prompt="s", user_prompt="u")
+    assert exc_info.value.code == LLMErrorCode.AUTH_FAILED
+    assert len(transport.calls) == 1  # no retry for 401
+
+
+def test_raises_server_error_after_max_retries(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    transport = _MockTransport(*[_make_response(503)] * 5)
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    with pytest.raises(LLMError) as exc_info:
+        DeepSeekClient(api_key="test-key").complete_json(system_prompt="s", user_prompt="u")
+    assert exc_info.value.code == LLMErrorCode.SERVER_ERROR
+
+
+def test_logs_usage_without_prompt_or_key(caplog, monkeypatch):
+    transport = _MockTransport(_make_response(200, body={
+        "choices": [{"message": {"content": '{"activity":"reading","confidence":0.9}'}}],
+        "usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+    }))
+    monkeypatch.setattr("refactor_agent.llm.httpx.post", transport)
+
+    with caplog.at_level("INFO", logger="refactor_agent.llm"):
+        DeepSeekClient(api_key="secret-key").complete_json(
+            system_prompt="classify this", user_prompt="window data",
+        )
+
+    log_text = caplog.text
+    assert "prompt=50" in log_text
+    assert "completion=10" in log_text
+    assert "total=60" in log_text
+    assert "secret-key" not in log_text
+    assert "classify this" not in log_text
+    assert "window data" not in log_text
