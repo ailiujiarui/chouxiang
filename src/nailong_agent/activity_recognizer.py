@@ -75,6 +75,14 @@ class ActivityRecognizer:
 
     @staticmethod
     def _lightweight_classification(window: ActivityWindow) -> ActivityClassification:
+        if window.dominant_activity not in (ActivityType.UNKNOWN, ActivityType.IDLE):
+            return ActivityClassification(
+                activity=window.dominant_activity,
+                confidence=max(window.confidence, 0.65),
+                evidence=[f"lightweight:upstream_activity={window.dominant_activity.value}"],
+                classifier="lightweight",
+            )
+
         application_scores = {
             "browser": (ActivityType.READING, 0.7),
             "code": (ActivityType.CODING, 0.72),

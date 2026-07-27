@@ -37,10 +37,6 @@ dev = [
     "streamlit>=1.36",
 ]
 
-classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-]
-
 [project.scripts]
 refactor-agent = "refactor_agent.cli:app"
 
