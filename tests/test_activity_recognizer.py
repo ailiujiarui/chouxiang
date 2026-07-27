@@ -87,12 +87,127 @@ def test_low_confidence_window_never_calls_remote_without_consent() -> None:
     assert provider.calls == []
 
 
+def test_lightweight_adopts_upstream_debugging() -> None:
+    """Phase 1: lightweight layer should adopt dominant_activity when known."""
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="browser", activity=ActivityType.DEBUGGING, confidence=0.7)
+    )
+
+    assert result.activity is ActivityType.DEBUGGING
+    assert result.classifier == "lightweight"
+    assert result.confidence == 0.7
+
+
+def test_lightweight_adopts_upstream_writing() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="code", activity=ActivityType.WRITING, confidence=0.7)
+    )
+
+    assert result.activity is ActivityType.WRITING
+    assert result.classifier == "lightweight"
+
+
+def test_lightweight_adopts_upstream_gaming() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="other", activity=ActivityType.GAMING, confidence=0.7)
+    )
+
+    assert result.activity is ActivityType.GAMING
+    assert result.classifier == "lightweight"
+
+
+def test_upstream_confidence_floored_at_remote_threshold() -> None:
+    """Low upstream confidence should be floored so it won't fall to LLM."""
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="browser", activity=ActivityType.MEDIA, confidence=0.3)
+    )
+
+    assert result.activity is ActivityType.MEDIA
+    assert result.confidence == 0.65
+    assert result.classifier == "lightweight"
+
+
+def test_upstream_unknown_falls_back_to_application_mapping() -> None:
+    """When dominant_activity is UNKNOWN, lightweight should use application mapping."""
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="browser", activity=ActivityType.UNKNOWN, confidence=0.2)
+    )
+
+    assert result.activity is ActivityType.READING
+    assert result.classifier == "lightweight"
+    assert "application=browser" in result.evidence[0]
+
+
+def test_high_event_count_boosts_coding_confidence() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="code", event_count=15, confidence=0.2)
+    )
+
+    assert result.activity is ActivityType.CODING
+    assert result.confidence >= 0.78
+    assert result.classifier == "lightweight"
+
+
+def test_low_event_count_boosts_reading_confidence() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="browser", event_count=1, confidence=0.2)
+    )
+
+    assert result.activity is ActivityType.READING
+    assert result.confidence >= 0.75
+    assert result.classifier == "lightweight"
+
+
+def test_low_event_count_reduces_coding_confidence() -> None:
+    """Very few events while in code editor → confidence drops below remote threshold → LLM called."""
+    provider = FakeProvider({"activity": "coding", "confidence": 0.85})
+    recognizer = ActivityRecognizer(
+        provider=provider,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(remote_inference_enabled=True)),
+    )
+
+    result = recognizer.classify(
+        _window(application="code", event_count=1, confidence=0.2)
+    )
+
+    # Lightweight reduced confidence to 0.62, which fell to LLM
+    assert result.activity is ActivityType.CODING
+    assert result.classifier == "llm"
+    assert len(provider.calls) == 1
+
+
+def test_event_count_recorded_in_evidence() -> None:
+    recognizer = ActivityRecognizer()
+
+    result = recognizer.classify(
+        _window(application="browser", event_count=3, confidence=0.2)
+    )
+
+    assert any("event_count=3" in e for e in result.evidence)
+    assert result.classifier == "lightweight"
+
+
 def _window(
     *,
     application: str = "code",
     activity: ActivityType = ActivityType.UNKNOWN,
     confidence: float = 0.2,
     summary: str | None = "application=code; activity=unknown; source=window",
+    event_count: int = 1,
 ) -> ActivityWindow:
     started_at = datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc)
     return ActivityWindow(
@@ -101,6 +216,6 @@ def _window(
         dominant_application=application,
         dominant_activity=activity,
         confidence=confidence,
-        event_count=1,
+        event_count=event_count,
         summary=summary,
     )

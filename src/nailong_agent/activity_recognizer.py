@@ -93,12 +93,33 @@ class ActivityRecognizer:
             window.dominant_application,
             (ActivityType.UNKNOWN, max(window.confidence, 0.25)),
         )
+        confidence = ActivityRecognizer._adjust_by_event_count(
+            activity, confidence, window.event_count
+        )
         return ActivityClassification(
             activity=activity,
             confidence=confidence,
-            evidence=[f"lightweight:application={window.dominant_application}"],
+            evidence=[
+                f"lightweight:application={window.dominant_application}",
+                f"event_count={window.event_count}",
+            ],
             classifier="lightweight",
         )
+
+    @staticmethod
+    def _adjust_by_event_count(
+        activity: ActivityType,
+        confidence: float,
+        event_count: int,
+    ) -> float:
+        if event_count >= 10 and activity == ActivityType.CODING:
+            return max(confidence, 0.78)
+        if event_count <= 2:
+            if activity == ActivityType.READING:
+                return max(confidence, 0.75)
+            if activity == ActivityType.CODING:
+                return min(confidence, 0.62)
+        return confidence
 
     def _remote_classification(self, window: ActivityWindow) -> ActivityClassification | None:
         summary = self._remote_summary(window)
