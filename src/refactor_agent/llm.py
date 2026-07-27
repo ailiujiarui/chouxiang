@@ -104,7 +104,6 @@ class DeepSeekClient:
         if response_format is not None:
             payload["response_format"] = response_format
 
-        last_exc: Exception | None = None
         for attempt in range(1 + self._MAX_RETRIES):
             started = time.monotonic()
             try:
@@ -118,7 +117,6 @@ class DeepSeekClient:
                     timeout=self.timeout,
                 )
             except httpx.TimeoutException as exc:
-                last_exc = exc
                 logger.warning(
                     "deepseek timeout attempt=%d/%d model=%s elapsed=%.1fs",
                     attempt + 1, 1 + self._MAX_RETRIES, self.model, time.monotonic() - started,
@@ -128,7 +126,6 @@ class DeepSeekClient:
                     continue
                 raise LLMError(f"DeepSeek request timed out after {1 + self._MAX_RETRIES} attempts", code=LLMErrorCode.TIMEOUT) from exc
             except httpx.HTTPError as exc:
-                last_exc = exc
                 logger.warning(
                     "deepseek transport error attempt=%d/%d model=%s",
                     attempt + 1, 1 + self._MAX_RETRIES, self.model,
@@ -280,11 +277,11 @@ class DeepSeekClient:
         except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise LLMError(f"DeepSeek adversarial test generation failed: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
         if len(tests.encode("utf-8")) > 65536:
-            raise LLMError("DeepSeek adversarial tests exceeded 65536 bytes.")
+            raise LLMError("DeepSeek adversarial tests exceeded 65536 bytes.", code=LLMErrorCode.PARSE_ERROR)
         try:
             compile(tests, "generated_tests.py", "exec")
         except SyntaxError as exc:
-            raise LLMError(f"DeepSeek adversarial tests contain invalid Python: {exc}") from exc
+            raise LLMError(f"DeepSeek adversarial tests contain invalid Python: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
         return tests
 
 
@@ -382,11 +379,11 @@ def parse_llm_result(content: str) -> LLMRefactorResult:
     try:
         raw = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise LLMError(f"LLM returned invalid JSON: {exc}") from exc
+        raise LLMError(f"LLM returned invalid JSON: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
     try:
         return LLMRefactorResult.model_validate(raw)
     except ValidationError as exc:
-        raise LLMError(f"LLM JSON failed schema validation: {exc}") from exc
+        raise LLMError(f"LLM JSON failed schema validation: {exc}", code=LLMErrorCode.PARSE_ERROR) from exc
 
 
 def _usage_int(usage: object, key: str) -> int | None:
