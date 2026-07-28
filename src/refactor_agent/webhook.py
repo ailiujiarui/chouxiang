@@ -63,6 +63,19 @@ class SnippetJobRequest(BaseModel):
     persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
+def _runtime_capabilities(settings: AppSettings) -> dict[str, bool]:
+    deepseek_available = bool(os.getenv("DEEPSEEK_API_KEY"))
+    llm_available = settings.mock_llm or deepseek_available
+    docker_available = settings.sandbox_backend == "docker"
+    return {
+        "deepseek_available": deepseek_available,
+        "llm_available": llm_available,
+        "url_submission": docker_available and llm_available,
+        "snippet_submission": llm_available,
+        "snippet_verified_refactor": docker_available and llm_available,
+    }
+
+
 def create_app(
     settings: AppSettings | None = None,
     store: SQLiteRunStore | None = None,
@@ -163,7 +176,7 @@ def create_app(
 
     @app.get("/capabilities")
     def capabilities() -> dict[str, Any]:
-        llm_ready = settings.mock_llm or bool(os.getenv("DEEPSEEK_API_KEY"))
+        runtime_capabilities = _runtime_capabilities(settings)
         product_mode = "demo" if settings.mock_llm else "deepseek"
         return {
             "sandbox_backend": settings.sandbox_backend,
@@ -175,9 +188,7 @@ def create_app(
                 if product_mode == "demo"
                 else None
             ),
-            "url_submission": settings.sandbox_backend == "docker" and llm_ready,
-            "snippet_submission": True,
-            "snippet_verified_refactor": settings.sandbox_backend == "docker" and llm_ready,
+            **runtime_capabilities,
             "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
             "personas": ["STRICT", "TSUNDERE"],
             "admin_token_required": bool(settings.admin_token),
@@ -320,9 +331,7 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        if settings.sandbox_backend != "docker" or (
-            not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY")
-        ):
+        if not _runtime_capabilities(settings)["url_submission"]:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="URL submission requires Docker and an available configured LLM.",
@@ -371,9 +380,15 @@ def create_app(
                 ast.parse(tests, filename="test_snippet.py")
         except (SyntaxError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        if payload.mode == "VERIFIED_REFACTOR" and (
-            settings.sandbox_backend != "docker"
-            or (not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY"))
+        runtime_capabilities = _runtime_capabilities(settings)
+        if not runtime_capabilities["snippet_submission"]:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Task requires an available configured LLM.",
+            )
+        if (
+            payload.mode == "VERIFIED_REFACTOR"
+            and not runtime_capabilities["snippet_verified_refactor"]
         ):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -430,6 +445,17 @@ def create_app(
                     ast.parse(tests, filename="test_snippet.py")
             except (SyntaxError, ValueError) as exc:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+            runtime_capabilities = _runtime_capabilities(settings)
+            if not runtime_capabilities["snippet_submission"]:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Task requires an available configured LLM.",
+                )
+            if tests and not runtime_capabilities["snippet_verified_refactor"]:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Snippet submission requires Docker and an available configured LLM.",
+                )
             job = GitHubRefactorJob(
                 job_kind=RepositoryJobKind.SNIPPET,
                 job_id=f"snippet-{uuid4().hex}",
@@ -463,9 +489,7 @@ def create_app(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-            if settings.sandbox_backend != "docker" or (
-                not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY")
-            ):
+            if not _runtime_capabilities(settings)["url_submission"]:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Repository analysis requires Docker and an available configured LLM.",
@@ -578,8 +602,6 @@ def validate_control_api_settings(
         else settings.allowed_repositories
     ):
         missing.append("REFACTOR_AGENT_ALLOWED_REPOSITORIES")
-    if not settings.mock_llm and not os.getenv("DEEPSEEK_API_KEY"):
-        missing.append("DEEPSEEK_API_KEY")
     if missing:
         raise RuntimeError("Control API configuration is fail-closed; missing: " + ", ".join(missing))
     if settings.sandbox_backend != "docker":
