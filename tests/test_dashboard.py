@@ -359,25 +359,15 @@ def test_dashboard_tables_use_chinese_columns_without_translating_identifiers():
     assert benchmark_cases[0]["失败类别"] == "测试失败（PYTEST）"
 
 
-def test_dashboard_errors_add_chinese_context_and_keep_detail():
-    assert dashboard_views.format_dashboard_error(400, "invalid ref") == (
-        "提交内容格式错误。详细信息：invalid ref"
-    )
-    assert dashboard_views.format_dashboard_error(401, "invalid token") == (
-        "管理员令牌无效或缺失。详细信息：invalid token"
-    )
-    assert dashboard_views.format_dashboard_error(404, "run not found") == (
-        "请求的任务、运行记录或产物不存在。详细信息：run not found"
-    )
-    assert dashboard_views.format_dashboard_error(409, "terminal job") == (
-        "当前状态不允许执行该操作。详细信息：terminal job"
-    )
-    assert dashboard_views.format_dashboard_error(503, "docker unavailable") == (
-        "Worker 当前无法接受 URL 任务。详细信息：docker unavailable"
-    )
-    assert dashboard_views.format_dashboard_error(None, "connection refused") == (
-        "无法连接本地 API。详细信息：connection refused"
-    )
+def test_dashboard_errors_never_include_api_detail():
+    detail = "Traceback (most recent call last): /private/token"
+
+    assert "Traceback" not in dashboard_views.format_dashboard_error(400, detail)
+    assert "Traceback" not in dashboard_views.format_dashboard_error(401, detail)
+    assert "Traceback" not in dashboard_views.format_dashboard_error(404, detail)
+    assert "Traceback" not in dashboard_views.format_dashboard_error(409, detail)
+    assert "Traceback" not in dashboard_views.format_dashboard_error(503, detail)
+    assert "Traceback" not in dashboard_views.format_dashboard_error(None, detail)
 
 
 def test_legacy_arena_uses_the_shared_status_label():

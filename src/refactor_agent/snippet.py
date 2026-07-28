@@ -140,7 +140,9 @@ class SnippetRefactorService:
             issue_number=None,
             run_id=result.record.run_id,
             status="DRY_RUN" if result.record.status == "SUCCESS" else "FAILED",
-            error=result.record.error,
+            error_code=result.record.error_code,
+            error_message=result.record.error_message,
+            error_summary=result.record.error_summary,
         )
 
     def _default_llm_client(self) -> RefactorClient:

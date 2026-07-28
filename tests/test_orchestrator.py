@@ -4,6 +4,7 @@ import json
 from refactor_agent.analysis_events import AnalysisEventType
 from refactor_agent.debate_state import validate_status_sequence
 from refactor_agent.llm import LLMError, MockRefactorClient
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import LLMRefactorResult, MetricsSnapshot, RefactorRequest, TrajectoryMemoryRecord
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.sandbox import DockerStatus
@@ -255,6 +256,9 @@ def test_orchestrator_records_immediate_llm_failure_without_self_heal(tmp_path: 
     assert result.record.status == "FAILED"
     assert result.attempts == 1
     assert result.record.self_heal_count == 0
+    assert result.record.error_code == ErrorCode.INTERNAL_ERROR
+    assert result.record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert "provider unavailable" not in (result.record.error_message or "")
 
 
 def test_orchestrator_supports_loop_graph_backend(tmp_path: Path):

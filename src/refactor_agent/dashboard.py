@@ -797,8 +797,8 @@ def _render_run_detail(st, active: DashboardRun) -> None:
     columns[4].metric("奖励分", _format_float(active.reward))
 
     st.code(_record_summary(active), language="text")
-    if active.record.error:
-        st.error(active.record.error)
+    if active.record.error_message:
+        st.error(active.record.error_message)
 
     st.markdown(f"工作区：`{active.workspace_path}`")
     if not active.candidate_files:

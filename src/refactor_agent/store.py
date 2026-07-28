@@ -731,6 +731,9 @@ class SQLiteRunStore:
             pr_url=result.pr_url,
             workspace_path=result.workspace_path,
             error=result.error,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            error_summary=result.error_summary,
         )
 
     def fail_github_job(
@@ -759,6 +762,9 @@ class SQLiteRunStore:
         pr_url: str | None = None,
         workspace_path: Path | None = None,
         error: str | None = None,
+        error_code: ErrorCode | None = None,
+        error_message: str | None = None,
+        error_summary: str | None = None,
     ) -> GitHubJobRecord:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -778,7 +784,7 @@ class SQLiteRunStore:
                 UPDATE github_jobs
                 SET status = ?, branch_name = COALESCE(?, branch_name),
                     run_id = COALESCE(?, run_id), pr_url = COALESCE(?, pr_url),
-                    workspace_path = ?, error = ?, lease_owner = NULL,
+                    workspace_path = ?, error = NULL, error_code = ?, error_message = ?, error_summary = ?, lease_owner = NULL,
                     lease_expires_at = NULL, updated_at = ?
                 WHERE job_id = ?
                 """,
@@ -788,7 +794,9 @@ class SQLiteRunStore:
                     run_id,
                     pr_url,
                     str(workspace_path) if workspace_path else None,
-                    sanitize_text(error) if error else None,
+                    error_code.value if error_code else None,
+                    error_message,
+                    sanitize_text(error_summary) if error_summary else None,
                     _now(),
                     job_id,
                 ),
@@ -801,7 +809,7 @@ class SQLiteRunStore:
                 to_status=destination,
                 worker_id=worker_id,
                 attempt=row["attempt_count"],
-                message=sanitize_text(error) if error else f"job completed with status {destination.value}",
+                message=error_message or f"job completed with status {destination.value}",
             )
             self._insert_task_analysis_event(
                 connection,

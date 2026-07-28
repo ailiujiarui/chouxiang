@@ -94,8 +94,7 @@ def format_dashboard_error(status_code: int | None, detail: str) -> str:
         503: "Worker 当前无法接受 URL 任务。",
     }
     summary = summaries.get(status_code, "无法连接本地 API。" if status_code is None else "仪表盘请求失败。")
-    clean_detail = detail.strip()
-    return f"{summary}详细信息：{clean_detail}" if clean_detail else summary
+    return summary
 
 
 def build_task_rows(
