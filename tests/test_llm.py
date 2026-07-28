@@ -3,6 +3,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.llm import (
     DeepSeekClient,
     LLMError,
@@ -13,6 +14,13 @@ from refactor_agent.llm import (
     parse_llm_result,
 )
 from refactor_agent.models import MetricsSnapshot, RefactorRequest
+
+
+def test_error_codes_have_safe_public_messages():
+    assert ErrorCode.LLM_AUTH_FAILED.value == "LLM_AUTH_FAILED"
+    assert ErrorCode.RATE_LIMITED.value == "RATE_LIMITED"
+    assert ErrorCode.DATABASE_LOCKED.value == "DATABASE_LOCKED"
+    assert "DEEPSEEK_API_KEY" not in public_error_message(ErrorCode.LLM_AUTH_FAILED)
 
 
 def test_parse_llm_result_success():
