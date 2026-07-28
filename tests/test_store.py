@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import (
     BenchmarkCaseRecord,
     BenchmarkRunRecord,
@@ -49,7 +50,7 @@ def test_store_migrates_legacy_run_metadata_with_safe_defaults(tmp_path: Path):
         )
         connection.execute(
             "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("legacy-1", None, "repo", 10, 8, 4, 2, 0, "SUCCESS", None),
+            ("legacy-1", None, "repo", 10, 8, 4, 2, 0, "FAILED", "Traceback private-token"),
         )
 
     record = SQLiteRunStore(database).get("legacy-1")
@@ -57,6 +58,30 @@ def test_store_migrates_legacy_run_metadata_with_safe_defaults(tmp_path: Path):
     assert record is not None
     assert record.evidence_level.value == "REPOSITORY_TESTS"
     assert record.report_persona.value == "STRICT"
+    assert record.error_code == ErrorCode.INTERNAL_ERROR
+    assert record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert record.error_summary is None
+
+
+def test_store_round_trips_structured_error(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    record = RunRecord(
+        run_id="run-locked",
+        repo_name="repo",
+        self_heal_count=0,
+        status="FAILED",
+        error_code=ErrorCode.DATABASE_LOCKED,
+        error_message=public_error_message(ErrorCode.DATABASE_LOCKED),
+        error_summary="sqlite database is locked",
+    )
+
+    store.save(record)
+
+    loaded = store.get("run-locked")
+    assert loaded is not None
+    assert loaded.error_code == ErrorCode.DATABASE_LOCKED
+    assert loaded.error_message == public_error_message(ErrorCode.DATABASE_LOCKED)
+    assert loaded.error_summary == "sqlite database is locked"
 
 
 def test_store_tracks_trajectory_memory(tmp_path: Path):
