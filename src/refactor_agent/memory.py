@@ -58,10 +58,10 @@ def success_memory(
 
 
 def failure_memory(record: RunRecord, target_path: str) -> TrajectoryMemoryRecord:
-    signature = error_signature(record.error)
+    signature = record.error_code.value if record.error_code else error_signature(record.error)
     lesson = (
         "这次重构没有通过验证。下一轮不要只做表面压缩，必须优先修复错误签名对应的行为。"
-        f"失败原因摘要：{_compact_error(record.error)}"
+        f"失败原因摘要：{_compact_error(record.error_message)}"
     )
     return TrajectoryMemoryRecord(
         memory_id=_memory_id(),

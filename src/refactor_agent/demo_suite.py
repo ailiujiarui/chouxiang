@@ -64,8 +64,8 @@ def render_demo_suite_report(
     for item in runs:
         record = item.result.record
         lines.append(f"- {item.case_name}: {_punchline(item)}")
-        if record.error:
-            lines.append(f"  失败原因: {_compact(record.error, 220)}")
+        if record.error_message:
+            lines.append(f"  失败原因: {_compact(record.error_message, 220)}")
     return "\n".join(lines)
 
 

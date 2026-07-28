@@ -951,7 +951,7 @@ def _record_summary(item: DashboardRun) -> str:
             f"圈复杂度: {item.record.pre_cc} -> {item.record.post_cc} ({_format_delta(item.cc_delta)})",
             f"CC 压缩率: {_format_percent(item.cc_reduction_percent)}",
             f"奖励分: {_format_float(item.reward)}",
-            f"错误: {item.record.error or '-'}",
+            f"错误: {item.record.error_message or '-'}",
         ]
     )
 
