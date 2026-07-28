@@ -45,7 +45,7 @@ if ($Down) {
 }
 
 if ($env:REFACTOR_AGENT_MOCK_LLM -ne "true" -and -not $env:DEEPSEEK_API_KEY) {
-    throw "DEEPSEEK_API_KEY is required for runtime DeepSeek mode. Set it, or explicitly set REFACTOR_AGENT_MOCK_LLM=true for offline demo mode."
+    Write-Warning "DEEPSEEK_API_KEY is not configured. LLM task submission will be disabled. Set REFACTOR_AGENT_MOCK_LLM=true only for offline demo mode."
 }
 
 foreach ($port in @($ApiPort, $DashboardPort)) {
