@@ -797,8 +797,8 @@ def _render_run_detail(st, active: DashboardRun) -> None:
     columns[4].metric("奖励分", _format_float(active.reward))
 
     st.code(_record_summary(active), language="text")
-    if active.record.error:
-        st.error(active.record.error)
+    if active.record.error_message:
+        st.error(active.record.error_message)
 
     st.markdown(f"工作区：`{active.workspace_path}`")
     if not active.candidate_files:
@@ -951,7 +951,7 @@ def _record_summary(item: DashboardRun) -> str:
             f"圈复杂度: {item.record.pre_cc} -> {item.record.post_cc} ({_format_delta(item.cc_delta)})",
             f"CC 压缩率: {_format_percent(item.cc_reduction_percent)}",
             f"奖励分: {_format_float(item.reward)}",
-            f"错误: {item.record.error or '-'}",
+            f"错误: {item.record.error_message or '-'}",
         ]
     )
 

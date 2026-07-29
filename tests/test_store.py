@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import (
     BenchmarkCaseRecord,
     BenchmarkRunRecord,
@@ -49,7 +50,7 @@ def test_store_migrates_legacy_run_metadata_with_safe_defaults(tmp_path: Path):
         )
         connection.execute(
             "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ("legacy-1", None, "repo", 10, 8, 4, 2, 0, "SUCCESS", None),
+            ("legacy-1", None, "repo", 10, 8, 4, 2, 0, "FAILED", "Traceback private-token"),
         )
 
     record = SQLiteRunStore(database).get("legacy-1")
@@ -57,6 +58,30 @@ def test_store_migrates_legacy_run_metadata_with_safe_defaults(tmp_path: Path):
     assert record is not None
     assert record.evidence_level.value == "REPOSITORY_TESTS"
     assert record.report_persona.value == "STRICT"
+    assert record.error_code == ErrorCode.INTERNAL_ERROR
+    assert record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert record.error_summary is None
+
+
+def test_store_round_trips_structured_error(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    record = RunRecord(
+        run_id="run-locked",
+        repo_name="repo",
+        self_heal_count=0,
+        status="FAILED",
+        error_code=ErrorCode.DATABASE_LOCKED,
+        error_message=public_error_message(ErrorCode.DATABASE_LOCKED),
+        error_summary="sqlite database is locked",
+    )
+
+    store.save(record)
+
+    loaded = store.get("run-locked")
+    assert loaded is not None
+    assert loaded.error_code == ErrorCode.DATABASE_LOCKED
+    assert loaded.error_message == public_error_message(ErrorCode.DATABASE_LOCKED)
+    assert loaded.error_summary == "sqlite database is locked"
 
 
 def test_store_tracks_trajectory_memory(tmp_path: Path):
@@ -172,6 +197,32 @@ def test_store_round_trips_dashboard_url_job_without_issue_number(tmp_path: Path
     assert loaded is not None
     assert loaded.job_kind == RepositoryJobKind.DASHBOARD_URL
     assert loaded.issue_number is None
+
+
+def test_store_persists_structured_job_error(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    job = _github_job()
+    store.create_github_job(job)
+    claimed = store.claim_next_github_job("worker-1", lease_seconds=30, max_attempts=3)
+    assert claimed is not None
+
+    completed = store.complete_github_job(
+        job,
+        GitHubAutomationResult(
+            job_id=job.job_id,
+            repo_full_name=job.repo_full_name,
+            issue_number=job.issue_number,
+            status="FAILED",
+            error_code=ErrorCode.DATABASE_LOCKED,
+            error_message=public_error_message(ErrorCode.DATABASE_LOCKED),
+            error_summary="sqlite database is locked",
+        ),
+        worker_id="worker-1",
+    )
+
+    assert completed.error_code == ErrorCode.DATABASE_LOCKED
+    assert completed.error_message == public_error_message(ErrorCode.DATABASE_LOCKED)
+    assert completed.error_summary == "sqlite database is locked"
 
 
 def test_store_deduplicates_delivery_and_recovers_expired_lease(tmp_path: Path):

@@ -4,13 +4,13 @@ import json
 import logging
 import os
 import time
-from enum import StrEnum
 from typing import Protocol
 
 import httpx
 from pydantic import ValidationError
 
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary, select_target_regions
+from refactor_agent.errors import ErrorCode, OperationalError
 from refactor_agent.models import (
     LLMRefactorResult,
     LLMUsage,
@@ -22,21 +22,12 @@ from refactor_agent.models import (
 logger = logging.getLogger(__name__)
 
 
-class LLMErrorCode(StrEnum):
-    AUTH_FAILED = "LLM_AUTH_FAILED"
-    RATE_LIMITED = "RATE_LIMITED"
-    SERVER_ERROR = "SERVER_ERROR"
-    TIMEOUT = "TIMEOUT"
-    CLIENT_ERROR = "CLIENT_ERROR"
-    PARSE_ERROR = "PARSE_ERROR"
-    INPUT_TOO_LARGE = "INPUT_TOO_LARGE"
-    INJECTION_DETECTED = "INJECTION_DETECTED"
+LLMErrorCode = ErrorCode
 
 
-class LLMError(RuntimeError):
-    def __init__(self, message: str, *, code: LLMErrorCode | None = None) -> None:
-        super().__init__(message)
-        self.code = code
+class LLMError(OperationalError):
+    def __init__(self, message: str, *, code: ErrorCode | None = None) -> None:
+        super().__init__(code or ErrorCode.INTERNAL_ERROR, message)
 
 
 class RefactorClient(Protocol):

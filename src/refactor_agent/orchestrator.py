@@ -13,6 +13,7 @@ from refactor_agent.artifacts import RunArtifactWriter
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
+from refactor_agent.errors import ErrorCode
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.memory import build_memory_context, failure_memory, success_memory, target_memory_key
@@ -168,7 +169,9 @@ class _RefactorWorkflow:
                 attempt=state["attempt"],
             )
         except LLMError as exc:
-            state["terminal_error"] = str(exc)
+            state["terminal_error"] = exc.public_message
+            state["terminal_error_code"] = exc.code
+            state["terminal_error_summary"] = exc.summary
             state["next_node"] = "finalize"
             return state
         state["llm_result"] = result
@@ -412,6 +415,9 @@ class _RefactorWorkflow:
         baseline = state.get("baseline")
         approved = bool(state.get("approved"))
         error = None if approved else str(state.get("terminal_error") or state.get("previous_error") or "refactor failed")
+        error_code = state.get("terminal_error_code") if not approved else None
+        error_message = state.get("terminal_error") if error_code else None
+        error_summary = state.get("terminal_error_summary") if error_code else None
         post = state.get("post") if approved else None
         attempts = int(state.get("attempt", 0))
         if approved or state.get("terminal_error"):
@@ -429,7 +435,10 @@ class _RefactorWorkflow:
             post_cc=post.cyclomatic_complexity if post else None,
             self_heal_count=self_heal_count,
             status="SUCCESS" if approved else "FAILED",
-            error=error,
+            error=None,
+            error_code=error_code,
+            error_message=error_message,
+            error_summary=error_summary,
             evidence_level=self.request.evidence_level,
             report_persona=self.request.persona,
         )

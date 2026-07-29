@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType, PublishReceipt
 from refactor_agent.artifacts import sanitize_text
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import (
     BenchmarkCaseRecord,
     BenchmarkRunRecord,
@@ -148,9 +149,10 @@ class SQLiteRunStore:
                 """
                 INSERT OR REPLACE INTO runs (
                     run_id, issue_id, repo_name, pre_loc, post_loc, pre_cc, post_cc,
-                    self_heal_count, status, error, evidence_level, report_persona
+                    self_heal_count, status, error, error_code, error_message, error_summary,
+                    evidence_level, report_persona
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.run_id,
@@ -162,7 +164,10 @@ class SQLiteRunStore:
                     record.post_cc,
                     record.self_heal_count,
                     record.status,
-                    sanitize_text(record.error) if record.error else None,
+                    None,
+                    record.error_code.value if record.error_code else None,
+                    record.error_message,
+                    sanitize_text(record.error_summary) if record.error_summary else None,
                     record.evidence_level.value,
                     record.report_persona.value,
                 ),
@@ -726,6 +731,9 @@ class SQLiteRunStore:
             pr_url=result.pr_url,
             workspace_path=result.workspace_path,
             error=result.error,
+            error_code=result.error_code,
+            error_message=result.error_message,
+            error_summary=result.error_summary,
         )
 
     def fail_github_job(
@@ -754,6 +762,9 @@ class SQLiteRunStore:
         pr_url: str | None = None,
         workspace_path: Path | None = None,
         error: str | None = None,
+        error_code: ErrorCode | None = None,
+        error_message: str | None = None,
+        error_summary: str | None = None,
     ) -> GitHubJobRecord:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -773,7 +784,7 @@ class SQLiteRunStore:
                 UPDATE github_jobs
                 SET status = ?, branch_name = COALESCE(?, branch_name),
                     run_id = COALESCE(?, run_id), pr_url = COALESCE(?, pr_url),
-                    workspace_path = ?, error = ?, lease_owner = NULL,
+                    workspace_path = ?, error = NULL, error_code = ?, error_message = ?, error_summary = ?, lease_owner = NULL,
                     lease_expires_at = NULL, updated_at = ?
                 WHERE job_id = ?
                 """,
@@ -783,7 +794,9 @@ class SQLiteRunStore:
                     run_id,
                     pr_url,
                     str(workspace_path) if workspace_path else None,
-                    sanitize_text(error) if error else None,
+                    error_code.value if error_code else None,
+                    error_message,
+                    sanitize_text(error_summary) if error_summary else None,
                     _now(),
                     job_id,
                 ),
@@ -796,7 +809,7 @@ class SQLiteRunStore:
                 to_status=destination,
                 worker_id=worker_id,
                 attempt=row["attempt_count"],
-                message=sanitize_text(error) if error else f"job completed with status {destination.value}",
+                message=error_message or f"job completed with status {destination.value}",
             )
             self._insert_task_analysis_event(
                 connection,
@@ -1098,6 +1111,9 @@ class SQLiteRunStore:
                     self_heal_count INTEGER NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
                     error TEXT
+                    ,error_code TEXT
+                    ,error_message TEXT
+                    ,error_summary TEXT
                     ,evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS'
                     ,report_persona TEXT NOT NULL DEFAULT 'STRICT'
                 )
@@ -1105,6 +1121,7 @@ class SQLiteRunStore:
             )
             _migrate_runs_status(connection)
             _migrate_runs_metadata(connection)
+            _migrate_error_fields(connection, "runs")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS github_jobs (
@@ -1126,6 +1143,9 @@ class SQLiteRunStore:
                     pr_url TEXT,
                     workspace_path TEXT,
                     error TEXT,
+                    error_code TEXT,
+                    error_message TEXT,
+                    error_summary TEXT,
                     payload_json TEXT,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
                     lease_owner TEXT,
@@ -1137,6 +1157,7 @@ class SQLiteRunStore:
                 """
             )
             _migrate_github_jobs(connection)
+            _migrate_error_fields(connection, "github_jobs")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS job_events (
@@ -1347,6 +1368,21 @@ def _migrate_runs_metadata(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE runs ADD COLUMN report_persona TEXT NOT NULL DEFAULT 'STRICT'"
         )
+
+
+def _migrate_error_fields(connection: sqlite3.Connection, table: str) -> None:
+    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+    for name in ("error_code", "error_message", "error_summary"):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
+    connection.execute(
+        f"""
+        UPDATE {table}
+        SET error_code = ?, error_message = ?, error_summary = NULL, error = NULL
+        WHERE error IS NOT NULL AND error_code IS NULL
+        """,
+        (ErrorCode.INTERNAL_ERROR.value, public_error_message(ErrorCode.INTERNAL_ERROR)),
+    )
 
 
 def _migrate_github_jobs(connection: sqlite3.Connection) -> None:

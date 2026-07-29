@@ -36,6 +36,8 @@ class RefactorGraphState(TypedDict, total=False):
     sandbox: Any
     target_file: Any
     terminal_error: str
+    terminal_error_code: Any
+    terminal_error_summary: str
     tests_path: Any
     validation: Any
     next_node: str

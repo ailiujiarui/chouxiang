@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -11,6 +12,7 @@ from refactor_agent.execution_control import (
     ExecutionControl,
     ExecutionDeadlineExceeded,
 )
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.github import GitRepositoryManager, _repo_relative_path
 from refactor_agent.llm import DeepSeekClient, MockRefactorClient, RefactorClient
 from refactor_agent.locator import AUTO_TARGET_PATH, locate_source_file
@@ -132,18 +134,22 @@ class LocalRepositoryRefactorService:
                 run_id=run_result.record.run_id,
                 status=status,
                 workspace_path=checkout_path,
-                error=run_result.record.error if status == "FAILED" else None,
+                error_code=run_result.record.error_code if status == "FAILED" else None,
+                error_message=run_result.record.error_message if status == "FAILED" else None,
+                error_summary=run_result.record.error_summary if status == "FAILED" else None,
             )
         except (ExecutionCancelled, ExecutionDeadlineExceeded):
             raise
-        except Exception as exc:
+        except Exception:
+            logger.exception("Local repository processing failed for job %s", job.job_id)
             return GitHubAutomationResult(
                 job_id=job.job_id,
                 repo_full_name=job.repo_full_name,
                 issue_number=None,
                 status="FAILED",
                 workspace_path=checkout_path,
-                error=str(exc),
+                error_code=ErrorCode.INTERNAL_ERROR,
+                error_message=public_error_message(ErrorCode.INTERNAL_ERROR),
             )
         finally:
             if checkout_path is not None and not self.settings.retain_checkouts:
@@ -162,3 +168,4 @@ class LocalRepositoryRefactorService:
 
     def _default_llm_factory(self) -> RefactorClient:
         return MockRefactorClient() if self.settings.mock_llm else DeepSeekClient()
+logger = logging.getLogger(__name__)

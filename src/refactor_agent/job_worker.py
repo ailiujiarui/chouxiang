@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import threading
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from refactor_agent.config import AppSettings
 from refactor_agent.execution_control import ExecutionCancelled, ExecutionControl, ExecutionDeadlineExceeded
+from refactor_agent.errors import ErrorCode, OperationalError, is_database_locked
 from refactor_agent.local_repository import LocalRepositoryRefactorService
-from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
+from refactor_agent.models import GitHubAutomationResult, GitHubRefactorJob, RepositoryJobKind
 from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
 from refactor_agent.snippet import SnippetRefactorService
 from refactor_agent.store import JobTransitionError, SQLiteRunStore
@@ -126,9 +128,57 @@ class GitHubJobWorker:
                 self.store.mark_github_job_timed_out(job.job_id, str(exc), self.worker_id)
             except JobTransitionError:
                 logger.info("Worker %s no longer owns timed out job %s", self.worker_id, job.job_id)
-        except Exception as exc:
+        except sqlite3.OperationalError as exc:
+            code = ErrorCode.DATABASE_LOCKED if is_database_locked(exc) else ErrorCode.INTERNAL_ERROR
+            logger.exception("Worker database operation failed for job %s", job.job_id)
             try:
-                self.store.fail_github_job(job, str(exc), worker_id=self.worker_id)
+                self.store.complete_github_job(
+                    job,
+                    GitHubAutomationResult(
+                        job_id=job.job_id,
+                        repo_full_name=job.repo_full_name,
+                        issue_number=job.issue_number,
+                        status="FAILED",
+                        error_code=code,
+                        error_message=OperationalError(code).public_message,
+                        error_summary="sqlite database is locked" if code == ErrorCode.DATABASE_LOCKED else None,
+                    ),
+                    worker_id=self.worker_id,
+                )
+            except JobTransitionError:
+                logger.info("Worker %s no longer owns failed job %s", self.worker_id, job.job_id)
+        except OperationalError as exc:
+            try:
+                self.store.complete_github_job(
+                    job,
+                    GitHubAutomationResult(
+                        job_id=job.job_id,
+                        repo_full_name=job.repo_full_name,
+                        issue_number=job.issue_number,
+                        status="FAILED",
+                        error_code=exc.code,
+                        error_message=exc.public_message,
+                        error_summary=exc.summary,
+                    ),
+                    worker_id=self.worker_id,
+                )
+            except JobTransitionError:
+                logger.info("Worker %s no longer owns failed job %s", self.worker_id, job.job_id)
+        except Exception:
+            logger.exception("Worker failed job %s", job.job_id)
+            try:
+                self.store.complete_github_job(
+                    job,
+                    GitHubAutomationResult(
+                        job_id=job.job_id,
+                        repo_full_name=job.repo_full_name,
+                        issue_number=job.issue_number,
+                        status="FAILED",
+                        error_code=ErrorCode.INTERNAL_ERROR,
+                        error_message=OperationalError(ErrorCode.INTERNAL_ERROR).public_message,
+                    ),
+                    worker_id=self.worker_id,
+                )
             except JobTransitionError:
                 logger.info("Worker %s no longer owns failed job %s", self.worker_id, job.job_id)
         else:

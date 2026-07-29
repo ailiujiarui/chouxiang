@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from refactor_agent.errors import ErrorCode
 
 class RefactorRequest(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -308,6 +309,9 @@ class RunRecord(BaseModel):
     self_heal_count: int
     status: Literal["SUCCESS", "FAILED", "REVIEWED"]
     error: str | None = None
+    error_code: ErrorCode | None = None
+    error_message: str | None = None
+    error_summary: str | None = None
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS
     report_persona: ReportPersona = ReportPersona.STRICT
     pytest_duration_seconds: float | None = None
@@ -386,6 +390,9 @@ class GitHubAutomationResult(BaseModel):
     pr_url: str | None = None
     workspace_path: Path | None = None
     error: str | None = None
+    error_code: ErrorCode | None = None
+    error_message: str | None = None
+    error_summary: str | None = None
     requires_manual_cleanup: bool = False
 
 
@@ -416,6 +423,9 @@ class GitHubJobRecord(BaseModel):
     pr_url: str | None = None
     workspace_path: Path | None = None
     error: str | None = None
+    error_code: ErrorCode | None = None
+    error_message: str | None = None
+    error_summary: str | None = None
     payload_json: str | None = None
     attempt_count: int = 0
     lease_owner: str | None = None
