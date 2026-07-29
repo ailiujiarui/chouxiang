@@ -20,11 +20,11 @@ def test_ci_workflow_has_unit_matrix_and_docker_demo_without_secrets():
     assert "GITHUB_TOKEN" not in workflow
 
 
-def test_runtime_defaults_to_deepseek_and_requires_explicit_mock_override():
+def test_runtime_defaults_to_deepseek_and_reports_missing_key_without_mock_fallback():
     compose = Path("compose.yaml").read_text(encoding="utf-8")
     startup = Path("scripts/start.ps1").read_text(encoding="utf-8")
 
     assert "REFACTOR_AGENT_MOCK_LLM:-false" in compose
     assert '$env:REFACTOR_AGENT_MOCK_LLM = "false"' in startup
-    assert "DEEPSEEK_API_KEY is required for runtime DeepSeek mode" in startup
+    assert "DEEPSEEK_API_KEY is not configured. LLM task submission will be disabled." in startup
     assert "REFACTOR_AGENT_MOCK_LLM=true" in startup

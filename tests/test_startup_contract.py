@@ -19,7 +19,7 @@ def test_one_click_script_checks_docker_and_health_and_has_safe_stop():
     assert "PIP_INDEX_URL=$PipIndexUrl" in script
     assert "PipIndexUrl" in script
     assert '$env:REFACTOR_AGENT_MOCK_LLM = "false"' in script
-    assert "DEEPSEEK_API_KEY is required for runtime DeepSeek mode" in script
+    assert "DEEPSEEK_API_KEY is not configured. LLM task submission will be disabled." in script
     assert "Product Mode:" in script
     assert "single-user; no Admin Token" in script
     assert "Bearer token enabled" in script

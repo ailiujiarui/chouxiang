@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from refactor_agent.config import AppSettings
@@ -34,6 +35,132 @@ def test_control_api_has_no_webhook_routes(tmp_path: Path):
     assert "/jobs/url" in paths
     assert "/jobs/snippet" in paths
     assert "/analysis" in paths
+
+
+@pytest.mark.parametrize(
+    ("mock_llm", "api_key", "deepseek_available", "llm_available"),
+    [
+        (False, None, False, False),
+        (False, "test-key", True, True),
+        (True, None, False, True),
+        (True, "test-key", True, True),
+    ],
+)
+def test_capabilities_report_llm_availability_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_llm: bool,
+    api_key: str | None,
+    deepseek_available: bool,
+    llm_available: bool,
+):
+    if api_key is None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", api_key)
+    app = create_app(
+        settings=_settings(tmp_path, mock_llm=mock_llm),
+        store=SQLiteRunStore(tmp_path / "runs.sqlite"),
+        start_worker=False,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/capabilities")
+
+    assert response.status_code == 200
+    capabilities = response.json()
+    assert capabilities["deepseek_available"] is deepseek_available
+    assert capabilities["llm_available"] is llm_available
+    assert capabilities["snippet_submission"] is llm_available
+    assert capabilities["snippet_verified_refactor"] is llm_available
+    assert capabilities["url_submission"] is llm_available
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "expected_detail"),
+    [
+        (
+            "/jobs/snippet",
+            {
+                "source": "def add(a, b):\n    return a + b\n",
+                "refactor_request": "review",
+                "mode": "REVIEW",
+            },
+            "Task requires an available configured LLM.",
+        ),
+        (
+            "/jobs/snippet",
+            {
+                "source": "def add(a, b):\n    return a + b\n",
+                "tests": "from snippet import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+                "refactor_request": "refactor",
+                "mode": "VERIFIED_REFACTOR",
+            },
+            "Task requires an available configured LLM.",
+        ),
+        (
+            "/analysis",
+            {
+                "input_kind": "SNIPPET",
+                "instruction": "review",
+                "source": "def add(a, b):\n    return a + b\n",
+            },
+            "Task requires an available configured LLM.",
+        ),
+        (
+            "/analysis",
+            {
+                "input_kind": "SNIPPET",
+                "instruction": "refactor",
+                "source": "def add(a, b):\n    return a + b\n",
+                "tests": "from snippet import add\n\ndef test_add():\n    assert add(1, 2) == 3\n",
+            },
+            "Task requires an available configured LLM.",
+        ),
+        (
+            "/jobs/url",
+            {
+                "repository_url": "https://github.com/octo/demo",
+                "refactor_request": "refactor",
+            },
+            "URL submission requires Docker and an available configured LLM.",
+        ),
+        (
+            "/analysis",
+            {
+                "input_kind": "REPOSITORY_URL",
+                "instruction": "refactor",
+                "repository_url": "https://github.com/octo/demo",
+            },
+            "Repository analysis requires Docker and an available configured LLM.",
+        ),
+    ],
+)
+def test_llm_task_entry_rejects_missing_deepseek_key_without_enqueuing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    payload: dict[str, object],
+    expected_detail: str,
+):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    app = create_app(
+        settings=_settings(tmp_path, mock_llm=False),
+        store=store,
+        start_worker=False,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            path,
+            headers={"Authorization": "Bearer admin-secret"},
+            json=payload,
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == expected_detail
+    assert store.list_github_jobs() == []
 
 
 def test_control_api_submits_local_review_job(tmp_path: Path):
