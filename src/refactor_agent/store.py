@@ -705,7 +705,9 @@ class SQLiteRunStore:
             job_id,
             GitHubJobStatus.FAILED,
             worker_id=worker_id,
-            error=error,
+            error_code=ErrorCode.INTERNAL_ERROR,
+            error_message=public_error_message(ErrorCode.INTERNAL_ERROR),
+            error_summary="worker job failed",
         )
 
     def mark_github_job_timed_out(self, job_id: str, error: str, worker_id: str) -> None:

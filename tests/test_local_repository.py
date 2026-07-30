@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from refactor_agent.config import AppSettings
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.llm import MockRefactorClient
 from refactor_agent.local_repository import LocalRepositoryRefactorService
 from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
@@ -80,7 +81,10 @@ def test_local_repository_service_rechecks_repository_allowlist(tmp_path: Path):
     result = service.process(_url_job())
 
     assert result.status == "FAILED"
-    assert "allowlist" in (result.error or "").lower()
+    assert result.error is None
+    assert result.error_code == ErrorCode.INTERNAL_ERROR
+    assert result.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert result.error_summary == "repository is not allowlisted"
     assert manager.clone_call is None
 
 

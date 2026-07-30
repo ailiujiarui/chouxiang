@@ -25,6 +25,30 @@ def test_controlled_subtree_rewrite_supports_class_method():
     assert "    def label(self):" in result.source
 
 
+def test_controlled_subtree_rewrite_preserves_preexisting_safety_findings():
+    original = (
+        "def target(value):\n"
+        "    \"\"\"A deliberately longer original function.\"\"\"\n"
+        "    return value\n\n"
+        "def worker():\n"
+        "    while True:\n"
+        "        break\n"
+    )
+    candidate = (
+        "def target(value):\n"
+        "    return value + 1\n\n"
+        "def worker():\n"
+        "    while True:\n"
+        "        break\n"
+    )
+
+    result = controlled_subtree_rewrite(original, candidate, ["target"])
+
+    assert result.ok is True
+    assert "return value + 1" in result.source
+    assert "while True" in result.source
+
+
 def test_controlled_subtree_rewrite_rejects_boundary_changes():
     original = "def hot(value):\n    return value\n"
     candidates = [
@@ -147,6 +171,29 @@ def test_controlled_subtree_rewrite_allows_only_explicit_import_roots():
     assert accepted.ok is True
     assert accepted.added_imports == ["import math"]
     assert accepted.source.startswith("import math\n")
+
+
+def test_controlled_rewrite_allows_safe_local_import_before_unchanged_danger():
+    original = "def target():\n    exec('work')\n"
+    candidate = "def target():\n    import math\n    exec('work')\n"
+
+    result = controlled_subtree_rewrite(original, candidate, ["target"], {"math"})
+
+    assert result.ok is True
+    assert result.added_imports == ["import math"]
+
+
+def test_controlled_module_rewrite_reports_region_in_final_source_after_import():
+    result = controlled_subtree_rewrite(
+        "LIMIT = 1\n",
+        "import math\nLIMIT = 2\n",
+        ["module:1:Assign"],
+        {"math"},
+    )
+
+    assert result.ok is True
+    assert result.source == "import math\nLIMIT = 2\n"
+    assert result.changed_regions == ["module:2:Assign"]
 
 
 def test_controlled_subtree_rewrite_rejects_unsafe_import_variants():
