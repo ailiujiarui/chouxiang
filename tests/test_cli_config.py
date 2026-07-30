@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import httpx
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from refactor_agent.config import AppSettings
@@ -69,8 +70,14 @@ def test_resolve_deadline_uses_env_only_for_default(monkeypatch):
 
 def test_run_cli_exposes_bounded_deadline_option():
     help_result = runner.invoke(app, ["run", "--help"])
+    run_command = get_command(app).commands["run"]
+    option_names = {
+        option
+        for parameter in run_command.params
+        for option in getattr(parameter, "opts", ())
+    }
     assert help_result.exit_code == 0
-    assert "--deadline" in help_result.stdout
+    assert "--deadline" in option_names
 
     invalid = runner.invoke(app, ["run", "--deadline", "29"])
     assert invalid.exit_code == 2
