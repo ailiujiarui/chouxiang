@@ -50,6 +50,8 @@ Input Adapter
 .\scripts\start.ps1 -Down
 ```
 
+SQLite 默认使用统一的 5000ms `busy_timeout` 和 `auto` journal 策略；可通过 `REFACTOR_AGENT_SQLITE_JOURNAL_MODE=auto|wal|delete` 与 `REFACTOR_AGENT_SQLITE_BUSY_TIMEOUT_MS` 调整。WAL 只会在安全 SQLite 版本和本地文件系统上启用，备份与回退步骤见 [`docker/README.md`](docker/README.md#wal-备份与回退)。
+
 端口、基础镜像和 Python 包索引可以覆盖：
 
 ```powershell

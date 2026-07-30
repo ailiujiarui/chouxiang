@@ -40,6 +40,35 @@ jobs:
           curl --fail http://127.0.0.1:8501/
           kill $dashboard_pid
 
+  wal-safe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: wal-safe
+          create-args: >-
+            python=3.12
+            sqlite>=3.51.3
+            pip
+          cache-environment: true
+      - name: Install project
+        shell: micromamba-shell {0}
+        run: python -m pip install -e ".[dev]"
+      - name: Verify WAL-safe runtime
+        shell: micromamba-shell {0}
+        run: >-
+          python -c "import sqlite3;
+          from refactor_agent.sqlite_runtime import wal_runtime_is_safe;
+          print(sqlite3.sqlite_version);
+          assert wal_runtime_is_safe()"
+      - name: Run SQLite policy and concurrency matrix
+        shell: micromamba-shell {0}
+        env:
+          REFACTOR_AGENT_SQLITE_JOURNAL_MODE: wal
+          REFACTOR_AGENT_SQLITE_BUSY_TIMEOUT_MS: "5000"
+        run: pytest -q tests/test_sqlite_runtime.py tests/test_sqlite_concurrency.py
+
   docker-demo:
     runs-on: ubuntu-latest
     steps:

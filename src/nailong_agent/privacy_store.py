@@ -9,6 +9,13 @@ from pathlib import Path
 
 from nailong_agent.events import ActivityEvent, ActivityType, ActivityWindow
 from nailong_agent.privacy import PrivacyConsent
+from refactor_agent.sqlite_runtime import (
+    SQLiteDiagnostics,
+    SQLitePolicy,
+    connect_sqlite,
+    initialize_sqlite_database,
+    log_sqlite_diagnostics,
+)
 
 _APPLICATION_CATEGORY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _LEGACY_WINDOW_SECONDS = 5 * 60
@@ -17,9 +24,17 @@ _LEGACY_WINDOW_SECONDS = 5 * 60
 class PrivacyStore:
     """A separate SQLite store that never receives raw desktop content."""
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, policy: SQLitePolicy | None = None) -> None:
+        """Negotiate SQLite once, expose safe diagnostics, then initialize privacy state."""
+
         self.database_path = database_path
+        self.sqlite_policy = policy or SQLitePolicy.from_env()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sqlite_diagnostics: SQLiteDiagnostics = initialize_sqlite_database(
+            self.database_path,
+            self.sqlite_policy,
+        )
+        log_sqlite_diagnostics("privacy", self.sqlite_diagnostics)
         self._initialize()
 
     def load_consent(self) -> PrivacyConsent | None:
@@ -104,9 +119,10 @@ class PrivacyStore:
         return bool(inserted)
 
     def clear_activity_history(self) -> int:
-        """The implementation behind the tray's one-click delete action."""
+        """Delete both activity tables atomically while deliberately preserving consent."""
 
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             events = connection.execute("DELETE FROM pet_activity_events").rowcount
             windows = connection.execute("DELETE FROM pet_activity_windows").rowcount
         return events + windows
@@ -143,6 +159,8 @@ class PrivacyStore:
         ]
 
     def _initialize(self) -> None:
+        """Create and migrate privacy tables after the database policy is accepted."""
+
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -242,11 +260,9 @@ class PrivacyStore:
         connection.execute("DROP TABLE pet_activity_windows_legacy")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 30000")
-        return connection
+        """Open a fresh privacy connection under the same policy as the other Stores."""
+
+        return connect_sqlite(self.database_path, self.sqlite_policy)
 
 
 def _create_activity_windows_table(connection: sqlite3.Connection) -> None:

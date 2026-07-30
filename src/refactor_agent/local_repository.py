@@ -26,7 +26,10 @@ from refactor_agent.models import (
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.persona import inject_persona_report
-from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
+from refactor_agent.repository_allowlist import (
+    RepositoryAllowlistPolicy,
+    RepositoryNotAllowlistedError,
+)
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -53,12 +56,14 @@ class LocalRepositoryRefactorService:
         llm_factory: LLMFactory | None = None,
         repository_policy: RepositoryAllowlistPolicy | None = None,
     ) -> None:
+        """Create the local processor and pass the shared SQLite policy to its Store dependencies."""
+
         self.settings = settings
         self.repo_manager = repo_manager
         self.llm_factory = llm_factory or self._default_llm_factory
         self.repository_policy = repository_policy or RepositoryAllowlistPolicy(
             settings,
-            SQLiteRunStore(settings.resolved_database_path),
+            SQLiteRunStore(settings.resolved_database_path, policy=settings.sqlite_policy),
         )
 
     def process(
@@ -66,6 +71,8 @@ class LocalRepositoryRefactorService:
         job: GitHubRefactorJob,
         execution_control: ExecutionControl | None = None,
     ) -> GitHubAutomationResult:
+        """Run clone, analysis, and cleanup outside Store write transactions with safe failures."""
+
         if job.job_kind != RepositoryJobKind.DASHBOARD_URL:
             raise ValueError("Local repository service only accepts DASHBOARD_URL jobs.")
         control = execution_control or ExecutionControl(
@@ -97,7 +104,10 @@ class LocalRepositoryRefactorService:
             orchestrator = RefactorOrchestrator(
                 llm_client=self.llm_factory(),
                 run_root=self.settings.run_root,
-                store=SQLiteRunStore(self.settings.resolved_database_path),
+                store=SQLiteRunStore(
+                    self.settings.resolved_database_path,
+                    policy=self.settings.sqlite_policy,
+                ),
                 pytest_timeout_seconds=self.settings.pytest_timeout_seconds,
                 sandbox_backend=self.settings.sandbox_backend,
                 sandbox_docker_image=self.settings.sandbox_docker_image,
@@ -140,6 +150,18 @@ class LocalRepositoryRefactorService:
             )
         except (ExecutionCancelled, ExecutionDeadlineExceeded):
             raise
+        except RepositoryNotAllowlistedError:
+            logger.info("Repository policy rejected local job %s", job.job_id)
+            return GitHubAutomationResult(
+                job_id=job.job_id,
+                repo_full_name=job.repo_full_name,
+                issue_number=None,
+                status="FAILED",
+                workspace_path=checkout_path,
+                error_code=ErrorCode.INTERNAL_ERROR,
+                error_message=public_error_message(ErrorCode.INTERNAL_ERROR),
+                error_summary="repository is not allowlisted",
+            )
         except Exception:
             logger.exception("Local repository processing failed for job %s", job.job_id)
             return GitHubAutomationResult(

@@ -17,6 +17,13 @@ from nailong_agent.events import (
 from nailong_agent.notification_policy import NotificationCandidate
 from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
+from refactor_agent.sqlite_runtime import (
+    SQLiteDiagnostics,
+    SQLitePolicy,
+    connect_sqlite,
+    initialize_sqlite_database,
+    log_sqlite_diagnostics,
+)
 
 
 _TASK_TERMINALS = {
@@ -32,9 +39,17 @@ _TASK_TERMINALS = {
 class NotificationStore:
     """Durable desktop-side inbox, policy state, cursor, and acknowledgement store."""
 
-    def __init__(self, database_path: Path) -> None:
+    def __init__(self, database_path: Path, policy: SQLitePolicy | None = None) -> None:
+        """Negotiate SQLite once, expose safe diagnostics, then initialize notification state."""
+
         self.database_path = database_path
+        self.sqlite_policy = policy or SQLitePolicy.from_env()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sqlite_diagnostics: SQLiteDiagnostics = initialize_sqlite_database(
+            self.database_path,
+            self.sqlite_policy,
+        )
+        log_sqlite_diagnostics("notification", self.sqlite_diagnostics)
         self._initialize()
 
     def get_preferences(self) -> PetPreferences:
@@ -237,6 +252,8 @@ class NotificationStore:
         now: datetime,
         cooldown_seconds: int,
     ) -> NotificationIntent | None:
+        """Claim one due reminder and mark it sent atomically to prevent duplicate delivery."""
+
         now = _as_utc(now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -266,10 +283,15 @@ class NotificationStore:
                 dedupe_key=f"long-task:{task['task_id']}:{task['started_at']}",
                 now=now,
             )
-            connection.execute(
-                "UPDATE notification_tasks SET long_reminder_sent = 1 WHERE task_id = ?",
+            cursor = connection.execute(
+                """
+                UPDATE notification_tasks SET long_reminder_sent = 1
+                WHERE task_id = ? AND active = 1 AND long_reminder_sent = 0
+                """,
                 (task["task_id"],),
             )
+            if cursor.rowcount != 1:
+                return None
             connection.execute(
                 "UPDATE notification_runtime SET next_regular_at = ? WHERE id = 1",
                 ((now + timedelta(seconds=cooldown_seconds)).isoformat(),),
@@ -283,6 +305,8 @@ class NotificationStore:
         now: datetime,
         summary_factory: Callable[[int], NotificationCandidate] | None = None,
     ) -> NotificationIntent | None:
+        """Change quiet mode with expected-state CAS and preserve one serialized summary outcome."""
+
         now = _as_utc(now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -323,10 +347,15 @@ class NotificationStore:
                         now=now,
                     )
                 connection.execute("DELETE FROM suppressed_terminal_tasks")
-            connection.execute(
-                "UPDATE notification_runtime SET do_not_disturb = ? WHERE id = 1",
-                (int(enabled),),
+            cursor = connection.execute(
+                """
+                UPDATE notification_runtime SET do_not_disturb = ?
+                WHERE id = 1 AND do_not_disturb = ?
+                """,
+                (int(enabled), int(not enabled)),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeError("concurrent do-not-disturb update rejected")
         return summary
 
     def suppressed_terminal_count(self) -> int:
@@ -340,6 +369,8 @@ class NotificationStore:
         minimum_start_spacing_seconds: int = 30,
         preferences: PetPreferences | None = None,
     ) -> NotificationIntent | None:
+        """Lease one pending intent while atomically enforcing spacing and daily budget."""
+
         now = _as_utc(now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -372,10 +403,15 @@ class NotificationStore:
             ).fetchone()
             if row is None:
                 return None
-            connection.execute(
-                "UPDATE notification_intents SET status = 'DISPLAYING' WHERE notification_id = ?",
+            cursor = connection.execute(
+                """
+                UPDATE notification_intents SET status = 'DISPLAYING'
+                WHERE notification_id = ? AND status = 'PENDING'
+                """,
                 (row["notification_id"],),
             )
+            if cursor.rowcount != 1:
+                return None
             connection.execute(
                 "UPDATE notification_runtime SET last_popup_started_at = ? WHERE id = 1",
                 (now.isoformat(),),
@@ -390,6 +426,8 @@ class NotificationStore:
         return _intent_from_row(row)
 
     def acknowledge(self, notification_id: str, outcome: str, *, now: datetime) -> bool:
+        """Acknowledge a displaying intent once; stale or duplicate acknowledgements return false."""
+
         statuses = {"shown": "SHOWN", "dismissed": "DISMISSED", "failed": "FAILED"}
         if outcome not in statuses:
             raise ValueError("unsupported notification acknowledgement")
@@ -610,6 +648,8 @@ class NotificationStore:
         )
 
     def _initialize(self) -> None:
+        """Create notification tables and recover abandoned display leases at startup."""
+
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -708,11 +748,9 @@ class NotificationStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 30000")
-        return connection
+        """Open a fresh notification connection under the same policy as the main Store."""
+
+        return connect_sqlite(self.database_path, self.sqlite_policy)
 
 
 def _intent_from_row(row: sqlite3.Row) -> NotificationIntent:

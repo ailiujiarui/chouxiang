@@ -97,6 +97,8 @@ class SnippetRefactorService:
         control: ExecutionControl,
         llm_client: RefactorClient,
     ) -> GitHubAutomationResult:
+        """Run snippet analysis outside database transactions using the shared Store policy."""
+
         with tempfile.TemporaryDirectory(prefix="refactor-agent-snippet-") as directory:
             root = Path(directory)
             target = root / "snippet.py"
@@ -106,7 +108,10 @@ class SnippetRefactorService:
             orchestrator = RefactorOrchestrator(
                 llm_client=llm_client,
                 run_root=self.settings.run_root,
-                store=SQLiteRunStore(self.settings.resolved_database_path),
+                store=SQLiteRunStore(
+                    self.settings.resolved_database_path,
+                    policy=self.settings.sqlite_policy,
+                ),
                 pytest_timeout_seconds=self.settings.pytest_timeout_seconds,
                 sandbox_backend=self.settings.sandbox_backend,
                 sandbox_docker_image=self.settings.sandbox_docker_image,

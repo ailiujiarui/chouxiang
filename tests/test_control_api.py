@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from refactor_agent.config import AppSettings
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.job_worker import GitHubJobWorker
 from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
 from refactor_agent.store import SQLiteRunStore
@@ -295,7 +296,10 @@ def test_worker_rejects_legacy_webhook_job(tmp_path: Path):
     record = store.get_github_job(job.job_id)
     assert record is not None
     assert record.status == "FAILED"
-    assert "removed" in (record.error or "")
+    assert record.error is None
+    assert record.error_code == ErrorCode.INTERNAL_ERROR
+    assert record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert record.error_summary == "worker job failed"
 
 
 def test_legacy_webhook_job_cannot_retry(tmp_path: Path):

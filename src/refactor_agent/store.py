@@ -22,6 +22,13 @@ from refactor_agent.models import (
     RunRecord,
     TrajectoryMemoryRecord,
 )
+from refactor_agent.sqlite_runtime import (
+    SQLiteDiagnostics,
+    SQLitePolicy,
+    connect_sqlite,
+    initialize_sqlite_database,
+    log_sqlite_diagnostics,
+)
 
 
 class JobTransitionError(ValueError):
@@ -51,9 +58,19 @@ _LEGAL_JOB_TRANSITIONS: dict[GitHubJobStatus, set[GitHubJobStatus]] = {
 
 
 class SQLiteRunStore:
-    def __init__(self, database_path: Path) -> None:
+    """Main durable Store with shared SQLite policy and conditional state writes."""
+
+    def __init__(self, database_path: Path, policy: SQLitePolicy | None = None) -> None:
+        """Negotiate SQLite once, record safe diagnostics, then initialize the schema."""
+
         self.database_path = database_path
+        self.sqlite_policy = policy or SQLitePolicy.from_env()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.sqlite_diagnostics: SQLiteDiagnostics = initialize_sqlite_database(
+            self.database_path,
+            self.sqlite_policy,
+        )
+        log_sqlite_diagnostics("main", self.sqlite_diagnostics)
         self._ensure_schema()
 
     def emit(self, event: AnalysisEvent) -> PublishReceipt:
@@ -144,15 +161,32 @@ class SQLiteRunStore:
         return cursor.rowcount
 
     def save(self, record: RunRecord) -> None:
+        """Upsert only fields owned by a complete run snapshot, avoiding REPLACE semantics."""
+
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR REPLACE INTO runs (
+                INSERT INTO runs (
                     run_id, issue_id, repo_name, pre_loc, post_loc, pre_cc, post_cc,
                     self_heal_count, status, error, error_code, error_message, error_summary,
                     evidence_level, report_persona
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    issue_id = excluded.issue_id,
+                    repo_name = excluded.repo_name,
+                    pre_loc = excluded.pre_loc,
+                    post_loc = excluded.post_loc,
+                    pre_cc = excluded.pre_cc,
+                    post_cc = excluded.post_cc,
+                    self_heal_count = excluded.self_heal_count,
+                    status = excluded.status,
+                    error = excluded.error,
+                    error_code = excluded.error_code,
+                    error_message = excluded.error_message,
+                    error_summary = excluded.error_summary,
+                    evidence_level = excluded.evidence_level,
+                    report_persona = excluded.report_persona
                 """,
                 (
                     record.run_id,
@@ -193,13 +227,21 @@ class SQLiteRunStore:
         run: BenchmarkRunRecord,
         cases: list[BenchmarkCaseRecord],
     ) -> None:
+        """Atomically replace one benchmark's owned header and complete case-result set."""
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
-                INSERT OR REPLACE INTO benchmark_runs (
+                INSERT INTO benchmark_runs (
                     run_id, manifest_hash, provider, model, status, generated_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    manifest_hash = excluded.manifest_hash,
+                    provider = excluded.provider,
+                    model = excluded.model,
+                    status = excluded.status,
+                    generated_at = excluded.generated_at
                 """,
                 (
                     run.run_id,
@@ -284,15 +326,26 @@ class SQLiteRunStore:
         return [BenchmarkCaseRecord(**dict(row)) for row in rows]
 
     def save_memory(self, record: TrajectoryMemoryRecord) -> None:
+        """Upsert an independently owned memory record without delete-and-reinsert effects."""
+
         created_at = record.created_at or _now()
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR REPLACE INTO trajectory_memory (
+                INSERT INTO trajectory_memory (
                     memory_id, run_id, repo_name, target_path, status,
                     lesson, error_signature, reward, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(memory_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    repo_name = excluded.repo_name,
+                    target_path = excluded.target_path,
+                    status = excluded.status,
+                    lesson = excluded.lesson,
+                    error_signature = excluded.error_signature,
+                    reward = excluded.reward,
+                    created_at = excluded.created_at
                 """,
                 (
                     record.memory_id,
@@ -336,6 +389,8 @@ class SQLiteRunStore:
         return [TrajectoryMemoryRecord(**dict(row)) for row in rows]
 
     def create_github_job(self, job: GitHubRefactorJob) -> GitHubJobRecord:
+        """Insert a queued job once and resolve duplicate delivery/active-job races by reading."""
+
         now = _now()
         record = GitHubJobRecord(
             job_id=job.job_id,
@@ -406,6 +461,8 @@ class SQLiteRunStore:
         max_attempts: int,
         deadline_seconds: int = 900,
     ) -> GitHubJobRecord | None:
+        """Recover expired leases and claim at most one queued job in one short write transaction."""
+
         now = _now()
         lease_expires = _now(timedelta(seconds=lease_seconds))
         deadline_at = _now(timedelta(seconds=deadline_seconds))
@@ -427,15 +484,26 @@ class SQLiteRunStore:
                     exhausted = expired_row["attempt_count"] >= max_attempts
                     next_status = GitHubJobStatus.FAILED if exhausted else GitHubJobStatus.QUEUED
                     error = "worker lease expired after retry limit" if exhausted else None
-                connection.execute(
+                cursor = connection.execute(
                     """
                     UPDATE github_jobs
                     SET status = ?, error = ?, lease_owner = NULL,
                         lease_expires_at = NULL, updated_at = ?
                     WHERE job_id = ? AND status = ?
+                      AND lease_owner IS ? AND lease_expires_at = ?
                     """,
-                    (next_status.value, error, now, expired_row["job_id"], source_status.value),
+                    (
+                        next_status.value,
+                        error,
+                        now,
+                        expired_row["job_id"],
+                        source_status.value,
+                        expired_row["lease_owner"],
+                        expired_row["lease_expires_at"],
+                    ),
                 )
+                if cursor.rowcount != 1:
+                    continue
                 self._insert_job_event(
                     connection,
                     job_id=expired_row["job_id"],
@@ -467,7 +535,7 @@ class SQLiteRunStore:
             ).fetchone()
             if row is None:
                 return None
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE github_jobs
                 SET status = 'RUNNING', attempt_count = attempt_count + 1,
@@ -476,6 +544,8 @@ class SQLiteRunStore:
                 """,
                 (worker_id, lease_expires, deadline_at, now, row["job_id"]),
             )
+            if cursor.rowcount != 1:
+                return None
             self._insert_job_event(
                 connection,
                 job_id=row["job_id"],
@@ -512,6 +582,8 @@ class SQLiteRunStore:
         message: str = "",
         require_owner: bool = False,
     ) -> GitHubJobRecord:
+        """Apply a legal state transition only if the observed status and lease owner still match."""
+
         destination = GitHubJobStatus(to_status)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -537,14 +609,24 @@ class SQLiteRunStore:
             if destination not in {GitHubJobStatus.RUNNING, GitHubJobStatus.CANCEL_REQUESTED}:
                 lease_owner = None
                 lease_expires_at = None
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE github_jobs
                 SET status = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ?
-                WHERE job_id = ?
+                WHERE job_id = ? AND status = ? AND lease_owner IS ?
                 """,
-                (destination.value, lease_owner, lease_expires_at, _now(), job_id),
+                (
+                    destination.value,
+                    lease_owner,
+                    lease_expires_at,
+                    _now(),
+                    job_id,
+                    source.value,
+                    row["lease_owner"],
+                ),
             )
+            if cursor.rowcount != 1:
+                raise JobTransitionError(f"concurrent job transition rejected: {job_id}")
             self._insert_job_event(
                 connection,
                 job_id=job_id,
@@ -570,6 +652,8 @@ class SQLiteRunStore:
         return _job_record_from_row(updated)
 
     def request_github_job_cancellation(self, job_id: str) -> tuple[GitHubJobRecord, bool]:
+        """Cancel or request cancellation with CAS so a heartbeat cannot erase the request."""
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -587,16 +671,26 @@ class SQLiteRunStore:
                 destination = GitHubJobStatus.CANCEL_REQUESTED
             else:
                 raise JobTransitionError(f"cannot cancel terminal job in status {source.value}")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE github_jobs
                 SET status = ?, lease_owner = CASE WHEN ? = 'CANCELLED' THEN NULL ELSE lease_owner END,
                     lease_expires_at = CASE WHEN ? = 'CANCELLED' THEN NULL ELSE lease_expires_at END,
                     updated_at = ?
-                WHERE job_id = ?
+                WHERE job_id = ? AND status = ? AND lease_owner IS ?
                 """,
-                (destination.value, destination.value, destination.value, _now(), job_id),
+                (
+                    destination.value,
+                    destination.value,
+                    destination.value,
+                    _now(),
+                    job_id,
+                    source.value,
+                    row["lease_owner"],
+                ),
             )
+            if cursor.rowcount != 1:
+                raise JobTransitionError(f"concurrent cancellation rejected: {job_id}")
             self._insert_job_event(
                 connection,
                 job_id=job_id,
@@ -622,6 +716,8 @@ class SQLiteRunStore:
         return _job_record_from_row(updated), True
 
     def retry_github_job(self, job_id: str) -> GitHubJobRecord:
+        """Requeue an eligible terminal job only while its observed state remains unchanged."""
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -640,17 +736,19 @@ class SQLiteRunStore:
             }:
                 raise JobTransitionError(f"job in status {source.value} cannot be retried")
             try:
-                connection.execute(
+                cursor = connection.execute(
                     """
                     UPDATE github_jobs
                     SET status = 'QUEUED', attempt_count = 0, lease_owner = NULL,
                         lease_expires_at = NULL, deadline_at = NULL, error = NULL, updated_at = ?
-                    WHERE job_id = ?
+                    WHERE job_id = ? AND status = ? AND pr_url IS NULL
                     """,
-                    (_now(), job_id),
+                    (_now(), job_id, source.value),
                 )
             except sqlite3.IntegrityError as exc:
                 raise JobTransitionError("another active job already exists for this issue") from exc
+            if cursor.rowcount != 1:
+                raise JobTransitionError(f"concurrent retry rejected: {job_id}")
             self._insert_job_event(
                 connection,
                 job_id=job_id,
@@ -685,6 +783,8 @@ class SQLiteRunStore:
         return [JobEventRecord(**dict(row)) for row in rows]
 
     def renew_github_job_lease(self, job_id: str, worker_id: str, lease_seconds: int) -> bool:
+        """Extend a lease only for the current owner of a still-running job."""
+
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -701,14 +801,20 @@ class SQLiteRunStore:
         error: str,
         worker_id: str | None = None,
     ) -> None:
+        """Record a generic failure without persisting the caller's raw exception text."""
+
         self._finish_github_job(
             job_id,
             GitHubJobStatus.FAILED,
             worker_id=worker_id,
-            error=error,
+            error_code=ErrorCode.INTERNAL_ERROR,
+            error_message=public_error_message(ErrorCode.INTERNAL_ERROR),
+            error_summary="worker job failed",
         )
 
     def mark_github_job_timed_out(self, job_id: str, error: str, worker_id: str) -> None:
+        """Finish an owned job as timed out through the same conditional completion path."""
+
         self._finish_github_job(
             job_id,
             GitHubJobStatus.TIMED_OUT,
@@ -722,6 +828,8 @@ class SQLiteRunStore:
         result: GitHubAutomationResult,
         worker_id: str | None = None,
     ) -> GitHubJobRecord:
+        """Persist a processor result only if the caller still owns the current lease."""
+
         return self._finish_github_job(
             job.job_id,
             GitHubJobStatus(result.status),
@@ -742,6 +850,8 @@ class SQLiteRunStore:
         error: str,
         worker_id: str | None = None,
     ) -> GitHubJobRecord:
+        """Adapt a processor exception to the conditional terminal-state update."""
+
         result = GitHubAutomationResult(
             job_id=job.job_id,
             repo_full_name=job.repo_full_name,
@@ -766,6 +876,8 @@ class SQLiteRunStore:
         error_message: str | None = None,
         error_summary: str | None = None,
     ) -> GitHubJobRecord:
+        """Commit terminal fields and audit events with expected-status/owner compare-and-set."""
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -779,14 +891,14 @@ class SQLiteRunStore:
                 raise JobTransitionError(f"illegal job transition: {source.value} -> {destination.value}")
             if row["lease_owner"] is not None and row["lease_owner"] != worker_id:
                 raise JobTransitionError(f"lease owner mismatch for job {job_id}")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE github_jobs
                 SET status = ?, branch_name = COALESCE(?, branch_name),
                     run_id = COALESCE(?, run_id), pr_url = COALESCE(?, pr_url),
                     workspace_path = ?, error = NULL, error_code = ?, error_message = ?, error_summary = ?, lease_owner = NULL,
                     lease_expires_at = NULL, updated_at = ?
-                WHERE job_id = ?
+                WHERE job_id = ? AND status = ? AND lease_owner IS ?
                 """,
                 (
                     destination.value,
@@ -799,8 +911,12 @@ class SQLiteRunStore:
                     sanitize_text(error_summary) if error_summary else None,
                     _now(),
                     job_id,
+                    source.value,
+                    row["lease_owner"],
                 ),
             )
+            if cursor.rowcount != 1:
+                raise JobTransitionError(f"concurrent completion rejected: {job_id}")
             self._insert_job_event(
                 connection,
                 job_id=job_id,
@@ -825,11 +941,9 @@ class SQLiteRunStore:
             ).fetchone()
         return _job_record_from_row(updated)
 
-    def save_github_job(self, record: GitHubJobRecord) -> None:
-        with self._connect() as connection:
-            self._insert_github_job(connection, record)
-
     def _insert_github_job(self, connection: sqlite3.Connection, record: GitHubJobRecord) -> None:
+        """Insert a new job without any conflict clause that could overwrite a live lease."""
+
         connection.execute(
                 """
                 INSERT INTO github_jobs (
@@ -839,26 +953,6 @@ class SQLiteRunStore:
                     , deadline_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    delivery_id=excluded.delivery_id,
-                    job_kind=excluded.job_kind,
-                    repo_full_name=excluded.repo_full_name,
-                    issue_number=excluded.issue_number,
-                    target_path=excluded.target_path,
-                    tests_path=excluded.tests_path,
-                    status=excluded.status,
-                    branch_name=excluded.branch_name,
-                    run_id=excluded.run_id,
-                    pr_url=excluded.pr_url,
-                    workspace_path=excluded.workspace_path,
-                    error=excluded.error,
-                    payload_json=excluded.payload_json,
-                    attempt_count=excluded.attempt_count,
-                    lease_owner=excluded.lease_owner,
-                    lease_expires_at=excluded.lease_expires_at,
-                    deadline_at=excluded.deadline_at,
-                    created_at=excluded.created_at,
-                    updated_at=excluded.updated_at
                 """,
                 (
                     record.job_id,
@@ -1092,11 +1186,13 @@ class SQLiteRunStore:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        """Open a fresh main-database connection under the Store's shared policy."""
+
+        return connect_sqlite(self.database_path, self.sqlite_policy)
 
     def _ensure_schema(self) -> None:
+        """Create or migrate the main schema after journal negotiation and before serving work."""
+
         with self._connect() as connection:
             connection.execute(
                 """
