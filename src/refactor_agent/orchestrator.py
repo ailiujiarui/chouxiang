@@ -353,6 +353,7 @@ class _RefactorWorkflow:
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
             execution_control=self.execution_control,
+            target_regions=state["rewrite"].changed_regions,
         )
         message = _summarize_mutation(state["mutation"])
         state["round_messages"].append(

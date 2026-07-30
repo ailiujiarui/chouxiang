@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from refactor_agent.mutation import generate_mutants, run_mutation_tests
 from refactor_agent.sandbox import prepare_workspace
 
@@ -9,6 +11,34 @@ def test_generate_mutants_from_boolean_expression():
     mutants = generate_mutants(source)
     assert mutants
     assert any("comparison" in mutant.description for mutant in mutants)
+
+
+def test_generate_mutants_can_scope_to_changed_function():
+    source = (
+        "def unrelated(value):\n"
+        "    return value == 1\n\n"
+        "def target(value):\n"
+        "    return value > 0\n"
+    )
+
+    mutants = generate_mutants(source, target_regions=["target"])
+
+    assert mutants
+    assert all("line 2" not in mutant.description for mutant in mutants)
+    assert all("return value == 1" in mutant.source for mutant in mutants)
+
+
+def test_generate_mutants_with_empty_scope_does_not_mutate_other_regions():
+    source = "def unrelated(value):\n    return value == 1\n"
+
+    assert generate_mutants(source, target_regions=[]) == []
+
+
+def test_generate_mutants_rejects_missing_changed_region():
+    source = "LIMIT = 2\n"
+
+    with pytest.raises(ValueError, match="do not exist"):
+        generate_mutants(source, target_regions=["module:1:If"])
 
 
 def test_run_mutation_tests_reports_killed_mutants(tmp_path: Path):
