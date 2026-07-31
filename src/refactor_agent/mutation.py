@@ -15,12 +15,16 @@ class Mutant:
     source: str
 
 
-def generate_mutants(source: str, max_mutants: int = 8) -> list[Mutant]:
+def generate_mutants(
+    source: str,
+    max_mutants: int = 8,
+    target_regions: list[str] | None = None,
+) -> list[Mutant]:
     tree = ast.parse(source)
-    sites = _mutation_sites(tree)
+    sites = _mutation_sites(tree, target_regions)
     mutants: list[Mutant] = []
     for index, description in sites[:max_mutants]:
-        mutated = _mutate_at(source, index)
+        mutated = _mutate_at(source, index, target_regions)
         if mutated and mutated != source:
             mutants.append(Mutant(description=description, source=mutated))
     return mutants
@@ -38,8 +42,13 @@ def run_mutation_tests(
     memory: str = "256m",
     cpus: float = 1.0,
     execution_control: ExecutionControl | None = None,
+    target_regions: list[str] | None = None,
 ) -> MutationTestResult:
-    mutants = generate_mutants(candidate_source, max_mutants=max_mutants)
+    mutants = generate_mutants(
+        candidate_source,
+        max_mutants=max_mutants,
+        target_regions=target_regions,
+    )
     killed = 0
     survived: list[str] = []
     for mutant in mutants:
@@ -67,10 +76,16 @@ def run_mutation_tests(
     )
 
 
-def _mutation_sites(tree: ast.AST) -> list[tuple[int, str]]:
+def _mutation_sites(
+    tree: ast.Module,
+    target_regions: list[str] | None = None,
+) -> list[tuple[int, str]]:
     sites: list[tuple[int, str]] = []
     mutable_index = 0
+    allowed_node_ids = _mutation_node_ids(tree, target_regions)
     for node in ast.walk(tree):
+        if allowed_node_ids is not None and id(node) not in allowed_node_ids:
+            continue
         if isinstance(node, ast.Compare) and node.ops:
             sites.append((mutable_index, f"flip comparison at line {getattr(node, 'lineno', '?')}"))
             mutable_index += 1
@@ -86,9 +101,16 @@ def _mutation_sites(tree: ast.AST) -> list[tuple[int, str]]:
     return sites
 
 
-def _mutate_at(source: str, target_index: int) -> str | None:
+def _mutate_at(
+    source: str,
+    target_index: int,
+    target_regions: list[str] | None = None,
+) -> str | None:
     tree = ast.parse(source)
-    mutator = _SingleMutation(target_index)
+    mutator = _SingleMutation(
+        target_index,
+        allowed_node_ids=_mutation_node_ids(tree, target_regions),
+    )
     mutated = mutator.visit(tree)
     if not mutator.changed:
         return None
@@ -100,13 +122,18 @@ def _mutate_at(source: str, target_index: int) -> str | None:
 
 
 class _SingleMutation(ast.NodeTransformer):
-    def __init__(self, target_index: int) -> None:
+    def __init__(self, target_index: int, allowed_node_ids: set[int] | None = None) -> None:
         self.target_index = target_index
+        self.allowed_node_ids = allowed_node_ids
         self.current_index = -1
         self.changed = False
 
     def visit(self, node: ast.AST):  # type: ignore[override]
-        replacement = self._replacement(node)
+        replacement = (
+            self._replacement(node)
+            if self.allowed_node_ids is None or id(node) in self.allowed_node_ids
+            else None
+        )
         if replacement is not None:
             self.current_index += 1
         if replacement is not None and self.current_index == self.target_index and not self.changed:
@@ -126,6 +153,30 @@ class _SingleMutation(ast.NodeTransformer):
         if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
             return ast.Constant(value=node.value + 1)
         return None
+
+
+def _mutation_node_ids(
+    tree: ast.Module,
+    target_regions: list[str] | None,
+) -> set[int] | None:
+    if target_regions is None:
+        return None
+    function_nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    module_nodes: dict[str, ast.stmt] = {}
+    for node in tree.body:
+        module_nodes[f"module:{node.lineno}:{type(node).__name__}"] = node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_nodes[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            for child in node.body:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    function_nodes[f"{node.name}.{child.name}"] = child
+    resolved = {name: function_nodes.get(name) or module_nodes.get(name) for name in target_regions}
+    missing = [name for name, node in resolved.items() if node is None]
+    if missing:
+        raise ValueError(f"Mutation target regions do not exist in candidate source: {missing!r}")
+    roots = [node for node in resolved.values() if node is not None]
+    return {id(node) for root in roots for node in ast.walk(root)}
 
 
 def _flip_cmp(op: ast.cmpop) -> ast.cmpop:

@@ -1,4 +1,5 @@
 import json
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from refactor_agent.benchmark import (
@@ -103,8 +104,12 @@ def test_normalized_external_result_hash_ignores_run_specific_error_paths():
 
 def test_benchmark_cli_exposes_manifest_provider_and_compare_options():
     result = runner.invoke(app, ["benchmark", "--help"])
+    benchmark_command = get_command(app).commands["benchmark"]
+    option_names = {
+        option
+        for parameter in benchmark_command.params
+        for option in getattr(parameter, "opts", ())
+    }
 
     assert result.exit_code == 0
-    assert "--manifest" in result.stdout
-    assert "--provider" in result.stdout
-    assert "--compare" in result.stdout
+    assert {"--manifest", "--provider", "--compare"} <= option_names

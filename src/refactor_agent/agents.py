@@ -65,6 +65,7 @@ class AdversaryAgent:
         memory: str = "256m",
         cpus: float = 1.0,
         execution_control: ExecutionControl | None = None,
+        target_regions: list[str] | None = None,
     ) -> MutationTestResult:
         return run_mutation_tests(
             candidate_source=candidate_source,
@@ -78,6 +79,7 @@ class AdversaryAgent:
             memory=memory,
             cpus=cpus,
             execution_control=execution_control,
+            target_regions=target_regions,
         )
 
     def generate_tests(

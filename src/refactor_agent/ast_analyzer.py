@@ -103,8 +103,7 @@ def validate_candidate_source(original_source: str, candidate_source: str) -> Ca
             findings=[SafetyFinding(rule="candidate-syntax", message=str(exc), lineno=exc.lineno)],
         )
 
-    findings: list[SafetyFinding] = []
-    findings.extend(finding for finding in candidate.safety_findings if finding.severity == "error")
+    findings = _new_safety_findings(original_source, candidate_source)
     findings.extend(_public_api_findings(original, candidate))
     return CandidateValidationResult(ok=not findings, analysis=candidate, findings=findings)
 
@@ -324,7 +323,7 @@ def controlled_subtree_rewrite(
         source=rewritten,
         selected_regions=selected_regions,
         allowed_regions=allowed,
-        changed_regions=changed,
+        changed_regions=_rewritten_changed_region_keys(changed, module_targets, rewritten),
         added_imports=added_import_texts,
     )
 
@@ -443,7 +442,28 @@ def _find_qualified_node(tree: ast.AST, qualified_name: str) -> ast.AST | None:
     return None
 
 
+def _new_safety_findings(original_source: str, candidate_source: str) -> list[SafetyFinding]:
+    original_entries = _safety_finding_entries(ast.parse(original_source))
+    original_counts = Counter(key for _, key in original_entries)
+    findings: list[SafetyFinding] = []
+    for finding, key in _safety_finding_entries(ast.parse(candidate_source)):
+        if original_counts[key]:
+            original_counts[key] -= 1
+        elif finding.severity == "error":
+            findings.append(finding)
+    return findings
+
+
 def _safety_findings(tree: ast.AST) -> Iterable[SafetyFinding]:
+    for finding, _ in _safety_finding_entries(tree):
+        yield finding
+
+
+def _safety_finding_entries(
+    tree: ast.AST,
+) -> list[tuple[SafetyFinding, tuple[str, str, str, tuple[str, ...], tuple[str, ...]]]]:
+    entries: list[tuple[SafetyFinding, tuple[str, str, str, tuple[str, ...], tuple[str, ...]]]] = []
+    parent_edges = _ast_parent_edges(tree)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             imported = [alias.name.split(".")[0] for alias in getattr(node, "names", [])]
@@ -451,25 +471,159 @@ def _safety_findings(tree: ast.AST) -> Iterable[SafetyFinding]:
                 imported.append(node.module.split(".")[0])
             for name in imported:
                 if name in BLOCKED_IMPORTS:
-                    yield SafetyFinding(
+                    finding = SafetyFinding(
                         rule="blocked-import",
                         message=f"Importing {name!r} is blocked in generated code.",
                         lineno=getattr(node, "lineno", None),
                     )
+                    entries.append((finding, _safety_finding_key(finding, node, parent_edges)))
         elif isinstance(node, ast.Call):
             call_name = _call_name(node.func)
             if call_name in BLOCKED_CALLS or _matches_blocked_suffix(call_name):
-                yield SafetyFinding(
+                finding = SafetyFinding(
                     rule="blocked-call",
                     message=f"Calling {call_name!r} is blocked in generated code.",
                     lineno=getattr(node, "lineno", None),
                 )
+                entries.append((finding, _safety_finding_key(finding, node, parent_edges)))
         elif isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True:
-            yield SafetyFinding(
+            finding = SafetyFinding(
                 rule="infinite-loop-risk",
                 message="Literal while True loop is blocked before sandbox execution.",
                 lineno=node.lineno,
             )
+            entries.append((finding, _safety_finding_key(finding, node, parent_edges)))
+    return entries
+
+
+def _safety_finding_key(
+    finding: SafetyFinding,
+    node: ast.AST,
+    parent_edges: dict[int, tuple[ast.AST, str, int | None]],
+) -> tuple[str, str, str, tuple[str, ...], tuple[str, ...]]:
+    scopes: list[str] = []
+    contexts: list[str] = []
+    child = node
+    while edge := parent_edges.get(id(child)):
+        parent, field, position = edge
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scopes.append(f"{type(parent).__name__}:{parent.name}")
+            contexts.append(_safety_ancestor_context(parent, field, position))
+        elif not isinstance(parent, ast.Module):
+            contexts.append(_safety_ancestor_context(parent, field, position))
+        else:
+            contexts.append(_safety_ancestor_context(parent, field, position))
+        child = parent
+    return (
+        finding.rule,
+        finding.message,
+        ast.dump(node, include_attributes=False),
+        tuple(reversed(scopes)),
+        tuple(reversed(contexts)),
+    )
+
+
+def _ast_parent_edges(tree: ast.AST) -> dict[int, tuple[ast.AST, str, int | None]]:
+    edges: dict[int, tuple[ast.AST, str, int | None]] = {}
+    for parent in ast.walk(tree):
+        for field, value in ast.iter_fields(parent):
+            if isinstance(value, ast.AST):
+                edges[id(value)] = (parent, field, None)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    if isinstance(child, ast.AST):
+                        position = _safety_child_position(value, index, child, field)
+                        edges[id(child)] = (parent, field, position)
+    return edges
+
+
+def _safety_child_position(
+    siblings: list[object],
+    index: int,
+    child: ast.AST,
+    field: str,
+) -> int | None:
+    if field not in {"body", "orelse", "finalbody", "handlers", "cases"}:
+        return index
+    control_key = _control_statement_key(child)
+    if control_key is None:
+        return None
+    return sum(
+        _control_statement_key(sibling) == control_key
+        for sibling in siblings[:index]
+        if isinstance(sibling, ast.AST)
+    )
+
+
+def _control_statement_key(node: ast.AST) -> tuple[str, ...] | None:
+    if isinstance(node, (ast.If, ast.While)):
+        return type(node).__name__, ast.dump(node.test, include_attributes=False)
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        return (
+            type(node).__name__,
+            ast.dump(node.target, include_attributes=False),
+            ast.dump(node.iter, include_attributes=False),
+        )
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return (
+            type(node).__name__,
+            *(ast.dump(item.context_expr, include_attributes=False) for item in node.items),
+        )
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        return (type(node).__name__,)
+    if isinstance(node, ast.Match):
+        return type(node).__name__, ast.dump(node.subject, include_attributes=False)
+    if isinstance(node, ast.ExceptHandler):
+        return (
+            type(node).__name__,
+            ast.dump(node.type, include_attributes=False) if node.type else "",
+        )
+    if isinstance(node, ast.match_case):
+        return (
+            type(node).__name__,
+            ast.dump(node.pattern, include_attributes=False),
+            ast.dump(node.guard, include_attributes=False) if node.guard else "",
+        )
+    return None
+
+
+def _safety_ancestor_context(node: ast.AST, child_field: str, position: int | None) -> str:
+    details: list[str] = [type(node).__name__, child_field, "-" if position is None else str(position)]
+    if isinstance(node, (ast.If, ast.While, ast.IfExp)):
+        details.append(ast.dump(node.test, include_attributes=False))
+    elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+        details.extend(
+            (
+                ast.dump(node.target, include_attributes=False),
+                ast.dump(node.iter, include_attributes=False),
+            )
+        )
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        details.extend(ast.dump(item.context_expr, include_attributes=False) for item in node.items)
+    elif isinstance(node, ast.ExceptHandler):
+        details.extend((ast.dump(node.type, include_attributes=False) if node.type else "", node.name or ""))
+    elif isinstance(node, ast.Match):
+        details.append(ast.dump(node.subject, include_attributes=False))
+    elif isinstance(node, ast.match_case):
+        details.extend(
+            (
+                ast.dump(node.pattern, include_attributes=False),
+                ast.dump(node.guard, include_attributes=False) if node.guard else "",
+            )
+        )
+    elif isinstance(node, ast.BoolOp):
+        details.append(type(node.op).__name__)
+    elif isinstance(node, ast.BinOp):
+        details.append(type(node.op).__name__)
+    elif isinstance(node, ast.UnaryOp):
+        details.append(type(node.op).__name__)
+    elif isinstance(node, ast.Compare):
+        details.extend(type(operator).__name__ for operator in node.ops)
+    elif isinstance(node, ast.Call):
+        details.append(ast.dump(node.func, include_attributes=False))
+    elif isinstance(node, ast.Attribute):
+        details.append(node.attr)
+    return ":".join(details)
 
 
 def _public_api_findings(original: AstAnalysis, candidate: AstAnalysis) -> list[SafetyFinding]:
@@ -772,6 +926,26 @@ def _is_module_target(node: ast.stmt) -> bool:
 
 def _module_target_key(node: ast.stmt) -> str:
     return f"module:{node.lineno}:{type(node).__name__}"
+
+
+def _rewritten_changed_region_keys(
+    changed: list[str],
+    module_targets: dict[str, tuple[int, ast.stmt, ast.stmt]],
+    rewritten: str,
+) -> list[str]:
+    rewritten_body = [
+        node
+        for node in ast.parse(rewritten).body
+        if not isinstance(node, (ast.Import, ast.ImportFrom))
+    ]
+    resolved: list[str] = []
+    for name in changed:
+        if not name.startswith("module:"):
+            resolved.append(name)
+            continue
+        slot = module_targets[name][0]
+        resolved.append(_module_target_key(rewritten_body[slot]))
+    return resolved
 
 
 def _module_binding_fingerprint(node: ast.stmt) -> str | None:

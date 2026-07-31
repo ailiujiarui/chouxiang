@@ -13,7 +13,7 @@ from refactor_agent.artifacts import RunArtifactWriter
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
-from refactor_agent.errors import ErrorCode
+from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
 from refactor_agent.memory import build_memory_context, failure_memory, success_memory, target_memory_key
@@ -146,7 +146,10 @@ class _RefactorWorkflow:
         try:
             state["active_backend"], _ = resolve_sandbox_backend(self.orchestrator.sandbox_backend)
         except SandboxUnavailableError as exc:
-            state["terminal_error"] = str(exc)
+            logger.warning("Sandbox backend is unavailable: %s", exc)
+            state["terminal_error"] = public_error_message(ErrorCode.INTERNAL_ERROR)
+            state["terminal_error_code"] = ErrorCode.INTERNAL_ERROR
+            state["terminal_error_summary"] = "sandbox backend unavailable"
             state["next_node"] = "finalize"
             return state
         state["next_node"] = "minimizer"
@@ -348,6 +351,7 @@ class _RefactorWorkflow:
             memory=self.orchestrator.sandbox_memory,
             cpus=self.orchestrator.sandbox_cpus,
             execution_control=self.execution_control,
+            target_regions=state["rewrite"].changed_regions,
         )
         message = _summarize_mutation(state["mutation"])
         state["round_messages"].append(

@@ -26,7 +26,10 @@ from refactor_agent.models import (
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.persona import inject_persona_report
-from refactor_agent.repository_allowlist import RepositoryAllowlistPolicy
+from refactor_agent.repository_allowlist import (
+    RepositoryAllowlistPolicy,
+    RepositoryNotAllowlistedError,
+)
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -140,6 +143,18 @@ class LocalRepositoryRefactorService:
             )
         except (ExecutionCancelled, ExecutionDeadlineExceeded):
             raise
+        except RepositoryNotAllowlistedError:
+            logger.info("Repository policy rejected local job %s", job.job_id)
+            return GitHubAutomationResult(
+                job_id=job.job_id,
+                repo_full_name=job.repo_full_name,
+                issue_number=None,
+                status="FAILED",
+                workspace_path=checkout_path,
+                error_code=ErrorCode.INTERNAL_ERROR,
+                error_message=public_error_message(ErrorCode.INTERNAL_ERROR),
+                error_summary="repository is not allowlisted",
+            )
         except Exception:
             logger.exception("Local repository processing failed for job %s", job.job_id)
             return GitHubAutomationResult(

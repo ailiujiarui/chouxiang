@@ -347,7 +347,10 @@ def test_orchestrator_fails_before_llm_when_docker_is_unavailable(
     assert result.record.status == "FAILED"
     assert result.attempts == 0
     assert result.record.self_heal_count == 0
-    assert "virtualization missing" in (result.record.error or "")
+    assert result.record.error is None
+    assert result.record.error_code == ErrorCode.INTERNAL_ERROR
+    assert result.record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
+    assert result.record.error_summary == "sandbox backend unavailable"
 
 
 def _make_leap_project(tmp_path: Path) -> Path:
