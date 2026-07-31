@@ -81,8 +81,10 @@ def create_app(
     store: SQLiteRunStore | None = None,
     start_worker: bool = True,
 ) -> FastAPI:
+    """Create API and Worker dependencies after SQLite startup policy validation."""
+
     settings = settings or AppSettings.from_env()
-    store = store or SQLiteRunStore(settings.resolved_database_path)
+    store = store or SQLiteRunStore(settings.resolved_database_path, policy=settings.sqlite_policy)
     repository_policy = RepositoryAllowlistPolicy(settings, store)
     worker = GitHubJobWorker(
         settings,
@@ -176,6 +178,8 @@ def create_app(
 
     @app.get("/capabilities")
     def capabilities() -> dict[str, Any]:
+        """Expose product and sanitized effective SQLite capabilities."""
+
         runtime_capabilities = _runtime_capabilities(settings)
         product_mode = "demo" if settings.mock_llm else "deepseek"
         return {
@@ -192,6 +196,7 @@ def create_app(
             "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
             "personas": ["STRICT", "TSUNDERE"],
             "admin_token_required": bool(settings.admin_token),
+            "sqlite": store.sqlite_diagnostics.as_public_dict(),
         }
 
     @app.get("/admin/repository-allowlist")

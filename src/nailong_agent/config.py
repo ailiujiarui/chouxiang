@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from refactor_agent.sqlite_runtime import SQLitePolicy
+
 
 class NailongSettings(BaseModel):
     """Desktop-only configuration and derived local storage paths."""
@@ -19,9 +21,12 @@ class NailongSettings(BaseModel):
     lock_path_override: Path | None = None
     privacy_database_override: Path | None = None
     notification_database_override: Path | None = None
+    sqlite_policy: SQLitePolicy = Field(default_factory=SQLitePolicy)
 
     @classmethod
     def from_env(cls) -> "NailongSettings":
+        """Build desktop settings while reusing the API/Worker SQLite environment policy."""
+
         return cls(
             data_dir=Path(os.getenv("NAILONG_DATA_DIR", ".runs")),
             analysis_url=os.getenv("NAILONG_ANALYSIS_URL"),
@@ -30,6 +35,7 @@ class NailongSettings(BaseModel):
             maximum_popups_per_day=_optional_int("NAILONG_MAXIMUM_POPUPS_PER_DAY"),
             minimum_cooldown_seconds=_optional_int("NAILONG_MINIMUM_COOLDOWN_SECONDS"),
             maximum_cooldown_seconds=_optional_int("NAILONG_MAXIMUM_COOLDOWN_SECONDS"),
+            sqlite_policy=SQLitePolicy.from_env(),
         )
 
     def with_overrides(

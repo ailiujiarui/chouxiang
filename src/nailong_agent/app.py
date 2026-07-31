@@ -194,6 +194,8 @@ def create_renderer(*, headless: bool = False) -> PopupRenderer:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Start desktop Stores with one shared SQLite policy before background threads."""
+
     parser = argparse.ArgumentParser(description="Nailong desktop pet")
     parser.add_argument("--headless", action="store_true", help="run the process shell without PySide6")
     parser.add_argument("--data-dir", type=Path)
@@ -217,9 +219,9 @@ def main(argv: list[str] | None = None) -> int:
         maximum_cooldown_seconds=args.maximum_cooldown_seconds,
         activity_listener_enabled=args.activity_listener,
     )
-    privacy_store = PrivacyStore(settings.privacy_database)
+    privacy_store = PrivacyStore(settings.privacy_database, policy=settings.sqlite_policy)
     notification_store = (
-        NotificationStore(settings.notification_database)
+        NotificationStore(settings.notification_database, policy=settings.sqlite_policy)
         if settings.analysis_url or settings.activity_listener_enabled
         else None
     )

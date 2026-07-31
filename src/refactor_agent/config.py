@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from refactor_agent.sqlite_runtime import SQLitePolicy
+
 
 class AppSettings(BaseModel):
     admin_token: str | None = None
@@ -29,9 +31,12 @@ class AppSettings(BaseModel):
     job_max_attempts: int = Field(default=3, ge=1, le=10)
     job_deadline_seconds: int = Field(default=900, ge=30, le=7200)
     request_max_bytes: int = Field(default=1_048_576, ge=1024, le=10_485_760)
+    sqlite_policy: SQLitePolicy = Field(default_factory=SQLitePolicy)
 
     @classmethod
     def from_env(cls) -> "AppSettings":
+        """Build API/Worker settings, including the process-wide SQLite policy."""
+
         return cls(
             admin_token=os.getenv("REFACTOR_AGENT_ADMIN_TOKEN"),
             allowed_repositories=_csv_set(os.getenv("REFACTOR_AGENT_ALLOWED_REPOSITORIES")),
@@ -55,6 +60,7 @@ class AppSettings(BaseModel):
             job_max_attempts=int(os.getenv("REFACTOR_AGENT_JOB_MAX_ATTEMPTS", "3")),
             job_deadline_seconds=int(os.getenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "900")),
             request_max_bytes=int(os.getenv("REFACTOR_AGENT_REQUEST_MAX_BYTES", "1048576")),
+            sqlite_policy=SQLitePolicy.from_env(),
         )
 
     @property

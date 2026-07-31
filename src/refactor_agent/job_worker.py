@@ -55,6 +55,8 @@ class GitHubJobWorker:
             self._thread.join(timeout=5)
 
     def run_once(self) -> bool:
+        """Claim briefly, process outside transactions, then conditionally finish the owned job."""
+
         record = self.store.claim_next_github_job(
             self.worker_id,
             self.settings.job_lease_seconds,
@@ -130,7 +132,16 @@ class GitHubJobWorker:
                 logger.info("Worker %s no longer owns timed out job %s", self.worker_id, job.job_id)
         except sqlite3.OperationalError as exc:
             code = ErrorCode.DATABASE_LOCKED if is_database_locked(exc) else ErrorCode.INTERNAL_ERROR
-            logger.exception("Worker database operation failed for job %s", job.job_id)
+            lock_summary = (
+                self.store.sqlite_diagnostics.locked_summary("worker_job")
+                if code == ErrorCode.DATABASE_LOCKED
+                else None
+            )
+            logger.exception(
+                "Worker database operation failed for job %s%s",
+                job.job_id,
+                f" ({lock_summary})" if lock_summary else "",
+            )
             try:
                 self.store.complete_github_job(
                     job,
@@ -141,7 +152,7 @@ class GitHubJobWorker:
                         status="FAILED",
                         error_code=code,
                         error_message=OperationalError(code).public_message,
-                        error_summary="sqlite database is locked" if code == ErrorCode.DATABASE_LOCKED else None,
+                        error_summary=lock_summary,
                     ),
                     worker_id=self.worker_id,
                 )

@@ -132,6 +132,8 @@ class _RefactorWorkflow:
         return result
 
     def prepare(self, state: ExecutionState) -> ExecutionState:
+        """Prepare the run and convert sandbox startup details to a sanitized terminal error."""
+
         self._phase_started(state, "prepare")
         memory = build_memory_context(self.orchestrator.store.list_memory(self.repo_name, self.memory_key, limit=3))
         state["llm_request"] = _request_with_memory(self.request, memory)
