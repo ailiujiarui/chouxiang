@@ -44,6 +44,21 @@ flowchart TD
 - 旧数据库迁移顺序保持为 Run 迁移、Job 迁移、事件外键及其余表和索引初始化。
 - 新模块不得反向导入 Store 门面，依赖图不得形成循环。
 
+## 当前控制 API 边界
+
+```mermaid
+flowchart LR
+    CLIENTS["Dashboard 与本地客户端"] --> WEBHOOK["webhook.py\n兼容路由与请求编排"]
+    WEBHOOK --> REQUESTS["control_api_requests.py\n兼容路由输入契约"]
+    WEBHOOK --> MODELS["models.py\n共享 Analysis 契约"]
+    WEBHOOK --> STORE["store.py\n稳定持久化门面"]
+```
+
+- `control_api_requests.py` 只定义 Dashboard URL、Snippet 和 allowlist 兼容路由的 Pydantic 输入模型，不依赖 `webhook.py`、配置或业务服务。
+- `AnalysisRequest` 是统一 `/analysis` 入口的共享公共模型，继续由 `models.py` 提供。
+- `webhook.py` 继续兼容导出原有三个请求模型名称，调用方无需迁移导入路径。
+- CLI 参数、API 路由、请求字段、默认值和响应字段保持不变。
+
 ## 后续拆分方向
 
-Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。下一阶段将按单一边界拆分 `webhook.py` 的请求模型、任务创建、能力声明和配置校验。
+Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的请求模型边界也已完成；下一步将按单一边界提取任务创建逻辑，随后再处理能力声明和配置校验。

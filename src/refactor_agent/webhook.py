@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
@@ -19,6 +19,11 @@ from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
 from refactor_agent.config import AppSettings
+from refactor_agent.control_api_requests import (
+    DashboardUrlJobRequest,
+    RepositoryAllowlistRequest,
+    SnippetJobRequest,
+)
 from refactor_agent.job_worker import GitHubJobWorker
 from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import (
@@ -40,27 +45,6 @@ from refactor_agent.sandbox import docker_status
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-
-class DashboardUrlJobRequest(BaseModel):
-    repository_url: str
-    refactor_request: str
-    branch: str | None = None
-    target_path: str | None = None
-    tests_path: str = "tests"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
-
-
-class RepositoryAllowlistRequest(BaseModel):
-    repository: str
-
-
-class SnippetJobRequest(BaseModel):
-    source: str
-    refactor_request: str
-    tests: str | None = None
-    mode: Literal["REVIEW", "VERIFIED_REFACTOR"] = "REVIEW"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 def _runtime_capabilities(settings: AppSettings) -> dict[str, bool]:
