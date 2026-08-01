@@ -13,6 +13,7 @@ flowchart TD
     STORE --> RUNTIME["sqlite_runtime.py\n连接策略与诊断"]
     STORE --> SCHEMA["store_schema.py\n建表、索引和迁移"]
     STORE --> EVENTS["analysis_event_store.py\n事件读写与任务状态投影"]
+    STORE --> RUNS["run_record_store.py\nRun 快照与 Benchmark 结果"]
     STORE --> JOBS["github_job_store.py\n任务、租约、状态转换与审计"]
     STORE --> ALLOWLIST["repository_allowlist_store.py\n持久化条目与审计事件"]
     JOBS --> EVENTS
@@ -27,6 +28,7 @@ flowchart TD
 - `store.py` 可以依赖 `store_schema.py` 和 `sqlite_runtime.py`。
 - `store_schema.py` 接收现有连接，不导入 `store.py`，不创建或缓存 SQLite 连接。
 - `analysis_event_store.py` 接收连接工厂，不导入 `store.py`，普通操作每次获取新连接。
+- `run_record_store.py` 独立负责完整 Run 快照和 Benchmark 结果集；Benchmark 头记录与全部案例结果在同一事务中替换，每次操作后显式关闭连接。
 - `github_job_store.py` 独立负责 Job 创建、查询、租约、状态转换、完成和 `job_events` 审计，不导入 `store.py`；每次操作使用并显式关闭一条新连接。
 - Job 生命周期调用事件模块的 transaction-aware 写入方法，并传递现有事务连接；Job 记录、审计事件和分析事件必须原子提交或回滚，事件模块不得另开连接。
 - `repository_allowlist_store.py` 只负责持久化条目、容量上限和审计事务，不负责 URL 规范化或环境策略。
@@ -42,4 +44,4 @@ flowchart TD
 
 ## 后续拆分方向
 
-后续将提取 Run/Benchmark 持久化。每完成一个边界后再更新本图；尚未提取的职责仍由 `store.py` 实现。
+后续将提取 Trajectory Memory 持久化，使 `store.py` 最终只保留稳定门面和连接策略编排。每完成一个边界后再更新本图；尚未提取的职责仍由 `store.py` 实现。
