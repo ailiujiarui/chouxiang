@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -25,12 +25,10 @@ from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_pro
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.demo_cases import DEMO_CASE_NAMES, get_demo_case, materialize_demo_case
 from refactor_agent.demo_suite import DEFAULT_DEMO_SUITE_CASES, DemoSuiteRun, render_demo_suite_report
-from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
-from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
+from refactor_agent.local_refactor import LocalRefactorConfigurationError, run_local_refactor
 from refactor_agent.models import RefactorRequest
 from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
-from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.snippet import SnippetRefactorService
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.control_api import validate_control_api_settings
@@ -570,26 +568,21 @@ def _run_request(
 ):
     run_root = _resolve_run_root(run_root)
     try:
-        llm_client = MockRefactorClient(fail_times=mock_fail_times) if mock else DeepSeekClient()
-    except LLMError as exc:
+        return run_local_refactor(
+            request,
+            run_root=run_root,
+            database_path=_resolve_database(database, run_root),
+            pytest_timeout_seconds=timeout,
+            mock=mock,
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            mock_fail_times=mock_fail_times,
+            graph_backend=graph_backend or os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            deadline_seconds=_resolve_deadline(deadline_seconds),
+        )
+    except LocalRefactorConfigurationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
-
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    orchestrator = RefactorOrchestrator(
-        llm_client=llm_client,
-        run_root=run_root,
-        store=store,
-        pytest_timeout_seconds=timeout,
-        sandbox_backend=sandbox_backend,
-        sandbox_docker_image=sandbox_docker_image,
-        graph_backend=graph_backend or os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
-    )
-    resolved_deadline = _resolve_deadline(deadline_seconds)
-    control = ExecutionControl(
-        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=resolved_deadline)
-    )
-    return orchestrator.run(request, execution_control=control)
 
 
 def _suite_mock_fail_times(

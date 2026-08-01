@@ -113,6 +113,9 @@ $env:REFACTOR_AGENT_MOCK_LLM="true"
 
 ## CLI
 
+`cli.py` 只处理命令参数、终端输出和命令编排；本地文件、Demo 与只读 GitHub URL
+共用 `local_refactor.py` 的执行服务，Mock/DeepSeek 与沙箱参数不会在各命令中重复装配。
+
 安装开发依赖：
 
 ```powershell

@@ -69,6 +69,22 @@ flowchart LR
 - `webhook.py` 和 `control_api.py` 继续兼容导出 `validate_control_api_settings()`，调用方无需迁移导入路径。
 - CLI 参数、API 路由、请求字段、默认值和响应字段保持不变。
 
+## 当前 CLI 边界
+
+```mermaid
+flowchart LR
+    USER["终端用户"] --> CLI["cli.py\n参数解析、输出与命令编排"]
+    CLI --> LOCAL["local_refactor.py\n本地重构执行装配"]
+    LOCAL --> LLM["llm.py\nMock 或 DeepSeek 客户端"]
+    LOCAL --> ORCH["orchestrator.py\n重构执行流程"]
+    LOCAL --> STORE["store.py\n稳定持久化门面"]
+    LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
+```
+
+- `local_refactor.py` 负责选择 Mock/DeepSeek、装配 Store 与 Orchestrator，并为一次本地执行创建独立的 `ExecutionControl`；它不导入 Typer、Rich、`cli.py` 或环境变量。
+- `cli.py` 继续保留全部命令名称、参数、默认值和退出码，只负责参数归一化、调用应用服务以及将客户端初始化错误翻译为终端错误；运行阶段的 `LLMError` 仍按原路径传播。
+- `_run_request()` 作为现有 CLI 内部兼容入口保留，调用方向只能是 `cli.py` 到 `local_refactor.py`，新服务不得反向导入 CLI。
+
 ## 后续拆分方向
 
-Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的请求模型、任务创建、能力声明和配置校验边界也已完成；下一步将按单一边界拆分 CLI 业务逻辑。
+Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的四个目标边界也已完成；CLI 已迁出本地重构执行装配，下一步继续按单一职责提取路径和环境配置解析。
