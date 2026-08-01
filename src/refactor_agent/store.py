@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from refactor_agent.analysis_event_store import SQLiteAnalysisEventStore
@@ -30,6 +30,7 @@ from refactor_agent.sqlite_runtime import (
     log_sqlite_diagnostics,
 )
 from refactor_agent.store_schema import ensure_main_schema
+from refactor_agent.trajectory_memory_store import SQLiteTrajectoryMemoryStore
 
 
 class SQLiteRunStore:
@@ -49,6 +50,7 @@ class SQLiteRunStore:
         self._ensure_schema()
         self._analysis_events = SQLiteAnalysisEventStore(self._connect)
         self._run_records = SQLiteRunRecordStore(self._connect)
+        self._trajectory_memory = SQLiteTrajectoryMemoryStore(self._connect)
         self._github_jobs = SQLiteGitHubJobStore(self._connect, self._analysis_events)
         self._repository_allowlist = SQLiteRepositoryAllowlistStore(self._connect)
 
@@ -98,39 +100,7 @@ class SQLiteRunStore:
         return self._run_records.list_benchmark_case_results(run_id)
 
     def save_memory(self, record: TrajectoryMemoryRecord) -> None:
-        """Upsert an independently owned memory record without delete-and-reinsert effects."""
-
-        created_at = record.created_at or _now()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO trajectory_memory (
-                    memory_id, run_id, repo_name, target_path, status,
-                    lesson, error_signature, reward, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(memory_id) DO UPDATE SET
-                    run_id = excluded.run_id,
-                    repo_name = excluded.repo_name,
-                    target_path = excluded.target_path,
-                    status = excluded.status,
-                    lesson = excluded.lesson,
-                    error_signature = excluded.error_signature,
-                    reward = excluded.reward,
-                    created_at = excluded.created_at
-                """,
-                (
-                    record.memory_id,
-                    record.run_id,
-                    record.repo_name,
-                    record.target_path,
-                    record.status,
-                    record.lesson,
-                    record.error_signature,
-                    record.reward,
-                    created_at,
-                ),
-            )
+        self._trajectory_memory.save_memory(record)
 
     def list_memory(
         self,
@@ -138,27 +108,7 @@ class SQLiteRunStore:
         target_path: str | None = None,
         limit: int = 5,
     ) -> list[TrajectoryMemoryRecord]:
-        clauses = []
-        params: list[object] = []
-        if repo_name:
-            clauses.append("repo_name = ?")
-            params.append(repo_name)
-        if target_path:
-            clauses.append("target_path = ?")
-            params.append(target_path)
-        where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        params.append(limit)
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT * FROM trajectory_memory
-                {where}
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                tuple(params),
-            ).fetchall()
-        return [TrajectoryMemoryRecord(**dict(row)) for row in rows]
+        return self._trajectory_memory.list_memory(repo_name, target_path, limit)
 
     def create_github_job(self, job: GitHubRefactorJob) -> GitHubJobRecord:
         return self._github_jobs.create_github_job(job)
@@ -283,7 +233,3 @@ class SQLiteRunStore:
 
         with self._connect() as connection:
             ensure_main_schema(connection)
-
-
-def _now(delta: timedelta = timedelta()) -> str:
-    return (datetime.now(timezone.utc) + delta).isoformat(timespec="seconds")
