@@ -19,6 +19,7 @@ from refactor_agent.control_api_capabilities import (
     product_mode,
     runtime_capabilities as _runtime_capabilities,
 )
+from refactor_agent.control_api_config import validate_control_api_settings
 from refactor_agent.control_api_requests import (
     DashboardUrlJobRequest,
     RepositoryAllowlistRequest,
@@ -45,7 +46,6 @@ from refactor_agent.repository_allowlist import (
     RepositoryNotAllowlistedError,
 )
 from refactor_agent.store import JobTransitionError, SQLiteRunStore
-from refactor_agent.sandbox import docker_status
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -424,28 +424,6 @@ def create_app(
 
 
 app = create_app()
-
-
-def validate_control_api_settings(
-    settings: AppSettings,
-    require_docker: bool = False,
-    repository_policy: RepositoryAllowlistPolicy | None = None,
-) -> None:
-    missing = []
-    if not (
-        repository_policy.list_entries()
-        if repository_policy is not None
-        else settings.allowed_repositories
-    ):
-        missing.append("REFACTOR_AGENT_ALLOWED_REPOSITORIES")
-    if missing:
-        raise RuntimeError("Control API configuration is fail-closed; missing: " + ", ".join(missing))
-    if settings.sandbox_backend != "docker":
-        raise RuntimeError("Control API requires REFACTOR_AGENT_SANDBOX_BACKEND=docker.")
-    if require_docker:
-        docker = docker_status()
-        if not docker.available:
-            raise RuntimeError(f"Control API requires an available Docker daemon: {docker.error}")
 
 
 def _require_admin(request: Request, settings: AppSettings) -> None:

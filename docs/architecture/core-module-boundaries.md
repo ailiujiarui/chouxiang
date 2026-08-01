@@ -52,6 +52,7 @@ flowchart LR
     WEBHOOK --> REQUESTS["control_api_requests.py\n兼容路由输入契约"]
     WEBHOOK --> JOBPREP["control_api_jobs.py\n校验、规范化与任务准备"]
     WEBHOOK --> CAPS["control_api_capabilities.py\n运行能力矩阵与公开响应"]
+    WEBHOOK --> CONFIG["control_api_config.py\nfail-closed 启动校验"]
     WEBHOOK --> MODELS["models.py\n共享 Analysis 契约"]
     WEBHOOK --> STORE["store.py\n稳定持久化门面"]
     JOBPREP --> REQUESTS
@@ -61,11 +62,13 @@ flowchart LR
 - `control_api_requests.py` 只定义 Dashboard URL、Snippet 和 allowlist 兼容路由的 Pydantic 输入模型，不依赖 `webhook.py`、配置或业务服务。
 - `control_api_jobs.py` 负责 URL/ref/路径规范化、Snippet 语法与大小校验、allowlist 准入和 `GitHubRefactorJob` 构造；它不依赖 FastAPI，不持久化任务，也不决定运行能力。
 - `control_api_capabilities.py` 统一判定 Mock/DeepSeek、Docker 和提交模式可用性，并组装 `/capabilities` 的完整公开字段；它不依赖 FastAPI 或 Store 门面，也不执行启动配置校验。
+- `control_api_config.py` 独立执行 allowlist 非空、Docker 后端和 Docker daemon 的 fail-closed 启动校验；它不依赖 FastAPI 或 `webhook.py`，动态 allowlist 通过显式传入的策略读取。
 - `AnalysisRequest` 是统一 `/analysis` 入口的共享公共模型，继续由 `models.py` 提供。
 - `webhook.py` 继续兼容导出原有三个请求模型名称，调用方无需迁移导入路径。
 - `webhook.py` 和 `control_api.py` 继续兼容导出 `normalize_repo_path()`、`normalize_git_ref()`，`build_dashboard_job_id()` 也保留原有 `webhook.py` 导入路径。
+- `webhook.py` 和 `control_api.py` 继续兼容导出 `validate_control_api_settings()`，调用方无需迁移导入路径。
 - CLI 参数、API 路由、请求字段、默认值和响应字段保持不变。
 
 ## 后续拆分方向
 
-Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的请求模型、任务创建和能力声明边界也已完成；下一步将按单一边界提取配置校验。
+Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的请求模型、任务创建、能力声明和配置校验边界也已完成；下一步将按单一边界拆分 CLI 业务逻辑。
