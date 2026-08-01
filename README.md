@@ -167,7 +167,8 @@ docker compose config --quiet
 git diff --check
 ```
 
-Docker 细节见 `docker/README.md`，当前产品设计见 `docs/designs/2026-07-19-code-judge-product-redesign.md`。
+Docker 细节见 `docker/README.md`，当前产品设计见 `docs/designs/2026-07-19-code-judge-product-redesign.md`，
+核心模块依赖规则见 `docs/architecture/core-module-boundaries.md`。
 
 ## 许可证
 

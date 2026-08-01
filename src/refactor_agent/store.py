@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType, PublishReceipt
+from refactor_agent.analysis_event_store import SQLiteAnalysisEventStore
+from refactor_agent.analysis_events import AnalysisEvent, PublishReceipt
 from refactor_agent.artifacts import sanitize_text
 from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import (
@@ -29,6 +29,7 @@ from refactor_agent.sqlite_runtime import (
     initialize_sqlite_database,
     log_sqlite_diagnostics,
 )
+from refactor_agent.store_schema import ensure_main_schema
 
 
 class JobTransitionError(ValueError):
@@ -72,40 +73,13 @@ class SQLiteRunStore:
         )
         log_sqlite_diagnostics("main", self.sqlite_diagnostics)
         self._ensure_schema()
+        self._analysis_events = SQLiteAnalysisEventStore(self._connect)
 
     def emit(self, event: AnalysisEvent) -> PublishReceipt:
-        """Persist a sanitized analysis event with idempotent event IDs."""
-
-        try:
-            with self._connect() as connection:
-                sequence = self._insert_analysis_event(connection, event)
-        except sqlite3.IntegrityError:
-            with self._connect() as connection:
-                row = connection.execute(
-                    "SELECT sequence FROM analysis_events WHERE event_id = ?",
-                    (event.event_id,),
-                ).fetchone()
-            return PublishReceipt(
-                accepted=True,
-                duplicate=True,
-                sequence=int(row["sequence"]) if row else None,
-                reason="duplicate_event",
-            )
-        return PublishReceipt(accepted=True, sequence=sequence, reason="persisted")
+        return self._analysis_events.emit(event)
 
     def list_analysis_events(self, *, after: int = 0, limit: int = 100) -> list[AnalysisEvent]:
-        bounded_limit = max(1, min(limit, 500))
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM analysis_events
-                WHERE sequence > ?
-                ORDER BY sequence ASC
-                LIMIT ?
-                """,
-                (max(after, 0), bounded_limit),
-            ).fetchall()
-        return [_analysis_event_from_row(row) for row in rows]
+        return self._analysis_events.list_analysis_events(after=after, limit=limit)
 
     def read_public_analysis_event_page(
         self,
@@ -113,52 +87,13 @@ class SQLiteRunStore:
         after: int = 0,
         limit: int = 100,
     ) -> tuple[list[AnalysisEvent], int, int, bool]:
-        """Read a public-only page against one captured sequence high-water mark."""
-
-        bounded_after = max(after, 0)
-        bounded_limit = max(1, min(limit, 500))
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) AS latest FROM analysis_events"
-            ).fetchone()
-            latest_sequence = int(row["latest"] if row else 0)
-            rows = connection.execute(
-                """
-                SELECT * FROM analysis_events
-                WHERE sequence > ? AND sequence <= ? AND sensitivity = 'public'
-                ORDER BY sequence ASC
-                LIMIT ?
-                """,
-                (bounded_after, latest_sequence, bounded_limit),
-            ).fetchall()
-            events = [_analysis_event_from_row(event_row) for event_row in rows]
-            next_sequence = int(events[-1].sequence) if events else latest_sequence
-            has_more = bool(
-                connection.execute(
-                    """
-                    SELECT 1 FROM analysis_events
-                    WHERE sequence > ? AND sequence <= ? AND sensitivity = 'public'
-                    LIMIT 1
-                    """,
-                    (next_sequence, latest_sequence),
-                ).fetchone()
-            )
-        return events, next_sequence, latest_sequence, has_more
+        return self._analysis_events.read_public_analysis_event_page(after=after, limit=limit)
 
     def latest_analysis_event_sequence(self) -> int:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) AS latest FROM analysis_events"
-            ).fetchone()
-        return int(row["latest"] if row else 0)
+        return self._analysis_events.latest_analysis_event_sequence()
 
     def prune_analysis_events(self, *, older_than: datetime) -> int:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM analysis_events WHERE occurred_at < ?",
-                (older_than.astimezone(timezone.utc).isoformat(),),
-            )
-        return cursor.rowcount
+        return self._analysis_events.prune_analysis_events(older_than=older_than)
 
     def save(self, record: RunRecord) -> None:
         """Upsert only fields owned by a complete run snapshot, avoiding REPLACE semantics."""
@@ -418,7 +353,7 @@ class SQLiteRunStore:
                     attempt=0,
                     message="job queued",
                 )
-                self._insert_task_analysis_event(
+                self._analysis_events.insert_task_event(
                     connection,
                     job_id=record.job_id,
                     status=GitHubJobStatus.QUEUED,
@@ -518,7 +453,7 @@ class SQLiteRunStore:
                         else "expired lease returned job to queue"
                     ),
                 )
-                self._insert_task_analysis_event(
+                self._analysis_events.insert_task_event(
                     connection,
                     job_id=expired_row["job_id"],
                     status=next_status,
@@ -556,7 +491,7 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"] + 1,
                 message="worker claimed job",
             )
-            self._insert_task_analysis_event(
+            self._analysis_events.insert_task_event(
                 connection,
                 job_id=row["job_id"],
                 status=GitHubJobStatus.RUNNING,
@@ -637,7 +572,7 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"],
                 message=message,
             )
-            self._insert_task_analysis_event(
+            self._analysis_events.insert_task_event(
                 connection,
                 job_id=job_id,
                 status=destination,
@@ -701,7 +636,7 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"],
                 message="manual cancellation requested",
             )
-            self._insert_task_analysis_event(
+            self._analysis_events.insert_task_event(
                 connection,
                 job_id=job_id,
                 status=destination,
@@ -758,7 +693,7 @@ class SQLiteRunStore:
                 attempt=0,
                 message="manual retry queued",
             )
-            self._insert_task_analysis_event(
+            self._analysis_events.insert_task_event(
                 connection,
                 job_id=job_id,
                 status=GitHubJobStatus.QUEUED,
@@ -927,7 +862,7 @@ class SQLiteRunStore:
                 attempt=row["attempt_count"],
                 message=error_message or f"job completed with status {destination.value}",
             )
-            self._insert_task_analysis_event(
+            self._analysis_events.insert_task_event(
                 connection,
                 job_id=job_id,
                 status=destination,
@@ -1007,74 +942,6 @@ class SQLiteRunStore:
                 attempt,
                 sanitize_text(message)[:2048],
                 _now(),
-            ),
-        )
-
-    def _insert_analysis_event(
-        self,
-        connection: sqlite3.Connection,
-        event: AnalysisEvent,
-    ) -> int:
-        cursor = connection.execute(
-            """
-            INSERT INTO analysis_events (
-                event_id, schema_version, event_type, task_id, run_id, source,
-                phase, attempt, evidence_level, error_category, recoverable,
-                deadline_at, safe_metrics_json, occurred_at, sensitivity
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.event_id,
-                event.schema_version,
-                event.event_type.value,
-                event.task_id,
-                event.run_id,
-                event.source,
-                event.phase,
-                event.attempt,
-                event.evidence_level,
-                event.error_category,
-                int(event.recoverable) if event.recoverable is not None else None,
-                event.deadline_at.astimezone(timezone.utc).isoformat() if event.deadline_at else None,
-                json.dumps(event.safe_metrics, ensure_ascii=False, sort_keys=True),
-                event.occurred_at.astimezone(timezone.utc).isoformat(),
-                event.sensitivity,
-            ),
-        )
-        return int(cursor.lastrowid)
-
-    def _insert_task_analysis_event(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        job_id: str,
-        status: GitHubJobStatus,
-        attempt: int,
-        run_id: str | None = None,
-        deadline_at: str | None = None,
-    ) -> None:
-        event_types = {
-            GitHubJobStatus.QUEUED: AnalysisEventType.TASK_QUEUED,
-            GitHubJobStatus.RUNNING: AnalysisEventType.TASK_STARTED,
-            GitHubJobStatus.SUCCESS: AnalysisEventType.TASK_COMPLETED,
-            GitHubJobStatus.DRY_RUN: AnalysisEventType.TASK_COMPLETED,
-            GitHubJobStatus.FAILED: AnalysisEventType.TASK_FAILED,
-            GitHubJobStatus.TIMED_OUT: AnalysisEventType.TASK_TIMED_OUT,
-            GitHubJobStatus.CANCELLED: AnalysisEventType.TASK_CANCELLED,
-        }
-        event_type = event_types.get(status)
-        if event_type is None:
-            return
-        self._insert_analysis_event(
-            connection,
-            AnalysisEvent(
-                event_type=event_type,
-                task_id=job_id,
-                run_id=run_id,
-                source="worker",
-                attempt=attempt,
-                deadline_at=datetime.fromisoformat(deadline_at) if deadline_at else None,
-                safe_metrics={"job_status": status.value},
             ),
         )
 
@@ -1191,205 +1058,10 @@ class SQLiteRunStore:
         return connect_sqlite(self.database_path, self.sqlite_policy)
 
     def _ensure_schema(self) -> None:
-        """Create or migrate the main schema after journal negotiation and before serving work."""
+        """Create or migrate the main schema before serving work."""
 
         with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS runs (
-                    run_id TEXT PRIMARY KEY,
-                    issue_id TEXT,
-                    repo_name TEXT NOT NULL,
-                    pre_loc INTEGER,
-                    post_loc INTEGER,
-                    pre_cc INTEGER,
-                    post_cc INTEGER,
-                    self_heal_count INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
-                    error TEXT
-                    ,error_code TEXT
-                    ,error_message TEXT
-                    ,error_summary TEXT
-                    ,evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS'
-                    ,report_persona TEXT NOT NULL DEFAULT 'STRICT'
-                )
-                """
-            )
-            _migrate_runs_status(connection)
-            _migrate_runs_metadata(connection)
-            _migrate_error_fields(connection, "runs")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS github_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    job_kind TEXT NOT NULL DEFAULT 'GITHUB_WEBHOOK' CHECK(job_kind IN (
-                        'GITHUB_WEBHOOK', 'DASHBOARD_URL', 'SNIPPET'
-                    )),
-                    delivery_id TEXT NOT NULL UNIQUE,
-                    repo_full_name TEXT NOT NULL,
-                    issue_number INTEGER,
-                    target_path TEXT NOT NULL,
-                    tests_path TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'QUEUED', 'RUNNING', 'CANCEL_REQUESTED', 'CANCELLED',
-                        'TIMED_OUT', 'SUCCESS', 'FAILED', 'DRY_RUN'
-                    )),
-                    branch_name TEXT,
-                    run_id TEXT,
-                    pr_url TEXT,
-                    workspace_path TEXT,
-                    error TEXT,
-                    error_code TEXT,
-                    error_message TEXT,
-                    error_summary TEXT,
-                    payload_json TEXT,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    lease_owner TEXT,
-                    lease_expires_at TEXT,
-                    deadline_at TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            _migrate_github_jobs(connection)
-            _migrate_error_fields(connection, "github_jobs")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS job_events (
-                    event_id TEXT PRIMARY KEY,
-                    job_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    from_status TEXT,
-                    to_status TEXT,
-                    worker_id TEXT,
-                    attempt INTEGER NOT NULL DEFAULT 0,
-                    message TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(job_id) REFERENCES github_jobs(job_id)
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS analysis_events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event_id TEXT NOT NULL UNIQUE,
-                    schema_version INTEGER NOT NULL,
-                    event_type TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    run_id TEXT,
-                    source TEXT NOT NULL,
-                    phase TEXT,
-                    attempt INTEGER NOT NULL DEFAULT 0,
-                    evidence_level TEXT,
-                    error_category TEXT,
-                    recoverable INTEGER,
-                    deadline_at TEXT,
-                    safe_metrics_json TEXT NOT NULL DEFAULT '{}',
-                    occurred_at TEXT NOT NULL,
-                    sensitivity TEXT NOT NULL DEFAULT 'public'
-                        CHECK(sensitivity IN ('public', 'private', 'blocked'))
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_analysis_events_task_sequence
-                ON analysis_events (task_id, sequence)
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS benchmark_runs (
-                    run_id TEXT PRIMARY KEY,
-                    manifest_hash TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED')),
-                    generated_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS benchmark_case_results (
-                    run_id TEXT NOT NULL,
-                    case_name TEXT NOT NULL,
-                    repository TEXT NOT NULL,
-                    commit_sha TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    expected_status TEXT NOT NULL,
-                    failure_category TEXT,
-                    attempts INTEGER NOT NULL,
-                    loc_before INTEGER,
-                    loc_after INTEGER,
-                    cc_before INTEGER,
-                    cc_after INTEGER,
-                    mutation_kill_rate REAL,
-                    adversarial_passed INTEGER,
-                    runtime_seconds REAL NOT NULL,
-                    prompt_tokens INTEGER NOT NULL,
-                    completion_tokens INTEGER NOT NULL,
-                    total_tokens INTEGER NOT NULL,
-                    cost_usd REAL NOT NULL,
-                    normalized_hash TEXT NOT NULL,
-                    error TEXT,
-                    PRIMARY KEY (run_id, case_name),
-                    FOREIGN KEY(run_id) REFERENCES benchmark_runs(run_id)
-                )
-                """
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events (job_id, created_at)"
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS trajectory_memory (
-                    memory_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    repo_name TEXT NOT NULL,
-                    target_path TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED')),
-                    lesson TEXT NOT NULL,
-                    error_signature TEXT,
-                    reward REAL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_trajectory_memory_lookup
-                ON trajectory_memory (repo_name, target_path, created_at DESC)
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_allowlist (
-                    repo_full_name TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS repository_allowlist_events (
-                    event_id TEXT PRIMARY KEY,
-                    action TEXT NOT NULL CHECK(action IN ('ADD', 'REMOVE')),
-                    repo_full_name TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_repository_allowlist_events_created
-                ON repository_allowlist_events (created_at, event_id)
-                """
-            )
+            ensure_main_schema(connection)
 
 
 def _now(delta: timedelta = timedelta()) -> str:
@@ -1401,185 +1073,3 @@ def _job_record_from_row(row: sqlite3.Row) -> GitHubJobRecord:
     if data.get("workspace_path"):
         data["workspace_path"] = Path(data["workspace_path"])
     return GitHubJobRecord(**data)
-
-
-def _analysis_event_from_row(row: sqlite3.Row) -> AnalysisEvent:
-    data = dict(row)
-    data["safe_metrics"] = json.loads(data.pop("safe_metrics_json") or "{}")
-    if data.get("recoverable") is not None:
-        data["recoverable"] = bool(data["recoverable"])
-    return AnalysisEvent.model_validate(data)
-
-
-def _migrate_runs_status(connection: sqlite3.Connection) -> None:
-    row = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
-    ).fetchone()
-    if row is None or "REVIEWED" in (row["sql"] or ""):
-        return
-    connection.execute("ALTER TABLE runs RENAME TO runs_legacy")
-    connection.execute(
-        """
-        CREATE TABLE runs (
-            run_id TEXT PRIMARY KEY,
-            issue_id TEXT,
-            repo_name TEXT NOT NULL,
-            pre_loc INTEGER,
-            post_loc INTEGER,
-            pre_cc INTEGER,
-            post_cc INTEGER,
-            self_heal_count INTEGER NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('SUCCESS', 'FAILED', 'REVIEWED')),
-            error TEXT,
-            evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS',
-            report_persona TEXT NOT NULL DEFAULT 'STRICT'
-        )
-        """
-    )
-    legacy_columns = {
-        column["name"] for column in connection.execute("PRAGMA table_info(runs_legacy)")
-    }
-    common_columns = [
-        column
-        for column in (
-            "run_id", "issue_id", "repo_name", "pre_loc", "post_loc", "pre_cc", "post_cc",
-            "self_heal_count", "status", "error", "evidence_level", "report_persona",
-        )
-        if column in legacy_columns
-    ]
-    column_list = ", ".join(common_columns)
-    connection.execute(
-        f"INSERT INTO runs ({column_list}) SELECT {column_list} FROM runs_legacy"
-    )
-    connection.execute("DROP TABLE runs_legacy")
-
-
-def _migrate_runs_metadata(connection: sqlite3.Connection) -> None:
-    columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
-    if "evidence_level" not in columns:
-        connection.execute(
-            "ALTER TABLE runs ADD COLUMN evidence_level TEXT NOT NULL DEFAULT 'REPOSITORY_TESTS'"
-        )
-    if "report_persona" not in columns:
-        connection.execute(
-            "ALTER TABLE runs ADD COLUMN report_persona TEXT NOT NULL DEFAULT 'STRICT'"
-        )
-
-
-def _migrate_error_fields(connection: sqlite3.Connection, table: str) -> None:
-    columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
-    for name in ("error_code", "error_message", "error_summary"):
-        if name not in columns:
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} TEXT")
-    connection.execute(
-        f"""
-        UPDATE {table}
-        SET error_code = ?, error_message = ?, error_summary = NULL, error = NULL
-        WHERE error IS NOT NULL AND error_code IS NULL
-        """,
-        (ErrorCode.INTERNAL_ERROR.value, public_error_message(ErrorCode.INTERNAL_ERROR)),
-    )
-
-
-def _migrate_github_jobs(connection: sqlite3.Connection) -> None:
-    table_sql_row = connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'github_jobs'"
-    ).fetchone()
-    table_sql = table_sql_row["sql"] if table_sql_row else ""
-    table_info = connection.execute("PRAGMA table_info(github_jobs)").fetchall()
-    columns = {row["name"]: row for row in table_info}
-    issue_number_required = bool(columns.get("issue_number") and columns["issue_number"]["notnull"])
-    if (
-        "CANCEL_REQUESTED" not in table_sql
-        or "SNIPPET" not in table_sql
-        or "job_kind" not in columns
-        or issue_number_required
-    ):
-        _rebuild_github_jobs_with_control_states(connection)
-    columns = {row["name"] for row in connection.execute("PRAGMA table_info(github_jobs)").fetchall()}
-    additions = {
-        "delivery_id": "TEXT",
-        "payload_json": "TEXT",
-        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
-        "lease_owner": "TEXT",
-        "lease_expires_at": "TEXT",
-        "deadline_at": "TEXT",
-    }
-    for name, definition in additions.items():
-        if name not in columns:
-            connection.execute(f"ALTER TABLE github_jobs ADD COLUMN {name} {definition}")
-    connection.execute("UPDATE github_jobs SET delivery_id = job_id WHERE delivery_id IS NULL")
-    connection.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_github_jobs_delivery ON github_jobs (delivery_id)"
-    )
-    connection.execute(
-        "DROP INDEX IF EXISTS idx_github_jobs_active_issue"
-    )
-    connection.execute(
-        """
-        CREATE UNIQUE INDEX idx_github_jobs_active_issue
-        ON github_jobs (repo_full_name, issue_number)
-        WHERE issue_number IS NOT NULL
-          AND status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED')
-        """
-    )
-
-
-def _rebuild_github_jobs_with_control_states(connection: sqlite3.Connection) -> None:
-    connection.execute("DROP INDEX IF EXISTS idx_github_jobs_delivery")
-    connection.execute("DROP INDEX IF EXISTS idx_github_jobs_active_issue")
-    connection.execute("DROP TABLE IF EXISTS github_jobs_new")
-    connection.execute(
-        """
-        CREATE TABLE github_jobs_new (
-            job_id TEXT PRIMARY KEY,
-            job_kind TEXT NOT NULL DEFAULT 'GITHUB_WEBHOOK' CHECK(job_kind IN (
-                'GITHUB_WEBHOOK', 'DASHBOARD_URL', 'SNIPPET'
-            )),
-            delivery_id TEXT NOT NULL UNIQUE,
-            repo_full_name TEXT NOT NULL,
-            issue_number INTEGER,
-            target_path TEXT NOT NULL,
-            tests_path TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN (
-                'QUEUED', 'RUNNING', 'CANCEL_REQUESTED', 'CANCELLED',
-                'TIMED_OUT', 'SUCCESS', 'FAILED', 'DRY_RUN'
-            )),
-            branch_name TEXT,
-            run_id TEXT,
-            pr_url TEXT,
-            workspace_path TEXT,
-            error TEXT,
-            payload_json TEXT,
-            attempt_count INTEGER NOT NULL DEFAULT 0,
-            lease_owner TEXT,
-            lease_expires_at TEXT,
-            deadline_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    legacy_columns = {row["name"] for row in connection.execute("PRAGMA table_info(github_jobs)")}
-    columns = [
-        "job_id", "job_kind", "delivery_id", "repo_full_name", "issue_number", "target_path", "tests_path",
-        "status", "branch_name", "run_id", "pr_url", "workspace_path", "error", "payload_json",
-        "attempt_count", "lease_owner", "lease_expires_at", "deadline_at", "created_at", "updated_at",
-    ]
-    select_parts = []
-    for name in columns:
-        if name in legacy_columns:
-            select_parts.append(name)
-        elif name == "job_kind":
-            select_parts.append("'GITHUB_WEBHOOK'")
-        elif name == "delivery_id":
-            select_parts.append("job_id")
-        elif name == "attempt_count":
-            select_parts.append("0")
-        else:
-            select_parts.append("NULL")
-    connection.execute(
-        f"INSERT INTO github_jobs_new ({', '.join(columns)}) SELECT {', '.join(select_parts)} FROM github_jobs"
-    )
-    connection.execute("DROP TABLE github_jobs")
-    connection.execute("ALTER TABLE github_jobs_new RENAME TO github_jobs")
