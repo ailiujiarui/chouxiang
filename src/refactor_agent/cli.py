@@ -20,6 +20,12 @@ from refactor_agent.benchmark import (
     serialize_benchmark,
     serialize_manifest_benchmark,
 )
+from refactor_agent.cli_config import (
+    resolve_database as _resolve_database,
+    resolve_deadline as _resolve_deadline,
+    resolve_github_workspace_root as _resolve_github_workspace_root,
+    resolve_run_root as _resolve_run_root,
+)
 from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
@@ -622,37 +628,6 @@ def _resolve_issue_text(issue: Path | None, issue_text: str | None) -> str:
         console.print(f"[red]issue file does not exist: {issue}[/red]")
         raise typer.Exit(code=2)
     return issue.read_text(encoding="utf-8")
-
-
-def _resolve_run_root(run_root: Path) -> Path:
-    env_run_root = os.getenv("REFACTOR_AGENT_RUN_ROOT")
-    if env_run_root and run_root == Path(".runs"):
-        return Path(env_run_root)
-    return run_root
-
-
-def _resolve_database(database: Path | None, run_root: Path) -> Path:
-    if database is not None:
-        return database
-    env_database = os.getenv("REFACTOR_AGENT_DATABASE")
-    if env_database:
-        return Path(env_database)
-    return run_root / "refactor_agent.sqlite"
-
-
-def _resolve_github_workspace_root(github_workspace_root: Path) -> Path:
-    env_workspace = os.getenv("REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT")
-    if env_workspace and github_workspace_root == Path(".github-url-workspaces"):
-        return Path(env_workspace)
-    return github_workspace_root
-
-
-def _resolve_deadline(deadline_seconds: int) -> int:
-    if deadline_seconds == 900:
-        return AppSettings(
-            job_deadline_seconds=int(os.getenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "900"))
-        ).job_deadline_seconds
-    return deadline_seconds
 
 
 def _print_plain(text: str) -> None:
