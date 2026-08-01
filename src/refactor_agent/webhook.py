@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -15,6 +14,11 @@ from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
 from refactor_agent.config import AppSettings
+from refactor_agent.control_api_capabilities import (
+    build_capabilities_response,
+    product_mode,
+    runtime_capabilities as _runtime_capabilities,
+)
 from refactor_agent.control_api_requests import (
     DashboardUrlJobRequest,
     RepositoryAllowlistRequest,
@@ -45,19 +49,6 @@ from refactor_agent.sandbox import docker_status
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-
-def _runtime_capabilities(settings: AppSettings) -> dict[str, bool]:
-    deepseek_available = bool(os.getenv("DEEPSEEK_API_KEY"))
-    llm_available = settings.mock_llm or deepseek_available
-    docker_available = settings.sandbox_backend == "docker"
-    return {
-        "deepseek_available": deepseek_available,
-        "llm_available": llm_available,
-        "url_submission": docker_available and llm_available,
-        "snippet_submission": llm_available,
-        "snippet_verified_refactor": docker_available and llm_available,
-    }
 
 
 def create_app(
@@ -164,24 +155,7 @@ def create_app(
     def capabilities() -> dict[str, Any]:
         """Expose product and sanitized effective SQLite capabilities."""
 
-        runtime_capabilities = _runtime_capabilities(settings)
-        product_mode = "demo" if settings.mock_llm else "deepseek"
-        return {
-            "sandbox_backend": settings.sandbox_backend,
-            "graph_backend": settings.graph_backend,
-            "llm_mode": "mock" if settings.mock_llm else settings.llm_provider,
-            "product_mode": product_mode,
-            "demo_limitations": (
-                "Deterministic demo supports only built-in patterns; arbitrary code requires DeepSeek."
-                if product_mode == "demo"
-                else None
-            ),
-            **runtime_capabilities,
-            "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
-            "personas": ["STRICT", "TSUNDERE"],
-            "admin_token_required": bool(settings.admin_token),
-            "sqlite": store.sqlite_diagnostics.as_public_dict(),
-        }
+        return build_capabilities_response(settings, store.sqlite_diagnostics)
 
     @app.get("/admin/repository-allowlist")
     def list_repository_allowlist(request: Request) -> dict[str, Any]:
@@ -383,7 +357,7 @@ def create_app(
         response_payload.update(
             evidence_level=prepared.evidence_level.value,
             report_persona=payload.persona.value,
-            product_mode="demo" if settings.mock_llm else "deepseek",
+            product_mode=product_mode(settings),
         )
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response_payload)
 
