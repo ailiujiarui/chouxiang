@@ -13,6 +13,7 @@ flowchart TD
     STORE --> RUNTIME["sqlite_runtime.py\n连接策略与诊断"]
     STORE --> SCHEMA["store_schema.py\n建表、索引和迁移"]
     STORE --> EVENTS["analysis_event_store.py\n事件读写与任务状态投影"]
+    STORE --> ALLOWLIST["repository_allowlist_store.py\n持久化条目与审计事件"]
     EVENTS --> CONTRACTS["analysis_events.py\n事件公共契约"]
     SCHEMA --> ERRORS["errors.py\n错误代码与公共消息"]
 ```
@@ -24,6 +25,7 @@ flowchart TD
 - `store_schema.py` 接收现有连接，不导入 `store.py`，不创建或缓存 SQLite 连接。
 - `analysis_event_store.py` 接收连接工厂，不导入 `store.py`，普通操作每次获取新连接。
 - Job 生命周期调用事件模块的 transaction-aware 写入方法，并传递现有事务连接；事件模块不得另开连接。
+- `repository_allowlist_store.py` 只负责持久化条目、容量上限和审计事务，不负责 URL 规范化或环境策略。
 - Schema 迁移必须在 Worker 和其他后台线程启动前完成。
 - 后续 Repository 拆分必须继续为每次操作创建独立连接；跨表原子写入必须显式共享同一事务连接。
 
@@ -36,4 +38,4 @@ flowchart TD
 
 ## 后续拆分方向
 
-后续将依次提取 allowlist、Job 生命周期以及 Run/Benchmark 持久化。每完成一个边界后再更新本图；尚未提取的职责仍由 `store.py` 实现。
+后续将依次提取 Job 生命周期以及 Run/Benchmark 持久化。每完成一个边界后再更新本图；尚未提取的职责仍由 `store.py` 实现。

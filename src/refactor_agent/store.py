@@ -22,6 +22,7 @@ from refactor_agent.models import (
     RunRecord,
     TrajectoryMemoryRecord,
 )
+from refactor_agent.repository_allowlist_store import SQLiteRepositoryAllowlistStore
 from refactor_agent.sqlite_runtime import (
     SQLiteDiagnostics,
     SQLitePolicy,
@@ -74,6 +75,7 @@ class SQLiteRunStore:
         log_sqlite_diagnostics("main", self.sqlite_diagnostics)
         self._ensure_schema()
         self._analysis_events = SQLiteAnalysisEventStore(self._connect)
+        self._repository_allowlist = SQLiteRepositoryAllowlistStore(self._connect)
 
     def emit(self, event: AnalysisEvent) -> PublishReceipt:
         return self._analysis_events.emit(event)
@@ -963,94 +965,25 @@ class SQLiteRunStore:
         repo_full_name: str,
         max_entries: int | None = None,
     ) -> RepositoryAllowlistRecord | None:
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT * FROM repository_allowlist WHERE repo_full_name = ?",
-                (repo_full_name,),
-            ).fetchone()
-            if existing is not None:
-                return RepositoryAllowlistRecord(**dict(existing))
-            if max_entries is not None:
-                count_row = connection.execute(
-                    "SELECT COUNT(*) AS count FROM repository_allowlist"
-                ).fetchone()
-                if int(count_row["count"]) >= max_entries:
-                    return None
-            created_at = _now()
-            connection.execute(
-                """
-                INSERT INTO repository_allowlist (repo_full_name, created_at)
-                VALUES (?, ?)
-                """,
-                (repo_full_name, created_at),
-            )
-            self._insert_repository_allowlist_event(connection, "ADD", repo_full_name)
-            row = connection.execute(
-                "SELECT * FROM repository_allowlist WHERE repo_full_name = ?",
-                (repo_full_name,),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("Repository allowlist insert did not produce a record.")
-        return RepositoryAllowlistRecord(**dict(row))
+        return self._repository_allowlist.add_repository_allowlist_entry(
+            repo_full_name,
+            max_entries=max_entries,
+        )
 
     def remove_repository_allowlist_entry(self, repo_full_name: str) -> bool:
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                "DELETE FROM repository_allowlist WHERE repo_full_name = ?",
-                (repo_full_name,),
-            )
-            removed = bool(cursor.rowcount)
-            if removed:
-                self._insert_repository_allowlist_event(connection, "REMOVE", repo_full_name)
-        return removed
+        return self._repository_allowlist.remove_repository_allowlist_entry(repo_full_name)
 
     def get_repository_allowlist_entry(self, repo_full_name: str) -> RepositoryAllowlistRecord | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM repository_allowlist WHERE repo_full_name = ?",
-                (repo_full_name,),
-            ).fetchone()
-        return RepositoryAllowlistRecord(**dict(row)) if row else None
+        return self._repository_allowlist.get_repository_allowlist_entry(repo_full_name)
 
     def list_repository_allowlist_entries(self) -> list[RepositoryAllowlistRecord]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM repository_allowlist ORDER BY repo_full_name"
-            ).fetchall()
-        return [RepositoryAllowlistRecord(**dict(row)) for row in rows]
+        return self._repository_allowlist.list_repository_allowlist_entries()
 
     def count_repository_allowlist_entries(self) -> int:
-        with self._connect() as connection:
-            row = connection.execute("SELECT COUNT(*) AS count FROM repository_allowlist").fetchone()
-        return int(row["count"])
+        return self._repository_allowlist.count_repository_allowlist_entries()
 
     def list_repository_allowlist_events(self, limit: int = 200) -> list[RepositoryAllowlistEventRecord]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM repository_allowlist_events
-                ORDER BY rowid LIMIT ?
-                """,
-                (max(1, min(limit, 1000)),),
-            ).fetchall()
-        return [RepositoryAllowlistEventRecord(**dict(row)) for row in rows]
-
-    def _insert_repository_allowlist_event(
-        self,
-        connection: sqlite3.Connection,
-        action: str,
-        repo_full_name: str,
-    ) -> None:
-        connection.execute(
-            """
-            INSERT INTO repository_allowlist_events (
-                event_id, action, repo_full_name, created_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (f"allowlist-event-{uuid4().hex}", action, repo_full_name, _now()),
-        )
+        return self._repository_allowlist.list_repository_allowlist_events(limit)
 
     def _connect(self) -> sqlite3.Connection:
         """Open a fresh main-database connection under the Store's shared policy."""
