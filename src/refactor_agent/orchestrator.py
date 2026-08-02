@@ -40,7 +40,7 @@ from refactor_agent.orchestrator_ast_guard import (
     rewrite_metadata,
 )
 from refactor_agent.orchestrator_observability import OrchestratorObservability
-from refactor_agent.orchestrator_persistence import persist_run_outcome
+from refactor_agent.orchestrator_finalize import run_finalize_execution_node
 from refactor_agent.orchestrator_minimizer import minimize_execution_node
 from refactor_agent.orchestrator_judge import (
     run_judge_execution_node,
@@ -235,90 +235,22 @@ class _RefactorWorkflow:
 
     def finalize(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "finalize")
-        graph_trace = [*state.get("node_trace", []), "FINALIZE"]
-        outcome = persist_run_outcome(
-            self.orchestrator.store,
+        return run_finalize_execution_node(
             state,
+            store=self.orchestrator.store,
+            workspace=self.workspace,
             run_id=self.run_id,
             issue_id=self.request.issue_id,
             repo_name=self.repo_name,
             memory_key=self.memory_key,
             evidence_level=self.request.evidence_level,
             report_persona=self.request.persona,
-        )
-        record = outcome.record
-        approved = outcome.approved
-        error = outcome.error
-        attempts = outcome.attempts
-        llm_result = state.get("llm_result")
-        if not approved:
-            self._trajectory(
-                state,
-                str(state.get("control_status") or "FAILED"),
-                error or "refactor failed",
-            )
-        report = _build_report(
-            record,
-            self.workspace,
-            llm_result.insult_review if approved and llm_result else None,
-            state.get("sandbox"),
-            error,
-            state.get("validation"),
-            state.get("adversarial"),
-            state.get("mutation"),
-            state.get("reward"),
-            state.get("performance"),
-            state["debate_rounds"],
-            state.get("rewrite"),
-            self.orchestrator.graph_backend,
-            graph_trace,
-            self.request.evidence_level,
-            self.request.persona,
-            llm_usages=state.get("llm_usages", []),
-        )
-        self._write_artifacts(state, report)
-        state["result"] = RefactorRunResult(
-            record=record,
-            report_markdown=report,
-            workspace_path=self.workspace,
-            attempts=attempts,
-            last_sandbox_result=state.get("sandbox"),
-            candidate_file=state.get("target_file"),
-            ast_validation=state.get("validation"),
-            ast_rewrite=state.get("rewrite"),
-            adversarial_result=state.get("adversarial"),
-            mutation_result=state.get("mutation"),
-            performance_profile=state.get("performance"),
-            debate_rounds=state["debate_rounds"],
             graph_backend=self.orchestrator.graph_backend,
-            graph_node_trace=graph_trace,
-            llm_usages=state.get("llm_usages", []),
-            evidence_level=self.request.evidence_level,
-            report_persona=self.request.persona,
+            build_report=_build_report,
+            write_artifacts=self._write_artifacts,
+            record_trajectory=self._trajectory,
+            emit_analysis_event=self._emit_analysis_event,
         )
-        reward = state.get("reward")
-        mutation = state.get("mutation")
-        self._emit_analysis_event(
-            AnalysisEventType.FINAL_VERDICT_PASSED if approved else AnalysisEventType.FINAL_VERDICT_FAILED,
-            state,
-            phase="finalize",
-            error_category=(
-                None
-                if approved
-                else str(state.get("control_status") or "analysis_failed").casefold()
-            ),
-            recoverable=False,
-            safe_metrics={
-                "pre_loc": record.pre_loc,
-                "post_loc": record.post_loc,
-                "pre_cc": record.pre_cc,
-                "post_cc": record.post_cc,
-                "self_heal_count": record.self_heal_count,
-                "reward": getattr(reward, "reward", None),
-                "mutation_kill_rate": getattr(mutation, "kill_rate", None),
-            },
-        )
-        return self._transition_to(state, "finalize")
 
     def _write_artifacts(self, state: ExecutionState, report: str) -> None:
         write_run_artifacts(self.orchestrator.run_root, self.run_id, state, report)
