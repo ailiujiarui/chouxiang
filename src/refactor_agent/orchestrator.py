@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
@@ -8,7 +7,6 @@ from uuid import uuid4
 
 from refactor_agent.analysis_events import AnalysisEventSink, AnalysisEventType
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
-from refactor_agent.ast_analyzer import controlled_subtree_rewrite, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.debate_state import render_mermaid_state_diagram
@@ -33,6 +31,11 @@ from refactor_agent.models import (
     SandboxResult,
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
+from refactor_agent.orchestrator_ast_guard import (
+    code_change_percent,
+    guard_ast_execution_node,
+    rewrite_metadata,
+)
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_persistence import persist_run_outcome
 from refactor_agent.orchestrator_minimizer import minimize_execution_node
@@ -157,53 +160,13 @@ class _RefactorWorkflow:
 
     def ast_guard(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "ast_guard")
-        rewrite = controlled_subtree_rewrite(
-            state["original_code"],
-            state["llm_result"].fixed_code,
-            state["allowed_regions"],
-            self.request.allowed_import_roots,
-        )
-        state["rewrite"] = rewrite
-        candidate = rewrite.source
-        state["code_change_percent"] = _code_change_percent(
-            state.get("previous_candidate_code") or state["original_code"], candidate
-        )
-        state["previous_candidate_code"] = candidate
-        state["current_code"] = candidate
-        validation = validate_candidate_source(state["original_code"], candidate)
-        if not rewrite.ok:
-            validation = CandidateValidationResult(ok=False, findings=rewrite.findings)
-        state["validation"] = validation
-        message = self.orchestrator.defender.review_static(validation)
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="DEFENDER", content=message)
-        )
-        if not validation.ok:
-            state["previous_error"] = "AST guard rejected candidate:\n" + validation.summary()
-            self._emit_analysis_event(
-                AnalysisEventType.AST_REJECTED,
-                state,
-                phase="ast_guard",
-                error_category="ast_guard_rejected",
-                recoverable=state["attempt"] < state["max_attempts"],
-            )
-            self._trajectory(
-                state,
-                "AST_REJECTED",
-                state["previous_error"],
-                "DEFENDER",
-                self._rewrite_metadata(rewrite),
-            )
-            self._close_round(state)
-            return self._retry_or_finalize(state)
-        self._trajectory(
+        return guard_ast_execution_node(
             state,
-            "DEFENDER_REVIEWED",
-            message,
-            "DEFENDER",
-            self._rewrite_metadata(rewrite),
+            allowed_import_roots=self.request.allowed_import_roots,
+            defender=self.orchestrator.defender,
+            emit_analysis_event=self._emit_analysis_event,
+            record_trajectory=self._trajectory,
         )
-        return self._transition_to(state, "pytest")
 
     def pytest(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "pytest")
@@ -523,11 +486,7 @@ class _RefactorWorkflow:
 
     @staticmethod
     def _rewrite_metadata(rewrite: AstRewriteResult) -> dict[str, object]:
-        return {
-            "selected_targets": [region.model_dump(mode="json") for region in rewrite.selected_regions],
-            "changed_regions": rewrite.changed_regions,
-            "added_imports": rewrite.added_imports,
-        }
+        return rewrite_metadata(rewrite)
 
 
 def _new_run_id() -> str:
@@ -581,7 +540,7 @@ def _summarize_judge(reward: RewardBreakdown) -> str:
 
 
 def _code_change_percent(before: str, after: str) -> float:
-    return (1.0 - SequenceMatcher(None, before, after).ratio()) * 100
+    return code_change_percent(before, after)
 
 
 def _combined_mutation_tests_path(

@@ -127,6 +127,7 @@ Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_a
 最终 `RunRecord` 与成功/失败 trajectory memory 由 `orchestrator_persistence.py` 按稳定顺序持久化。
 Prepare 执行节点由 `orchestrator_prepare.py` 负责历史记忆注入、基线分析、隔离工作区复制和沙箱预检。
 Minimizer 执行节点由 `orchestrator_minimizer.py` 负责目标区域选择、候选提案、LLM usage 累积和失败终止。
+AST Guard 执行节点由 `orchestrator_ast_guard.py` 负责受控重写、验证、拒绝事件和重试路由。
 
 安装开发依赖：
 
