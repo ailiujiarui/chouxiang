@@ -37,6 +37,7 @@ from refactor_agent.demo_suite_service import (
     run_demo_suite as execute_demo_suite,
     suite_mock_fail_times as _suite_mock_fail_times,
 )
+from refactor_agent.dashboard_launcher import DashboardDependencyError, launch_dashboard
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
 from refactor_agent.github_url_submission import (
     GitHubUrlCheckoutError,
@@ -483,31 +484,23 @@ def dashboard(
     """Launch the live demo arena."""
     run_root = _resolve_run_root(run_root)
     database_path = _resolve_database(database, run_root)
-    if importlib.util.find_spec("streamlit") is None:
-        console.print("Streamlit is not installed. Install it with: python -m pip install -e .[dashboard]", markup=False)
+    try:
+        launched = launch_dashboard(
+            host=host,
+            port=port,
+            database_path=database_path,
+            run_root=run_root,
+            api_url=api_url,
+            script_path=Path(__file__).with_name("dashboard.py"),
+            module_finder=importlib.util.find_spec,
+            process_runner=subprocess.run,
+            executable=sys.executable,
+            on_ready=lambda url: console.print(f"Arena URL: {url}", markup=False),
+        )
+    except DashboardDependencyError as exc:
+        console.print(str(exc), markup=False)
         raise typer.Exit(code=1)
-
-    script = Path(__file__).with_name("dashboard.py")
-    env = os.environ.copy()
-    env["REFACTOR_AGENT_DASHBOARD_DB"] = str(database_path)
-    env["REFACTOR_AGENT_RUN_ROOT"] = str(run_root)
-    env["REFACTOR_AGENT_API_URL"] = api_url
-    console.print(f"Arena URL: http://{host}:{port}", markup=False)
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(script),
-            "--server.address",
-            host,
-            "--server.port",
-            str(port),
-        ],
-        env=env,
-    )
-    raise typer.Exit(code=completed.returncode)
+    raise typer.Exit(code=launched.returncode)
 
 
 @app.command("arena-export")

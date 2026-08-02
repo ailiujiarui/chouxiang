@@ -81,6 +81,7 @@ flowchart LR
     CLI --> SNIPPET["snippet_submission.py\nSnippet Job 与报告适配"]
     CLI --> GITHUB_URL["github_url_submission.py\n只读 checkout 与本地执行"]
     CLI --> QUERIES["cli_queries.py\nJobs 与 Memory 只读视图"]
+    CLI --> DASHBOARD["dashboard_launcher.py\nStreamlit 进程启动"]
     CONFIG --> SETTINGS["config.py\n共享应用配置"]
     SUITE --> LOCAL
     BENCHMARK --> STORE
@@ -100,10 +101,11 @@ flowchart LR
 - `snippet_submission.py` 负责 Snippet Settings 覆盖、Job 构造、`SnippetRefactorService` 调用和报告定位；CLI 保留 mode/persona、stdin/文件与 verified tests 的输入校验顺序。
 - `github_url_submission.py` 负责只读 checkout、`RefactorRequest` 构造和本地执行；CLI 保留 issue 输入解析、错误展示、checkout/candidate 路径输出和退出码。
 - `cli_queries.py` 负责 Jobs 与 trajectory memory 的一次性 Store 查询和稳定文本格式；它不缓存 Store 或 SQLite 连接，CLI 保留空结果提示与终端输出。
+- `dashboard_launcher.py` 负责 Streamlit 依赖检测、环境副本组装和子进程执行；CLI 通过回调在启动前打印 Arena URL，并透传子进程退出码。
 - `cli.py` 继续保留全部命令名称、参数、默认值和退出码，只负责参数归一化、调用应用服务以及将客户端初始化错误翻译为终端错误；运行阶段的 `LLMError` 仍按原路径传播。
 - `_run_request()` 作为现有 CLI 内部兼容入口保留，调用方向只能是 `cli.py` 到 `local_refactor.py`，新服务不得反向导入 CLI。
 - 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()`、`_resolve_deadline()` 和 `_suite_mock_fail_times()` 继续由 `cli.py` 兼容导出。
 
 ## 后续拆分方向
 
-Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的四个目标边界也已完成；CLI 已迁出主要执行型业务和只读查询，下一步继续按单一职责提取 Dashboard 启动逻辑。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。下一阶段进入 `orchestrator.py`，分别定位执行节点、状态转换和持久化职责。
