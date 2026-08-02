@@ -123,6 +123,7 @@ flowchart LR
     ORCH --> ORCH_FINALIZE["orchestrator_finalize.py\n最终结果装配节点"]
     ORCH_FINALIZE --> ORCH_STATE
     ORCH_FINALIZE --> STORE
+    ORCH --> ORCH_REPORT["orchestrator_report.py\nMarkdown 报告渲染"]
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -166,7 +167,9 @@ flowchart LR
 - `_RefactorWorkflow.judge()` 只发布阶段事件并传入 Judge、图后端和轨迹回调；原摘要函数保留兼容包装。
 - `orchestrator_finalize.py` 独立实现 Finalize 节点：终态持久化、失败轨迹、报告/产物回调、`RefactorRunResult` 装配和最终分析事件集中在该模块。
 - `_RefactorWorkflow.finalize()` 只发布阶段事件并显式注入稳定回调及运行上下文，报告渲染仍由原兼容入口提供。
+- `orchestrator_report.py` 独立实现决策摘要、技术附录、证据矩阵、图轨迹和多 Agent 轮次的 Markdown 渲染。
+- `orchestrator.py` 保留 `_build_report()` 与 `_build_technical_report()` 原参数签名作为兼容层，调用方不会接触新的内部格式化函数。
 
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare、Minimizer、AST Guard、Pytest、Adversary、Mutation/性能、Judge 与 Finalize 节点均已迁出；后续拆分报告渲染并完成最终验收。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录、状态转换、全部执行节点与报告渲染均已独立定位；当前进入最终工程验收。
