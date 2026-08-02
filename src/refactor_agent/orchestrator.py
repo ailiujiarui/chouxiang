@@ -31,6 +31,12 @@ from refactor_agent.models import (
     SandboxResult,
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
+from refactor_agent.orchestrator_adversary import (
+    run_adversary_execution_node,
+    summarize_adversarial_failure,
+    summarize_adversary_pass,
+    summarize_critique,
+)
 from refactor_agent.orchestrator_ast_guard import (
     code_change_percent,
     guard_ast_execution_node,
@@ -187,50 +193,19 @@ class _RefactorWorkflow:
 
     def adversary(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "adversary")
-        critique = self.orchestrator.adversary.critique(state["current_code"], self.request.issue_text)
-        critique_message = _summarize_critique(critique)
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=critique_message)
-        )
-        self._trajectory(state, "ADVERSARY_CRITIQUED", critique_message, "ADVERSARY")
-        result = self.orchestrator.adversary.generate_tests(
-            candidate_source=state["current_code"],
-            workspace=self.workspace,
-            target_file=state["target_file"],
-            issue_text=self.request.issue_text,
-            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
-            backend=state["active_backend"],
-            docker_image=self.orchestrator.sandbox_docker_image,
-            memory=self.orchestrator.sandbox_memory,
-            cpus=self.orchestrator.sandbox_cpus,
-            execution_control=self.execution_control,
-        )
-        state["adversarial"] = result
-        message = _summarize_adversary_pass(result)
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=message)
-        )
-        self._trajectory(state, "ADVERSARY_CHALLENGED", message, "ADVERSARY")
-        if not result.passed:
-            state["previous_error"] = _summarize_adversarial_failure(result) + "\n" + critique_message
-            self._emit_analysis_event(
-                AnalysisEventType.ADVERSARY_FAILED,
-                state,
-                phase="adversary",
-                error_category="adversary_failed",
-                recoverable=state["attempt"] < state["max_attempts"],
-                safe_metrics={"generated_tests": result.generated},
-            )
-            self._trajectory(state, "ADVERSARY_FAILED", state["previous_error"], "ADVERSARY")
-            self._close_round(state, pytest_passed=True, adversarial_passed=False)
-            return self._retry_or_finalize(state)
-        self._emit_analysis_event(
-            AnalysisEventType.ADVERSARY_PASSED,
+        return run_adversary_execution_node(
             state,
-            phase="adversary",
-            safe_metrics={"generated_tests": result.generated},
+            issue_text=self.request.issue_text,
+            workspace=self.workspace,
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            docker_image=self.orchestrator.sandbox_docker_image,
+            docker_memory=self.orchestrator.sandbox_memory,
+            docker_cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
+            adversary=self.orchestrator.adversary,
+            emit_analysis_event=self._emit_analysis_event,
+            record_trajectory=self._trajectory,
         )
-        return self._transition_to(state, "mutation")
 
     def mutation(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "mutation")
@@ -475,24 +450,15 @@ def _summarize_failure(result: SandboxResult) -> str:
 
 
 def _summarize_adversarial_failure(result: AdversarialTestResult) -> str:
-    combined = "\n".join(part for part in [result.stdout, result.stderr] if part)
-    return (
-        "对抗 Agent 生成的测试失败：\n"
-        + (combined[-8000:] if combined else f"pytest 失败，返回码 {result.returncode}")
-    )
+    return summarize_adversarial_failure(result)
 
 
 def _summarize_adversary_pass(result: AdversarialTestResult) -> str:
-    if result.generated == 0:
-        return "对抗 Agent 没找到可自动生成的规则边界测试，只能先把变异测试请上桌。"
-    status = "通过" if result.passed else "失败"
-    return f"对抗 Agent 生成 {result.generated} 个边界测试；候选代码结果：{status}。"
+    return summarize_adversary_pass(result)
 
 
 def _summarize_critique(critique: AdversarialCritique) -> str:
-    plan = "; ".join(critique.attack_plan)
-    hint = f" 反例提示：{critique.counterexample_hint}" if critique.counterexample_hint else ""
-    return f"红队风险={critique.risk_level}。攻击计划：{plan or '暂无命中规则'}{hint}"
+    return summarize_critique(critique)
 
 
 def _summarize_mutation(result: MutationTestResult) -> str:

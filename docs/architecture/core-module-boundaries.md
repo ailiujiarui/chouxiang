@@ -113,6 +113,8 @@ flowchart LR
     ORCH --> ORCH_PYTEST["orchestrator_pytest.py\nPytest 执行节点"]
     ORCH_PYTEST --> SANDBOX
     ORCH_PYTEST --> ORCH_STATE
+    ORCH --> ORCH_ADVERSARY["orchestrator_adversary.py\nAdversary 执行节点"]
+    ORCH_ADVERSARY --> ORCH_STATE
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -148,7 +150,9 @@ flowchart LR
 - `_RefactorWorkflow.ast_guard()` 只发布阶段事件并委托；原 `_rewrite_metadata()` 与 `_code_change_percent()` 继续作为兼容包装。
 - `orchestrator_pytest.py` 独立实现 Pytest 节点：候选写入、沙箱测试、Defender 消息、通过/失败事件、失败轨迹、轮次收束与重试路由集中在该模块。
 - `_RefactorWorkflow.pytest()` 只发布阶段事件并传入显式沙箱配置及 `ExecutionControl`；原 `_summarize_failure()` 保留兼容包装。
+- `orchestrator_adversary.py` 独立实现 Adversary 节点：规则批评、对抗测试生成、消息与轨迹、通过/失败事件、轮次收束和重试路由集中在该模块。
+- `_RefactorWorkflow.adversary()` 只发布阶段事件并传入 Agent、沙箱参数、`ExecutionControl` 与回调；三个原摘要函数保留兼容包装。
 
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare、Minimizer、AST Guard 与 Pytest 节点也已迁出；后续继续逐项拆分其余执行节点。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare、Minimizer、AST Guard、Pytest 与 Adversary 节点也已迁出；后续继续逐项拆分其余执行节点。

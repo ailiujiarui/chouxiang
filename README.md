@@ -129,6 +129,7 @@ Prepare 执行节点由 `orchestrator_prepare.py` 负责历史记忆注入、基
 Minimizer 执行节点由 `orchestrator_minimizer.py` 负责目标区域选择、候选提案、LLM usage 累积和失败终止。
 AST Guard 执行节点由 `orchestrator_ast_guard.py` 负责受控重写、验证、拒绝事件和重试路由。
 Pytest 执行节点由 `orchestrator_pytest.py` 负责候选写入、沙箱回归测试、验证事件和失败重试。
+Adversary 执行节点由 `orchestrator_adversary.py` 负责规则批评、对抗测试、事件、轨迹和失败重试。
 
 安装开发依赖：
 
