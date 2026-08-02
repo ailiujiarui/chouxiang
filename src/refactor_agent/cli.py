@@ -37,6 +37,10 @@ from refactor_agent.demo_suite_service import (
     suite_mock_fail_times as _suite_mock_fail_times,
 )
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
+from refactor_agent.github_url_submission import (
+    GitHubUrlCheckoutError,
+    execute_github_url_submission,
+)
 from refactor_agent.local_refactor import LocalRefactorConfigurationError, run_local_refactor
 from refactor_agent.models import RefactorRequest
 from refactor_agent.snippet import SnippetRefactorService
@@ -371,35 +375,35 @@ def github_url(
     github_workspace_root = _resolve_github_workspace_root(github_workspace_root)
     body = _resolve_issue_text(issue, issue_text)
     try:
-        checkout = checkout_github_url(
+        submission = execute_github_url_submission(
             repo_url=repo_url,
-            workspace_root=github_workspace_root,
             target_path=target,
+            issue_text=body,
             tests_path=tests,
             branch=branch,
+            repo_name=repo_name,
+            max_retry=max_retry,
+            github_workspace_root=github_workspace_root,
+            run_root=run_root,
+            database_path=_resolve_database(database, run_root),
+            pytest_timeout_seconds=timeout,
+            deadline_seconds=_resolve_deadline(deadline),
+            mock=mock,
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            mock_fail_times=mock_fail_times,
+            graph_backend=os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            checkout_runner=checkout_github_url,
+            run_refactor=run_local_refactor,
         )
-    except GitHubUrlError as exc:
+    except GitHubUrlCheckoutError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
-
-    request = RefactorRequest(
-        target_file=checkout.target_file,
-        issue_text=body,
-        tests_path=checkout.tests_path,
-        repo_name=repo_name or checkout.repo_name,
-        max_retry=max_retry,
-    )
-    result = _run_request(
-        request,
-        run_root,
-        database,
-        timeout,
-        mock,
-        sandbox_backend,
-        sandbox_docker_image,
-        mock_fail_times,
-        deadline_seconds=deadline,
-    )
+    except LocalRefactorConfigurationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    checkout = submission.checkout
+    result = submission.run_result
     _print_plain(result.report_markdown)
     _print_plain(f"\n克隆仓库: {checkout.checkout_path}")
     if result.candidate_file is not None:
