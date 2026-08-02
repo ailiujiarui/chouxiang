@@ -170,6 +170,15 @@ flowchart LR
 - `orchestrator_report.py` 独立实现决策摘要、技术附录、证据矩阵、图轨迹和多 Agent 轮次的 Markdown 渲染。
 - `orchestrator.py` 保留 `_build_report()` 与 `_build_technical_report()` 原参数签名作为兼容层，调用方不会接触新的内部格式化函数。
 
-## 后续拆分方向
+## 完成状态
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录、状态转换、全部执行节点与报告渲染均已独立定位；当前进入最终工程验收。
+Store、Webhook、CLI 和 Orchestrator 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录、状态转换、全部执行节点与报告渲染均已独立定位。
+
+## 最终验收（2026-08-02）
+
+- 原始顺序 `pytest -q`：561 passed、17 skipped；跳过项由当前 Windows/Docker 运行条件控制，没有删除或减少原测试。
+- `compileall`、Compose 配置校验、`git diff --check` 和 74 个 `refactor_agent` 模块的循环依赖扫描通过。
+- Worker 重复启动/停止和单任务心跳线程退出有直接回归测试；SQLite Store 始终通过连接工厂为每次操作创建线程内连接，并通过并发、锁等待和跨进程快照测试。
+- Mock、真实 DeepSeek 配置选择和 Docker sandbox 命令/失败关闭路径分别有独立测试。当前 Docker Desktop daemon 未运行，因此本次没有执行真实容器 smoke，也没有发起真实 DeepSeek 网络调用。
+- 当前环境采样：四个核心门面的冷导入约 1.75 秒；代表性单任务墙钟约 4.29 秒，其中 pytest 约 3.97 秒、峰值追踪内存约 31.2 MiB、目标模块导入约 0.0006 秒；未发现明显回归或临时目录残留。
+- 原 CLI 命令/参数、FastAPI 路由与响应字段、Pydantic 模型以及 Store/Orchestrator 门面继续由兼容层和集成测试覆盖；本次拆分不要求调用方迁移。
