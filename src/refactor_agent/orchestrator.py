@@ -23,7 +23,6 @@ from refactor_agent.models import (
     AgentDebateMessage,
     AstRewriteResult,
     CandidateValidationResult,
-    DebateRound,
     EvidenceLevel,
     LLMUsage,
     MutationTestResult,
@@ -37,6 +36,13 @@ from refactor_agent.models import (
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
 from refactor_agent.orchestrator_observability import OrchestratorObservability
+from refactor_agent.orchestrator_state import (
+    WorkflowNode,
+    close_debate_round,
+    initial_execution_state,
+    retry_or_finalize,
+    transition_to,
+)
 from refactor_agent.sandbox import (
     prepare_workspace,
     resolve_sandbox_backend,
@@ -118,16 +124,7 @@ class _RefactorWorkflow:
 
     def run(self) -> RefactorRunResult:
         final = run_execution_graph(
-            {
-                "attempt": 0,
-                "max_attempts": self.request.max_retry,
-                "current_code": "",
-                "previous_error": None,
-                "debate_rounds": [],
-                "llm_usages": [],
-                "node_trace": [],
-                "next_node": "prepare",
-            },
+            initial_execution_state(self.request.max_retry),
             self,
             self.orchestrator.graph_backend,
             execution_control=self.execution_control,
@@ -158,10 +155,8 @@ class _RefactorWorkflow:
             state["terminal_error"] = public_error_message(ErrorCode.INTERNAL_ERROR)
             state["terminal_error_code"] = ErrorCode.INTERNAL_ERROR
             state["terminal_error_summary"] = "sandbox backend unavailable"
-            state["next_node"] = "finalize"
-            return state
-        state["next_node"] = "minimizer"
-        return state
+            return self._transition_to(state, "finalize")
+        return self._transition_to(state, "minimizer")
 
     def minimizer(self, state: ExecutionState) -> ExecutionState:
         state["attempt"] += 1
@@ -183,8 +178,7 @@ class _RefactorWorkflow:
             state["terminal_error"] = exc.public_message
             state["terminal_error_code"] = exc.code
             state["terminal_error_summary"] = exc.summary
-            state["next_node"] = "finalize"
-            return state
+            return self._transition_to(state, "finalize")
         state["llm_result"] = result
         if result.usage is not None:
             state["llm_usages"] = [*state.get("llm_usages", []), result.usage]
@@ -192,8 +186,7 @@ class _RefactorWorkflow:
             AgentDebateMessage(round=state["attempt"], agent="MINIMIZER", content=result.thought)
         ]
         self._trajectory(state, "MINIMIZER_PROPOSED", result.thought, "MINIMIZER")
-        state["next_node"] = "ast_guard"
-        return state
+        return self._transition_to(state, "ast_guard")
 
     def ast_guard(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "ast_guard")
@@ -243,8 +236,7 @@ class _RefactorWorkflow:
             "DEFENDER",
             self._rewrite_metadata(rewrite),
         )
-        state["next_node"] = "pytest"
-        return state
+        return self._transition_to(state, "pytest")
 
     def pytest(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "pytest")
@@ -289,8 +281,7 @@ class _RefactorWorkflow:
                 "duration_seconds": result.duration_seconds,
             },
         )
-        state["next_node"] = "adversary"
-        return state
+        return self._transition_to(state, "adversary")
 
     def adversary(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "adversary")
@@ -337,8 +328,7 @@ class _RefactorWorkflow:
             phase="adversary",
             safe_metrics={"generated_tests": result.generated},
         )
-        state["next_node"] = "mutation"
-        return state
+        return self._transition_to(state, "mutation")
 
     def mutation(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "mutation")
@@ -377,8 +367,7 @@ class _RefactorWorkflow:
             cpus=self.orchestrator.sandbox_cpus,
             execution_control=self.execution_control,
         )
-        state["next_node"] = "judge"
-        return state
+        return self._transition_to(state, "judge")
 
     def judge(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "judge")
@@ -413,8 +402,7 @@ class _RefactorWorkflow:
         if approved:
             state["approved"] = True
             self._trajectory(state, "DEBATE_CONVERGED", "Candidate passed the executed graph.", "JUDGE", reward=reward)
-            state["next_node"] = "finalize"
-            return state
+            return self._transition_to(state, "finalize")
         survivors = "; ".join(state["mutation"].survival_details) or "none"
         state["previous_error"] = (
             f"Judge verdict: {verdict}. Mutation kill rate: {state['mutation'].kill_rate:.3f}. "
@@ -528,25 +516,20 @@ class _RefactorWorkflow:
                 "mutation_kill_rate": getattr(mutation, "kill_rate", None),
             },
         )
-        state["next_node"] = "finalize"
-        return state
+        return self._transition_to(state, "finalize")
 
     def _write_artifacts(self, state: ExecutionState, report: str) -> None:
         write_run_artifacts(self.orchestrator.run_root, self.run_id, state, report)
 
     def _retry_or_finalize(self, state: ExecutionState) -> ExecutionState:
-        state["next_node"] = "minimizer" if state["attempt"] < state["max_attempts"] else "finalize"
-        return state
+        return retry_or_finalize(state)
 
     def _close_round(self, state: ExecutionState, **updates) -> None:
-        state["debate_rounds"].append(
-            DebateRound(
-                round=state["attempt"],
-                code_change_percent=state.get("code_change_percent"),
-                messages=state.get("round_messages", []),
-                **updates,
-            )
-        )
+        close_debate_round(state, **updates)
+
+    @staticmethod
+    def _transition_to(state: ExecutionState, target: WorkflowNode) -> ExecutionState:
+        return transition_to(state, target)
 
     def _trajectory(
         self,

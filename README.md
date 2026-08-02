@@ -123,6 +123,7 @@ Jobs 与 trajectory memory 的只读查询和文本格式由 `cli_queries.py` �
 Streamlit 依赖检测、环境组装和子进程执行由 `dashboard_launcher.py` 负责。
 Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_artifacts.py` 独立负责，执行流程只保留兼容转发入口。
 运行轨迹与安全分析事件由 `orchestrator_observability.py` 统一记录，事件发布失败不会中断重构执行图。
+初始执行状态、节点跳转、重试终止判定和辩论轮次收束由 `orchestrator_state.py` 统一管理。
 
 安装开发依赖：
 
