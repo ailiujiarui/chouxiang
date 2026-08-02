@@ -100,6 +100,10 @@ flowchart LR
     ORCH --> ORCH_PERSISTENCE["orchestrator_persistence.py\n最终记录与轨迹记忆"]
     ORCH_PERSISTENCE --> STORE
     ORCH_PERSISTENCE --> MEMORY["memory.py\n成功/失败记忆构造"]
+    ORCH --> ORCH_PREPARE["orchestrator_prepare.py\nPrepare 执行节点"]
+    ORCH_PREPARE --> MEMORY
+    ORCH_PREPARE --> SANDBOX["sandbox.py\n工作区与后端预检"]
+    ORCH_PREPARE --> ORCH_STATE
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -127,7 +131,9 @@ flowchart LR
 - `orchestrator.py` 不再直接写入 `next_node`，并保留 `_retry_or_finalize()` 与 `_close_round()` 兼容门面；状态模块不依赖 Orchestrator、Store、LLM 或沙箱。
 - `orchestrator_persistence.py` 根据最终状态构造稳定的 `RunRecord`，并保持“运行记录先写、trajectory memory 后写”的原有顺序；它通过窄 Store 协议工作，不持有 SQLite 连接。
 - 失败轨迹、报告、产物和最终分析事件不属于该持久化边界，继续由 Orchestrator 分别调用既有独立模块。
+- `orchestrator_prepare.py` 独立实现 Prepare 节点：读取历史 memory、生成 LLM 请求副本、分析基线、复制隔离工作区并执行沙箱后端预检。
+- `_RefactorWorkflow.prepare()` 继续作为执行图的稳定节点入口，只发布阶段事件并委托 Prepare 模块；`_request_with_memory()` 保留兼容导出。Prepare 仅通过只读协议查询 memory，不持有 Store 或 SQLite 连接。
 
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，后续继续逐项拆分执行节点。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare 节点也已迁出；后续继续逐项拆分其余执行节点。

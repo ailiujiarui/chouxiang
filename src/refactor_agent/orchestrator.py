@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,10 +11,9 @@ from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, Min
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
-from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
-from refactor_agent.memory import build_memory_context, target_memory_key
+from refactor_agent.memory import target_memory_key
 from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
     AdversarialCritique,
@@ -37,6 +35,10 @@ from refactor_agent.models import (
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_persistence import persist_run_outcome
+from refactor_agent.orchestrator_prepare import (
+    prepare_execution_node,
+    request_with_memory as prepare_request_with_memory,
+)
 from refactor_agent.orchestrator_state import (
     WorkflowNode,
     close_debate_round,
@@ -45,17 +47,11 @@ from refactor_agent.orchestrator_state import (
     transition_to,
 )
 from refactor_agent.sandbox import (
-    prepare_workspace,
-    resolve_sandbox_backend,
     run_performance_profile_with_backend,
     run_pytest_with_backend,
-    SandboxUnavailableError,
     write_candidate,
 )
 from refactor_agent.store import SQLiteRunStore
-
-
-logger = logging.getLogger(__name__)
 
 
 class RefactorOrchestrator:
@@ -139,25 +135,15 @@ class _RefactorWorkflow:
         """Prepare the run and convert sandbox startup details to a sanitized terminal error."""
 
         self._phase_started(state, "prepare")
-        memory = build_memory_context(self.orchestrator.store.list_memory(self.repo_name, self.memory_key, limit=3))
-        state["llm_request"] = _request_with_memory(self.request, memory)
-        state["baseline"] = analyze_file(self.request.target_file)
-        state["original_code"] = self.request.target_file.read_text(encoding="utf-8")
-        state["current_code"] = state["original_code"]
-        _, state["target_file"], state["tests_path"] = prepare_workspace(
-            self.request.target_file,
-            self.request.tests_path,
-            self.workspace,
+        return prepare_execution_node(
+            state,
+            request=self.request,
+            workspace=self.workspace,
+            store=self.orchestrator.store,
+            repo_name=self.repo_name,
+            memory_key=self.memory_key,
+            sandbox_backend=self.orchestrator.sandbox_backend,
         )
-        try:
-            state["active_backend"], _ = resolve_sandbox_backend(self.orchestrator.sandbox_backend)
-        except SandboxUnavailableError as exc:
-            logger.warning("Sandbox backend is unavailable: %s", exc)
-            state["terminal_error"] = public_error_message(ErrorCode.INTERNAL_ERROR)
-            state["terminal_error_code"] = ErrorCode.INTERNAL_ERROR
-            state["terminal_error_summary"] = "sandbox backend unavailable"
-            return self._transition_to(state, "finalize")
-        return self._transition_to(state, "minimizer")
 
     def minimizer(self, state: ExecutionState) -> ExecutionState:
         state["attempt"] += 1
@@ -570,17 +556,7 @@ def _new_run_id() -> str:
 
 
 def _request_with_memory(request: RefactorRequest, memory_context: str | None) -> RefactorRequest:
-    if not memory_context:
-        return request
-    return request.model_copy(
-        update={
-            "issue_text": (
-                f"{request.issue_text}\n\n"
-                "以下是系统从历史轨迹中提炼出的短期记忆，请把它当作额外约束：\n"
-                f"{memory_context}"
-            )
-        }
-    )
+    return prepare_request_with_memory(request, memory_context)
 
 
 def _summarize_failure(result: SandboxResult) -> str:
