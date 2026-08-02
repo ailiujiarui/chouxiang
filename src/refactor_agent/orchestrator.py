@@ -14,7 +14,6 @@ from refactor_agent.memory import target_memory_key
 from refactor_agent.models import (
     AdversarialCritique,
     AdversarialTestResult,
-    AgentDebateMessage,
     AstRewriteResult,
     CandidateValidationResult,
     EvidenceLevel,
@@ -43,6 +42,10 @@ from refactor_agent.orchestrator_ast_guard import (
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_persistence import persist_run_outcome
 from refactor_agent.orchestrator_minimizer import minimize_execution_node
+from refactor_agent.orchestrator_judge import (
+    run_judge_execution_node,
+    summarize_judge,
+)
 from refactor_agent.orchestrator_mutation import (
     combined_mutation_tests_path,
     run_mutation_execution_node,
@@ -223,44 +226,12 @@ class _RefactorWorkflow:
 
     def judge(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "judge")
-        reward = self.orchestrator.judge.score(
-            pre=state["baseline"],
-            post=state["post"],
-            retry_count=state["attempt"] - 1,
-            mutation_result=state["mutation"],
-            adversarial_result=state["adversarial"],
-        )
-        state["reward"] = reward
-        approved = state["adversarial"].passed and state["mutation"].kill_rate >= 1.0
-        verdict = "APPROVE" if approved else ("RETRY" if state["attempt"] < state["max_attempts"] else "REJECT")
-        message = _summarize_judge(reward)
-        graph = {
-            "backend": self.orchestrator.graph_backend,
-            "node_trace": [*state.get("node_trace", []), "JUDGE"],
-            "verdict": verdict,
-        }
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="JUDGE", content=message, metadata={"graph": graph})
-        )
-        self._close_round(
+        return run_judge_execution_node(
             state,
-            pytest_passed=True,
-            adversarial_passed=state["adversarial"].passed,
-            mutation_kill_rate=state["mutation"].kill_rate,
-            reward=reward,
-            converged=approved,
+            graph_backend=self.orchestrator.graph_backend,
+            judge=self.orchestrator.judge,
+            record_trajectory=self._trajectory,
         )
-        self._trajectory(state, "JUDGE_SCORED", message, "JUDGE", {"graph": graph}, reward)
-        if approved:
-            state["approved"] = True
-            self._trajectory(state, "DEBATE_CONVERGED", "Candidate passed the executed graph.", "JUDGE", reward=reward)
-            return self._transition_to(state, "finalize")
-        survivors = "; ".join(state["mutation"].survival_details) or "none"
-        state["previous_error"] = (
-            f"Judge verdict: {verdict}. Mutation kill rate: {state['mutation'].kill_rate:.3f}. "
-            f"Surviving mutants: {survivors}"
-        )
-        return self._retry_or_finalize(state)
 
     def finalize(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "finalize")
@@ -441,6 +412,7 @@ def _summarize_mutation(result: MutationTestResult) -> str:
 
 
 def _summarize_judge(reward: RewardBreakdown) -> str:
+    return summarize_judge(reward)
     return (
         "裁判评分="
         f"{reward.reward:.2f}；LOC 改善={reward.delta_loc}；圈复杂度改善={reward.delta_cc}；"

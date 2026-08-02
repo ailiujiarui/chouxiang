@@ -131,6 +131,7 @@ AST Guard 执行节点由 `orchestrator_ast_guard.py` 负责受控重写、验�
 Pytest 执行节点由 `orchestrator_pytest.py` 负责候选写入、沙箱回归测试、验证事件和失败重试。
 Adversary 执行节点由 `orchestrator_adversary.py` 负责规则批评、对抗测试、事件、轨迹和失败重试。
 Mutation/性能节点由 `orchestrator_mutation.py` 负责组合测试、变异挑战、post 指标和性能证据。
+Judge 执行节点由 `orchestrator_judge.py` 负责评分、裁决、轮次收束和重试/终止路由。
 
 安装开发依赖：
 
