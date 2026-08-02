@@ -15,7 +15,7 @@ from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import LLMError, RefactorClient
-from refactor_agent.memory import build_memory_context, failure_memory, success_memory, target_memory_key
+from refactor_agent.memory import build_memory_context, target_memory_key
 from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
     AdversarialCritique,
@@ -36,6 +36,7 @@ from refactor_agent.models import (
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
 from refactor_agent.orchestrator_observability import OrchestratorObservability
+from refactor_agent.orchestrator_persistence import persist_run_outcome
 from refactor_agent.orchestrator_state import (
     WorkflowNode,
     close_debate_round,
@@ -412,44 +413,23 @@ class _RefactorWorkflow:
 
     def finalize(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "finalize")
-        baseline = state.get("baseline")
-        approved = bool(state.get("approved"))
-        error = None if approved else str(state.get("terminal_error") or state.get("previous_error") or "refactor failed")
-        error_code = state.get("terminal_error_code") if not approved else None
-        error_message = state.get("terminal_error") if error_code else None
-        error_summary = state.get("terminal_error_summary") if error_code else None
-        post = state.get("post") if approved else None
-        attempts = int(state.get("attempt", 0))
-        if approved or state.get("terminal_error"):
-            self_heal_count = max(attempts - 1, 0)
-        else:
-            self_heal_count = attempts
         graph_trace = [*state.get("node_trace", []), "FINALIZE"]
-        record = RunRecord(
+        outcome = persist_run_outcome(
+            self.orchestrator.store,
+            state,
             run_id=self.run_id,
             issue_id=self.request.issue_id,
             repo_name=self.repo_name,
-            pre_loc=baseline.loc if baseline else None,
-            post_loc=post.loc if post else None,
-            pre_cc=baseline.cyclomatic_complexity if baseline else None,
-            post_cc=post.cyclomatic_complexity if post else None,
-            self_heal_count=self_heal_count,
-            status="SUCCESS" if approved else "FAILED",
-            error=None,
-            error_code=error_code,
-            error_message=error_message,
-            error_summary=error_summary,
+            memory_key=self.memory_key,
             evidence_level=self.request.evidence_level,
             report_persona=self.request.persona,
         )
-        self.orchestrator.store.save(record)
+        record = outcome.record
+        approved = outcome.approved
+        error = outcome.error
+        attempts = outcome.attempts
         llm_result = state.get("llm_result")
-        if approved:
-            self.orchestrator.store.save_memory(
-                success_memory(record, self.memory_key, llm_result.insult_review, state["reward"])
-            )
-        else:
-            self.orchestrator.store.save_memory(failure_memory(record, self.memory_key))
+        if not approved:
             self._trajectory(
                 state,
                 str(state.get("control_status") or "FAILED"),

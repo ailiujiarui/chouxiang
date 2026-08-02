@@ -97,6 +97,9 @@ flowchart LR
     ORCH_OBSERVABILITY --> ANALYSIS_EVENTS["analysis_events.py\n安全事件契约"]
     ORCH --> ORCH_STATE["orchestrator_state.py\n状态初始化与转换"]
     ORCH_STATE --> EXECUTION_GRAPH["execution_graph.py\n状态类型与路由约束"]
+    ORCH --> ORCH_PERSISTENCE["orchestrator_persistence.py\n最终记录与轨迹记忆"]
+    ORCH_PERSISTENCE --> STORE
+    ORCH_PERSISTENCE --> MEMORY["memory.py\n成功/失败记忆构造"]
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -122,7 +125,9 @@ flowchart LR
 - `orchestrator.py` 保留 `_trajectory()`、`_emit_analysis_event()` 和 `_phase_started()` 兼容门面。Observability 不导入 Orchestrator、执行图或 Store，也不创建线程和数据库连接。
 - `orchestrator_state.py` 统一创建每次运行的全新初始状态，执行显式节点跳转、重试/终止判定，并收束类型化的辩论轮次。
 - `orchestrator.py` 不再直接写入 `next_node`，并保留 `_retry_or_finalize()` 与 `_close_round()` 兼容门面；状态模块不依赖 Orchestrator、Store、LLM 或沙箱。
+- `orchestrator_persistence.py` 根据最终状态构造稳定的 `RunRecord`，并保持“运行记录先写、trajectory memory 后写”的原有顺序；它通过窄 Store 协议工作，不持有 SQLite 连接。
+- 失败轨迹、报告、产物和最终分析事件不属于该持久化边界，继续由 Orchestrator 分别调用既有独立模块。
 
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物持久化、轨迹/分析事件记录和状态转换已独立定位，后续继续逐项拆分执行节点和其余持久化职责。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，后续继续逐项拆分执行节点。
