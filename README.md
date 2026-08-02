@@ -119,6 +119,7 @@ Demo Suite 案例循环由 `demo_suite_service.py` 执行，Mock/DeepSeek 与沙
 Benchmark 的内置/Manifest 分支、历史对比和证据文件由 `benchmark_service.py` 统一编排。
 Snippet 的任务构造、执行和报告定位由 `snippet_submission.py` 负责，CLI 只处理输入适配。
 只读 GitHub URL 的 checkout、请求构造和本地执行由 `github_url_submission.py` 统一处理。
+Jobs 与 trajectory memory 的只读查询和文本格式由 `cli_queries.py` 统一提供。
 
 安装开发依赖：
 

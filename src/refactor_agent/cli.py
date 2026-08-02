@@ -26,6 +26,7 @@ from refactor_agent.cli_config import (
     resolve_github_workspace_root as _resolve_github_workspace_root,
     resolve_run_root as _resolve_run_root,
 )
+from refactor_agent.cli_queries import query_job_lines, query_memory_lines
 from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
@@ -435,20 +436,16 @@ def jobs(
 ) -> None:
     """List recent local jobs, including readable legacy records."""
     run_root = _resolve_run_root(run_root)
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    records = store.list_github_jobs(limit)
-    if not records:
+    lines = query_job_lines(
+        _resolve_database(database, run_root),
+        limit,
+        store_factory=SQLiteRunStore,
+    )
+    if not lines:
         console.print("No GitHub jobs recorded yet.", markup=False)
         return
-    for record in records:
-        console.print(
-            (
-                f"{record.updated_at} | {record.status} | {record.job_id} | "
-                f"{record.repo_full_name}#{record.issue_number} | "
-                f"target={record.target_path} | run={record.run_id or '-'} | pr={record.pr_url or '-'}"
-            ),
-            markup=False,
-        )
+    for line in lines:
+        console.print(line, markup=False)
 
 
 @app.command("memories")
@@ -461,21 +458,18 @@ def memories(
 ) -> None:
     """List trajectory memory records learned from previous runs."""
     run_root = _resolve_run_root(run_root)
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    records = store.list_memory(repo_name=repo_name, target_path=target, limit=limit)
-    if not records:
+    lines = query_memory_lines(
+        _resolve_database(database, run_root),
+        repo_name=repo_name,
+        target_path=target,
+        limit=limit,
+        store_factory=SQLiteRunStore,
+    )
+    if not lines:
         _print_plain("还没有轨迹记忆。先跑一次 refactor-agent demo 或 github-url。")
         return
-    for record in records:
-        reward = f"{record.reward:.2f}" if record.reward is not None else "-"
-        signature = record.error_signature or "-"
-        _print_plain(
-            (
-                f"{record.created_at or '-'} | {record.status} | {record.repo_name} | "
-                f"{record.target_path} | reward={reward} | error={signature}\n"
-                f"  {record.lesson}"
-            )
-        )
+    for line in lines:
+        _print_plain(line)
 
 
 @app.command()
