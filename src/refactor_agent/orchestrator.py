@@ -8,11 +8,11 @@ from uuid import uuid4
 
 from refactor_agent.analysis_events import AnalysisEventSink, AnalysisEventType
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
-from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
+from refactor_agent.ast_analyzer import controlled_subtree_rewrite, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.debate_state import render_mermaid_state_diagram
-from refactor_agent.llm import LLMError, RefactorClient
+from refactor_agent.llm import RefactorClient
 from refactor_agent.memory import target_memory_key
 from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
@@ -35,6 +35,7 @@ from refactor_agent.models import (
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_persistence import persist_run_outcome
+from refactor_agent.orchestrator_minimizer import minimize_execution_node
 from refactor_agent.orchestrator_prepare import (
     prepare_execution_node,
     request_with_memory as prepare_request_with_memory,
@@ -146,34 +147,13 @@ class _RefactorWorkflow:
         )
 
     def minimizer(self, state: ExecutionState) -> ExecutionState:
-        state["attempt"] += 1
         self._phase_started(state, "minimizer")
-        state["allowed_regions"] = select_target_regions(
-            state["original_code"],
-            self.request.issue_text,
-            state.get("previous_error"),
+        return minimize_execution_node(
+            state,
+            request=self.request,
+            minimizer=self.orchestrator.minimizer,
+            record_trajectory=self._trajectory,
         )
-        try:
-            result = self.orchestrator.minimizer.propose(
-                request=state["llm_request"],
-                current_code=state["current_code"],
-                baseline_metrics=state["baseline"],
-                previous_error=state.get("previous_error"),
-                attempt=state["attempt"],
-            )
-        except LLMError as exc:
-            state["terminal_error"] = exc.public_message
-            state["terminal_error_code"] = exc.code
-            state["terminal_error_summary"] = exc.summary
-            return self._transition_to(state, "finalize")
-        state["llm_result"] = result
-        if result.usage is not None:
-            state["llm_usages"] = [*state.get("llm_usages", []), result.usage]
-        state["round_messages"] = [
-            AgentDebateMessage(round=state["attempt"], agent="MINIMIZER", content=result.thought)
-        ]
-        self._trajectory(state, "MINIMIZER_PROPOSED", result.thought, "MINIMIZER")
-        return self._transition_to(state, "ast_guard")
 
     def ast_guard(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "ast_guard")

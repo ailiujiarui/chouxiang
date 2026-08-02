@@ -104,6 +104,9 @@ flowchart LR
     ORCH_PREPARE --> MEMORY
     ORCH_PREPARE --> SANDBOX["sandbox.py\n工作区与后端预检"]
     ORCH_PREPARE --> ORCH_STATE
+    ORCH --> ORCH_MINIMIZER["orchestrator_minimizer.py\nMinimizer 执行节点"]
+    ORCH_MINIMIZER --> AST_ANALYZER["ast_analyzer.py\n目标区域选择"]
+    ORCH_MINIMIZER --> ORCH_STATE
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -133,7 +136,9 @@ flowchart LR
 - 失败轨迹、报告、产物和最终分析事件不属于该持久化边界，继续由 Orchestrator 分别调用既有独立模块。
 - `orchestrator_prepare.py` 独立实现 Prepare 节点：读取历史 memory、生成 LLM 请求副本、分析基线、复制隔离工作区并执行沙箱后端预检。
 - `_RefactorWorkflow.prepare()` 继续作为执行图的稳定节点入口，只发布阶段事件并委托 Prepare 模块；`_request_with_memory()` 保留兼容导出。Prepare 仅通过只读协议查询 memory，不持有 Store 或 SQLite 连接。
+- `orchestrator_minimizer.py` 独立实现 Minimizer 节点：增加尝试次数、选择受控目标区域、请求候选、累积 LLM usage，并把公开化的 LLM 失败转换为 Finalize 路由。
+- `_RefactorWorkflow.minimizer()` 继续作为执行图入口并发布阶段事件；Minimizer 模块通过窄 Agent 协议和轨迹回调工作，不反向依赖 Orchestrator 或 Store。
 
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare 节点也已迁出；后续继续逐项拆分其余执行节点。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物、最终记录/记忆持久化、轨迹/分析事件记录和状态转换已独立定位，Prepare 与 Minimizer 节点也已迁出；后续继续逐项拆分其余执行节点。
