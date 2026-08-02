@@ -29,8 +29,13 @@ from refactor_agent.cli_config import (
 from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
-from refactor_agent.demo_cases import DEMO_CASE_NAMES, get_demo_case, materialize_demo_case
-from refactor_agent.demo_suite import DEFAULT_DEMO_SUITE_CASES, DemoSuiteRun, render_demo_suite_report
+from refactor_agent.demo_cases import DEMO_CASE_NAMES, DemoCase, get_demo_case, materialize_demo_case
+from refactor_agent.demo_suite import DemoSuiteRun, render_demo_suite_report
+from refactor_agent.demo_suite_service import (
+    DemoSuiteCaseError,
+    run_demo_suite as execute_demo_suite,
+    suite_mock_fail_times as _suite_mock_fail_times,
+)
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
 from refactor_agent.local_refactor import LocalRefactorConfigurationError, run_local_refactor
 from refactor_agent.models import RefactorRequest
@@ -225,38 +230,12 @@ def demo_suite(
     """Run the staged live-demo suite and print a Chinese battle report."""
     run_root = _resolve_run_root(run_root)
     database_path = _resolve_database(database, run_root)
-    selected_cases = tuple(cases or DEFAULT_DEMO_SUITE_CASES)
-    suite_runs: list[DemoSuiteRun] = []
 
-    for case_name in selected_cases:
-        try:
-            target, issue, tests = materialize_demo_case(case_name, run_root)
-            selected = get_demo_case(case_name)
-        except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=2) from exc
-
+    def report_case_started(selected: DemoCase) -> None:
         _print_plain(f"\n=== 路演案例: {selected.name} / {selected.title} ===")
-        request = RefactorRequest(
-            target_file=target,
-            issue_text=issue.read_text(encoding="utf-8"),
-            tests_path=tests,
-            repo_name=f"demo-{selected.name}",
-            max_retry=max_retry,
-        )
-        case_fail_times = _suite_mock_fail_times(case_name, mock_fail_times, real_api, dramatic_retry)
-        result = _run_request(
-            request,
-            run_root,
-            database_path,
-            timeout,
-            mock=not real_api,
-            sandbox_backend=sandbox_backend,
-            sandbox_docker_image=sandbox_docker_image,
-            mock_fail_times=case_fail_times,
-            deadline_seconds=deadline,
-        )
-        suite_runs.append(DemoSuiteRun(case_name=selected.name, title=selected.title, result=result))
+
+    def report_case_completed(suite_run: DemoSuiteRun) -> None:
+        result = suite_run.result
         status_text = "成功" if result.record.status == "SUCCESS" else "失败"
         _print_plain(
             f"完成: {status_text} | 自愈 {result.record.self_heal_count} 轮 | "
@@ -264,6 +243,30 @@ def demo_suite(
         )
         if full_report:
             _print_plain(result.report_markdown)
+
+    try:
+        suite_runs = execute_demo_suite(
+            cases,
+            run_root=run_root,
+            database_path=database_path,
+            max_retry=max_retry,
+            pytest_timeout_seconds=timeout,
+            deadline_seconds=_resolve_deadline(deadline),
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            real_api=real_api,
+            mock_fail_times=mock_fail_times,
+            dramatic_retry=dramatic_retry,
+            graph_backend=os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            on_case_started=report_case_started,
+            on_case_completed=report_case_completed,
+        )
+    except DemoSuiteCaseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except LocalRefactorConfigurationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
     _print_plain("")
     _print_plain(render_demo_suite_report(suite_runs, run_root, database_path))
@@ -589,19 +592,6 @@ def _run_request(
     except LocalRefactorConfigurationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
-
-
-def _suite_mock_fail_times(
-    case_name: str,
-    configured_fail_times: int,
-    real_api: bool,
-    dramatic_retry: bool,
-) -> int:
-    if real_api or not dramatic_retry:
-        return configured_fail_times
-    if case_name == "adversarial-weekend":
-        return max(configured_fail_times, 1)
-    return configured_fail_times
 
 
 def _validate_input(target: Path, issue: Path, tests: Path) -> None:

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from refactor_agent.demo_cases import DEMO_CASE_NAMES, materialize_demo_case
 from refactor_agent.demo_suite import DEFAULT_DEMO_SUITE_CASES, DemoSuiteRun, render_demo_suite_report
+from refactor_agent.demo_suite_service import suite_mock_fail_times
 from refactor_agent.cli import _suite_mock_fail_times
 from refactor_agent.llm import MockRefactorClient
 from refactor_agent.metrics import analyze_file
@@ -72,7 +73,8 @@ def test_render_demo_suite_report_contains_battle_summary(tmp_path: Path):
 
 
 def test_suite_mock_fail_times_forces_adversarial_retry_only_in_mock_mode():
-    assert _suite_mock_fail_times("adversarial-weekend", 0, real_api=False, dramatic_retry=True) == 1
-    assert _suite_mock_fail_times("add-maze", 0, real_api=False, dramatic_retry=True) == 0
-    assert _suite_mock_fail_times("adversarial-weekend", 0, real_api=True, dramatic_retry=True) == 0
-    assert _suite_mock_fail_times("adversarial-weekend", 2, real_api=False, dramatic_retry=True) == 2
+    assert _suite_mock_fail_times is suite_mock_fail_times
+    assert suite_mock_fail_times("adversarial-weekend", 0, real_api=False, dramatic_retry=True) == 1
+    assert suite_mock_fail_times("add-maze", 0, real_api=False, dramatic_retry=True) == 0
+    assert suite_mock_fail_times("adversarial-weekend", 0, real_api=True, dramatic_retry=True) == 0
+    assert suite_mock_fail_times("adversarial-weekend", 2, real_api=False, dramatic_retry=True) == 2

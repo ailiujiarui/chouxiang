@@ -76,7 +76,9 @@ flowchart LR
     USER["终端用户"] --> CLI["cli.py\n参数解析、输出与命令编排"]
     CLI --> CONFIG["cli_config.py\n路径与环境默认值解析"]
     CLI --> LOCAL["local_refactor.py\n本地重构执行装配"]
+    CLI --> SUITE["demo_suite_service.py\nDemo Suite 案例执行"]
     CONFIG --> SETTINGS["config.py\n共享应用配置"]
+    SUITE --> LOCAL
     LOCAL --> LLM["llm.py\nMock 或 DeepSeek 客户端"]
     LOCAL --> ORCH["orchestrator.py\n重构执行流程"]
     LOCAL --> STORE["store.py\n稳定持久化门面"]
@@ -85,10 +87,11 @@ flowchart LR
 
 - `local_refactor.py` 负责选择 Mock/DeepSeek、装配 Store 与 Orchestrator，并为一次本地执行创建独立的 `ExecutionControl`；它不导入 Typer、Rich、`cli.py` 或环境变量。
 - `cli_config.py` 集中解析 run root、SQLite 数据库、GitHub workspace 和默认 deadline 的环境覆盖；显式命令参数优先，模块不依赖 Typer、Rich 或 `cli.py`。
+- `demo_suite_service.py` 负责默认案例选择、案例物化、`RefactorRequest` 构造、Mock 戏剧化重试策略和逐案例执行；进度输出通过回调交给 CLI，不导入 Typer、Rich 或 `cli.py`。
 - `cli.py` 继续保留全部命令名称、参数、默认值和退出码，只负责参数归一化、调用应用服务以及将客户端初始化错误翻译为终端错误；运行阶段的 `LLMError` 仍按原路径传播。
 - `_run_request()` 作为现有 CLI 内部兼容入口保留，调用方向只能是 `cli.py` 到 `local_refactor.py`，新服务不得反向导入 CLI。
-- 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()` 和 `_resolve_deadline()` 继续由 `cli.py` 兼容导出。
+- 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()`、`_resolve_deadline()` 和 `_suite_mock_fail_times()` 继续由 `cli.py` 兼容导出。
 
 ## 后续拆分方向
 
-Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的四个目标边界也已完成；CLI 已迁出本地重构执行装配和配置解析，下一步继续按单一职责提取 Demo Suite 执行业务。
+Store 的业务持久化拆分已经完成，`store.py` 只保留稳定门面、SQLite 策略和模块装配。`webhook.py` 的四个目标边界也已完成；CLI 已迁出本地重构执行装配、配置解析和 Demo Suite 执行，下一步继续按单一职责提取 Benchmark 产物编排。
