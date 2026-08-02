@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventSink, AnalysisEventType
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
-from refactor_agent.artifacts import RunArtifactWriter
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
 from refactor_agent.execution_control import ExecutionControl
@@ -37,6 +36,7 @@ from refactor_agent.models import (
     SandboxResult,
     TrajectoryStep,
 )
+from refactor_agent.orchestrator_artifacts import write_run_artifacts
 from refactor_agent.sandbox import (
     prepare_workspace,
     resolve_sandbox_backend,
@@ -526,27 +526,7 @@ class _RefactorWorkflow:
         return state
 
     def _write_artifacts(self, state: ExecutionState, report: str) -> None:
-        writer = RunArtifactWriter(self.orchestrator.run_root / self.run_id)
-        original = str(state.get("original_code") or "")
-        candidate = str(state.get("current_code") or original)
-        writer.write_sources(original, candidate)
-        sandbox = state.get("sandbox")
-        writer.write_log(
-            "pytest.log",
-            "\n".join(part for part in [getattr(sandbox, "stdout", ""), getattr(sandbox, "stderr", "")] if part),
-        )
-        adversarial = state.get("adversarial")
-        writer.write_log(
-            "adversary.log",
-            "\n".join(
-                part
-                for part in [getattr(adversarial, "stdout", ""), getattr(adversarial, "stderr", "")]
-                if part
-            ),
-        )
-        mutation = state.get("mutation")
-        writer.write_json("mutation.json", mutation.model_dump(mode="json") if mutation else {})
-        writer.write_report(report)
+        write_run_artifacts(self.orchestrator.run_root, self.run_id, state, report)
 
     def _retry_or_finalize(self, state: ExecutionState) -> ExecutionState:
         state["next_node"] = "minimizer" if state["attempt"] < state["max_attempts"] else "finalize"

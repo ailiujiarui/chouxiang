@@ -90,6 +90,8 @@ flowchart LR
     QUERIES --> STORE
     LOCAL --> LLM["llm.py\nMock 或 DeepSeek 客户端"]
     LOCAL --> ORCH["orchestrator.py\n重构执行流程"]
+    ORCH --> ORCH_ARTIFACTS["orchestrator_artifacts.py\n运行产物持久化"]
+    ORCH_ARTIFACTS --> ARTIFACTS["artifacts.py\n原子写入与脱敏"]
     LOCAL --> STORE["store.py\n稳定持久化门面"]
     LOCAL --> CONTROL["execution_control.py\n截止时间与取消检查"]
 ```
@@ -106,6 +108,12 @@ flowchart LR
 - `_run_request()` 作为现有 CLI 内部兼容入口保留，调用方向只能是 `cli.py` 到 `local_refactor.py`，新服务不得反向导入 CLI。
 - 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()`、`_resolve_deadline()` 和 `_suite_mock_fail_times()` 继续由 `cli.py` 兼容导出。
 
+## Orchestrator
+
+- `orchestrator_artifacts.py` 只负责将一次运行的源码、测试日志、对抗测试日志、变异结果和报告写入固定产物集合。
+- `orchestrator.py` 保留 `_write_artifacts()` 兼容门面并单向依赖产物模块；产物模块只依赖 `artifacts.py`，不得反向依赖 Orchestrator、Store、事件流或执行状态机。
+- 每次调用创建独立 writer，采用原子替换写入，不持有跨运行、跨线程文件句柄。
+
 ## 后续拆分方向
 
-Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。下一阶段进入 `orchestrator.py`，分别定位执行节点、状态转换和持久化职责。
+Store、Webhook 和 CLI 的目标业务边界已经完成渐进拆分；`cli.py` 只保留参数解析、输入适配、终端展示和命令编排。Orchestrator 的运行产物持久化已独立定位，后续继续逐项拆分执行节点、状态转换和其余持久化职责。
