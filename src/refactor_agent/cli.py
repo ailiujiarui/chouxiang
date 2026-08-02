@@ -20,6 +20,7 @@ from refactor_agent.benchmark import (
     serialize_benchmark,
     serialize_manifest_benchmark,
 )
+from refactor_agent.benchmark_service import execute_benchmark
 from refactor_agent.cli_config import (
     resolve_database as _resolve_database,
     resolve_deadline as _resolve_deadline,
@@ -299,42 +300,26 @@ def benchmark(
 ) -> None:
     """Run the deterministic six-case benchmark and emit JSON and Markdown."""
     run_root = _resolve_run_root(run_root)
-    if manifest is not None:
-        database_path = _resolve_database(database, run_root)
-        run_record, case_records = run_manifest_benchmark(
-            manifest_path=manifest,
-            provider=provider,
-            run_root=run_root,
-            cache_root=cache_root,
-            database_path=database_path,
-            case_names=set(case or []),
-            timeout_seconds=min(timeout, float(_resolve_deadline(deadline))),
-        )
-        store = SQLiteRunStore(database_path)
-        previous = store.list_benchmark_case_results(compare) if compare else None
-        markdown = render_manifest_benchmark_markdown(run_record, case_records, previous)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "benchmark.json").write_text(
-            serialize_manifest_benchmark(run_record, case_records) + "\n",
-            encoding="utf-8",
-        )
-        (output_dir / "benchmark.md").write_text(markdown + "\n", encoding="utf-8")
-        _print_plain(markdown)
-        raise typer.Exit(code=0 if run_record.status == "SUCCESS" else 1)
-    observations = run_benchmark(
+    execution = execute_benchmark(
+        output_dir=output_dir,
         run_root=run_root,
+        timeout_seconds=timeout,
+        deadline_seconds=_resolve_deadline(deadline) if manifest is not None else deadline,
         sandbox_backend=sandbox_backend,
         graph_backend=graph_backend,
-        timeout_seconds=timeout,
+        manifest_path=manifest,
+        provider=provider,
+        compare_run_id=compare,
+        case_names=case,
+        database_path=_resolve_database(database, run_root) if manifest is not None else None,
+        cache_root=cache_root,
+        run_builtin=run_benchmark,
+        run_manifest=run_manifest_benchmark,
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "benchmark.json"
-    markdown_path = output_dir / "benchmark.md"
-    markdown = render_benchmark_markdown(observations)
-    json_path.write_text(serialize_benchmark(observations) + "\n", encoding="utf-8")
-    markdown_path.write_text(markdown + "\n", encoding="utf-8")
-    _print_plain(markdown)
-    _print_plain(f"\nJSON: {json_path}\nMarkdown: {markdown_path}")
+    _print_plain(execution.markdown)
+    if execution.mode == "MANIFEST":
+        raise typer.Exit(code=execution.exit_code)
+    _print_plain(f"\nJSON: {execution.json_path}\nMarkdown: {execution.markdown_path}")
 
 
 @app.command("state-machine")

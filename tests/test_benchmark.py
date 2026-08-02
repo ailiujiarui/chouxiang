@@ -1,4 +1,5 @@
 import json
+import refactor_agent.cli as cli
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -6,10 +7,13 @@ from refactor_agent.benchmark import (
     BENCHMARK_CASES,
     BenchmarkObservation,
     render_benchmark_markdown,
+    render_manifest_benchmark_markdown,
     serialize_benchmark,
+    serialize_manifest_benchmark,
 )
 from refactor_agent.benchmark_runner import normalized_result_hash
 from refactor_agent.cli import app
+from refactor_agent.models import BenchmarkCaseRecord, BenchmarkRunRecord
 
 
 runner = CliRunner()
@@ -55,6 +59,13 @@ def test_benchmark_serialization_and_markdown_are_reproducible():
     assert "| simple | simple-function | SUCCESS | 1 | 5 -> 2 | 3 -> 1 | 100.0% | pass | 8.00 |" in markdown
 
 
+def test_cli_keeps_benchmark_compatibility_exports():
+    assert cli.render_benchmark_markdown is render_benchmark_markdown
+    assert cli.render_manifest_benchmark_markdown is render_manifest_benchmark_markdown
+    assert cli.serialize_benchmark is serialize_benchmark
+    assert cli.serialize_manifest_benchmark is serialize_manifest_benchmark
+
+
 def test_benchmark_cli_writes_json_and_markdown(tmp_path, monkeypatch):
     observation = BenchmarkObservation(
         case="simple",
@@ -75,6 +86,53 @@ def test_benchmark_cli_writes_json_and_markdown(tmp_path, monkeypatch):
     result = runner.invoke(app, ["benchmark", "--output-dir", str(tmp_path / "evidence")])
 
     assert result.exit_code == 0
+    assert (tmp_path / "evidence" / "benchmark.json").is_file()
+    assert (tmp_path / "evidence" / "benchmark.md").is_file()
+
+
+def test_manifest_benchmark_cli_writes_evidence_and_preserves_success_exit(
+    tmp_path,
+    monkeypatch,
+):
+    run_record = BenchmarkRunRecord(
+        run_id="benchmark-current",
+        manifest_hash="manifest-hash",
+        provider="mock",
+        model="mock",
+        status="SUCCESS",
+        generated_at="2026-08-02T00:00:00Z",
+    )
+    case_record = BenchmarkCaseRecord(
+        run_id=run_record.run_id,
+        case_name="case-one",
+        repository="owner/repository",
+        commit="abc123",
+        provider="mock",
+        model="mock",
+        status="SUCCESS",
+        expected_status="SUCCESS",
+        normalized_hash="a" * 64,
+    )
+    monkeypatch.setattr(
+        "refactor_agent.cli.run_manifest_benchmark",
+        lambda **kwargs: (run_record, [case_record]),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--output-dir",
+            str(tmp_path / "evidence"),
+            "--database",
+            str(tmp_path / "benchmark.sqlite"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "# External Benchmark" in result.stdout
     assert (tmp_path / "evidence" / "benchmark.json").is_file()
     assert (tmp_path / "evidence" / "benchmark.md").is_file()
 
