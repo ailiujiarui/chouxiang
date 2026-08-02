@@ -43,6 +43,10 @@ from refactor_agent.orchestrator_prepare import (
     prepare_execution_node,
     request_with_memory as prepare_request_with_memory,
 )
+from refactor_agent.orchestrator_pytest import (
+    run_pytest_execution_node,
+    summarize_pytest_failure,
+)
 from refactor_agent.orchestrator_state import (
     WorkflowNode,
     close_debate_round,
@@ -52,8 +56,6 @@ from refactor_agent.orchestrator_state import (
 )
 from refactor_agent.sandbox import (
     run_performance_profile_with_backend,
-    run_pytest_with_backend,
-    write_candidate,
 )
 from refactor_agent.store import SQLiteRunStore
 
@@ -170,48 +172,18 @@ class _RefactorWorkflow:
 
     def pytest(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "pytest")
-        write_candidate(state["target_file"], state["current_code"])
-        result = run_pytest_with_backend(
-            workspace=self.workspace,
-            tests_path=state["tests_path"],
-            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
-            backend=state["active_backend"],
-            docker_image=self.orchestrator.sandbox_docker_image,
-            memory=self.orchestrator.sandbox_memory,
-            cpus=self.orchestrator.sandbox_cpus,
-            execution_control=self.execution_control,
-        )
-        state["sandbox"] = result
-        message = self.orchestrator.defender.review_pytest(result)
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="DEFENDER", content=message)
-        )
-        if not result.passed:
-            state["previous_error"] = _summarize_failure(result)
-            self._emit_analysis_event(
-                AnalysisEventType.PYTEST_FAILED,
-                state,
-                phase="pytest",
-                error_category="pytest_failed",
-                recoverable=state["attempt"] < state["max_attempts"],
-                safe_metrics={
-                    "returncode": result.returncode,
-                    "duration_seconds": result.duration_seconds,
-                },
-            )
-            self._trajectory(state, "PYTEST_FAILED", state["previous_error"], "DEFENDER")
-            self._close_round(state, pytest_passed=False)
-            return self._retry_or_finalize(state)
-        self._emit_analysis_event(
-            AnalysisEventType.PYTEST_PASSED,
+        return run_pytest_execution_node(
             state,
-            phase="pytest",
-            safe_metrics={
-                "returncode": result.returncode,
-                "duration_seconds": result.duration_seconds,
-            },
+            workspace=self.workspace,
+            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
+            docker_image=self.orchestrator.sandbox_docker_image,
+            docker_memory=self.orchestrator.sandbox_memory,
+            docker_cpus=self.orchestrator.sandbox_cpus,
+            execution_control=self.execution_control,
+            defender=self.orchestrator.defender,
+            emit_analysis_event=self._emit_analysis_event,
+            record_trajectory=self._trajectory,
         )
-        return self._transition_to(state, "adversary")
 
     def adversary(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "adversary")
@@ -499,8 +471,7 @@ def _request_with_memory(request: RefactorRequest, memory_context: str | None) -
 
 
 def _summarize_failure(result: SandboxResult) -> str:
-    combined = "\n".join(part for part in [result.stdout, result.stderr] if part)
-    return combined[-8000:] if combined else f"pytest 失败，返回码 {result.returncode}"
+    return summarize_pytest_failure(result)
 
 
 def _summarize_adversarial_failure(result: AdversarialTestResult) -> str:
