@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import shutil
 from uuid import uuid4
 
 from refactor_agent.analysis_events import AnalysisEventSink, AnalysisEventType
@@ -12,7 +11,6 @@ from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.llm import RefactorClient
 from refactor_agent.memory import target_memory_key
-from refactor_agent.metrics import analyze_file
 from refactor_agent.models import (
     AdversarialCritique,
     AdversarialTestResult,
@@ -45,6 +43,11 @@ from refactor_agent.orchestrator_ast_guard import (
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_persistence import persist_run_outcome
 from refactor_agent.orchestrator_minimizer import minimize_execution_node
+from refactor_agent.orchestrator_mutation import (
+    combined_mutation_tests_path,
+    run_mutation_execution_node,
+    summarize_mutation,
+)
 from refactor_agent.orchestrator_prepare import (
     prepare_execution_node,
     request_with_memory as prepare_request_with_memory,
@@ -59,9 +62,6 @@ from refactor_agent.orchestrator_state import (
     initial_execution_state,
     retry_or_finalize,
     transition_to,
-)
-from refactor_agent.sandbox import (
-    run_performance_profile_with_backend,
 )
 from refactor_agent.store import SQLiteRunStore
 
@@ -209,42 +209,17 @@ class _RefactorWorkflow:
 
     def mutation(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "mutation")
-        state["post"] = analyze_file(state["target_file"])
-        mutation_tests = _combined_mutation_tests_path(
-            self.workspace,
-            state["tests_path"],
-            state["adversarial"].test_file,
-        )
-        state["mutation"] = self.orchestrator.adversary.challenge(
-            candidate_source=state["current_code"],
-            target_file=state["target_file"],
+        return run_mutation_execution_node(
+            state,
             workspace=self.workspace,
-            tests_path=mutation_tests,
             timeout_seconds=self.orchestrator.pytest_timeout_seconds,
-            backend=state["active_backend"],
             docker_image=self.orchestrator.sandbox_docker_image,
-            memory=self.orchestrator.sandbox_memory,
-            cpus=self.orchestrator.sandbox_cpus,
+            docker_memory=self.orchestrator.sandbox_memory,
+            docker_cpus=self.orchestrator.sandbox_cpus,
             execution_control=self.execution_control,
-            target_regions=state["rewrite"].changed_regions,
+            adversary=self.orchestrator.adversary,
+            record_trajectory=self._trajectory,
         )
-        message = _summarize_mutation(state["mutation"])
-        state["round_messages"].append(
-            AgentDebateMessage(round=state["attempt"], agent="ADVERSARY", content=message)
-        )
-        self._trajectory(state, "ADVERSARY_CHALLENGED", message, "ADVERSARY")
-        state["performance"] = run_performance_profile_with_backend(
-            workspace=self.workspace,
-            target_file=state["target_file"],
-            tests_path=state["tests_path"],
-            timeout_seconds=self.orchestrator.pytest_timeout_seconds,
-            backend=state["active_backend"],
-            docker_image=self.orchestrator.sandbox_docker_image,
-            memory=self.orchestrator.sandbox_memory,
-            cpus=self.orchestrator.sandbox_cpus,
-            execution_control=self.execution_control,
-        )
-        return self._transition_to(state, "judge")
 
     def judge(self, state: ExecutionState) -> ExecutionState:
         self._phase_started(state, "judge")
@@ -462,10 +437,7 @@ def _summarize_critique(critique: AdversarialCritique) -> str:
 
 
 def _summarize_mutation(result: MutationTestResult) -> str:
-    return (
-        f"变异攻击击杀 {result.killed}/{result.total} 个变异体"
-        f"（击杀率 {result.kill_rate * 100:.1f}%）。"
-    )
+    return summarize_mutation(result)
 
 
 def _summarize_judge(reward: RewardBreakdown) -> str:
@@ -485,21 +457,11 @@ def _combined_mutation_tests_path(
     baseline_tests: Path,
     adversarial_test_file: Path | None,
 ) -> Path:
-    if adversarial_test_file is None or not adversarial_test_file.is_file():
-        return baseline_tests
-    combined = workspace / "_mutation_tests"
-    if combined.exists():
-        shutil.rmtree(combined)
-    baseline_target = combined / "baseline"
-    adversarial_target = combined / "adversarial"
-    baseline_target.mkdir(parents=True)
-    adversarial_target.mkdir(parents=True)
-    if baseline_tests.is_dir():
-        shutil.copytree(baseline_tests, baseline_target, dirs_exist_ok=True)
-    else:
-        shutil.copy2(baseline_tests, baseline_target / baseline_tests.name)
-    shutil.copy2(adversarial_test_file, adversarial_target / adversarial_test_file.name)
-    return combined
+    return combined_mutation_tests_path(
+        workspace,
+        baseline_tests,
+        adversarial_test_file,
+    )
 
 def _delta(before: int | None, after: int | None) -> str:
     if before is None or after is None:
