@@ -117,6 +117,7 @@ $env:REFACTOR_AGENT_MOCK_LLM="true"
 共用 `local_refactor.py` 的执行服务，路径和环境默认值由 `cli_config.py` 统一解析，
 Demo Suite 案例循环由 `demo_suite_service.py` 执行，Mock/DeepSeek 与沙箱参数不会在各命令中重复装配。
 Benchmark 的内置/Manifest 分支、历史对比和证据文件由 `benchmark_service.py` 统一编排。
+Snippet 的任务构造、执行和报告定位由 `snippet_submission.py` 负责，CLI 只处理输入适配。
 
 安装开发依赖：
 

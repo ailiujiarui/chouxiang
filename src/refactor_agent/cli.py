@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -40,8 +39,8 @@ from refactor_agent.demo_suite_service import (
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
 from refactor_agent.local_refactor import LocalRefactorConfigurationError, run_local_refactor
 from refactor_agent.models import RefactorRequest
-from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
 from refactor_agent.snippet import SnippetRefactorService
+from refactor_agent.snippet_submission import execute_snippet_submission
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.control_api import validate_control_api_settings
 
@@ -118,38 +117,22 @@ def snippet(
     tests_text = tests.read_text(encoding="utf-8") if tests else None
     if normalized_mode == "verified-refactor" and not tests_text:
         raise typer.BadParameter("--tests is required in verified-refactor mode")
-    settings = AppSettings.from_env().model_copy(
-        update={
-            "run_root": run_root,
-            "database_path": database,
-            "sandbox_backend": sandbox_backend,
-            "mock_llm": mock,
-        }
+    submission = execute_snippet_submission(
+        source_text=source_text,
+        request_text=request,
+        tests_text=tests_text,
+        mode=normalized_mode,
+        persona=normalized_persona,
+        run_root=run_root,
+        database_path=database,
+        sandbox_backend=sandbox_backend,
+        mock=mock,
+        settings_factory=AppSettings.from_env,
+        processor_factory=SnippetRefactorService,
     )
-    job = GitHubRefactorJob(
-        job_kind=RepositoryJobKind.SNIPPET,
-        job_id=f"snippet-cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
-        delivery_id=f"snippet-cli:{datetime.now(timezone.utc).timestamp()}",
-        repo_full_name="local/snippet",
-        default_branch=None,
-        issue_number=None,
-        issue_title="CLI snippet code review",
-        issue_text=request.strip(),
-        target_path="snippet.py",
-        tests_path="test_snippet.py",
-        event_name="snippet_cli",
-        action="submitted",
-        snippet_source=source_text,
-        snippet_tests=tests_text,
-        snippet_mode="REVIEW" if normalized_mode == "review" else "VERIFIED_REFACTOR",
-        persona="STRICT" if normalized_persona == "strict" else "TSUNDERE",
-    )
-    result = SnippetRefactorService(settings).process(job)
-    if not result.run_id:
-        raise typer.Exit(code=1)
-    report = (settings.run_root / result.run_id / "artifacts" / "report.md").read_text(encoding="utf-8")
-    _print_plain(report)
-    raise typer.Exit(code=0 if result.status == "DRY_RUN" else 1)
+    if submission.report_markdown is not None:
+        _print_plain(submission.report_markdown)
+    raise typer.Exit(code=submission.exit_code)
 
 
 @app.command()
