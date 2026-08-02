@@ -122,6 +122,7 @@ Snippet 的任务构造、执行和报告定位由 `snippet_submission.py` 负�
 Jobs 与 trajectory memory 的只读查询和文本格式由 `cli_queries.py` 统一提供。
 Streamlit 依赖检测、环境组装和子进程执行由 `dashboard_launcher.py` 负责。
 Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_artifacts.py` 独立负责，执行流程只保留兼容转发入口。
+运行轨迹与安全分析事件由 `orchestrator_observability.py` 统一记录，事件发布失败不会中断重构执行图。
 
 安装开发依赖：
 

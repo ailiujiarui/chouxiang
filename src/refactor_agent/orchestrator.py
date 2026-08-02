@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from uuid import uuid4
 
-from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventSink, AnalysisEventType
+from refactor_agent.analysis_events import AnalysisEventSink, AnalysisEventType
 from refactor_agent.agents import AdversaryAgent, DefenderAgent, JudgeAgent, MinimizerAgent
 from refactor_agent.ast_analyzer import controlled_subtree_rewrite, select_target_regions, validate_candidate_source
 from refactor_agent.execution_graph import ExecutionState, run_execution_graph
@@ -34,9 +34,9 @@ from refactor_agent.models import (
     ReportPersona,
     RunRecord,
     SandboxResult,
-    TrajectoryStep,
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
+from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.sandbox import (
     prepare_workspace,
     resolve_sandbox_backend,
@@ -46,7 +46,6 @@ from refactor_agent.sandbox import (
     write_candidate,
 )
 from refactor_agent.store import SQLiteRunStore
-from refactor_agent.trajectory import append_trajectory
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +107,13 @@ class _RefactorWorkflow:
         self.repo_name = request.repo_name or request.target_file.resolve().parent.name
         self.memory_key = target_memory_key(request.target_file)
         self.trajectory_path = orchestrator.run_root / self.run_id / "trajectory.jsonl"
+        self.observability = OrchestratorObservability(
+            trajectory_path=self.trajectory_path,
+            analysis_event_sink=orchestrator.analysis_event_sink,
+            task_id=request.issue_id or self.run_id,
+            run_id=self.run_id,
+            evidence_level=request.evidence_level.value,
+        )
         self.execution_control = execution_control
 
     def run(self) -> RefactorRunResult:
@@ -551,16 +557,13 @@ class _RefactorWorkflow:
         metadata: dict | None = None,
         reward: RewardBreakdown | None = None,
     ) -> None:
-        append_trajectory(
-            self.trajectory_path,
-            TrajectoryStep(
-                attempt=int(state.get("attempt", 0)),
-                status=status,
-                message=message,
-                agent=agent,
-                metadata=metadata or {},
-                reward=reward,
-            ),
+        self.observability.record_trajectory(
+            attempt=int(state.get("attempt", 0)),
+            status=status,
+            message=message,
+            agent=agent,
+            metadata=metadata,
+            reward=reward,
         )
 
     def _emit_analysis_event(
@@ -573,23 +576,14 @@ class _RefactorWorkflow:
         recoverable: bool | None = None,
         safe_metrics: dict[str, str | int | float | bool | None] | None = None,
     ) -> None:
-        try:
-            self.orchestrator.analysis_event_sink.emit(
-                AnalysisEvent(
-                    event_type=event_type,
-                    task_id=self.request.issue_id or self.run_id,
-                    run_id=self.run_id,
-                    source="orchestrator",
-                    phase=phase,
-                    attempt=int(state.get("attempt", 0)),
-                    evidence_level=self.request.evidence_level.value,
-                    error_category=error_category,
-                    recoverable=recoverable,
-                    safe_metrics=safe_metrics or {},
-                )
-            )
-        except Exception:
-            logger.exception("Analysis event emission failed for run %s", self.run_id)
+        self.observability.emit_analysis_event(
+            event_type,
+            attempt=int(state.get("attempt", 0)),
+            phase=phase,
+            error_category=error_category,
+            recoverable=recoverable,
+            safe_metrics=safe_metrics,
+        )
 
     def _phase_started(self, state: ExecutionState, phase: str) -> None:
         self._emit_analysis_event(
