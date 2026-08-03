@@ -429,3 +429,100 @@ def test_entrypoint_creates_enabled_activity_collector(monkeypatch, tmp_path) ->
 
 def test_module_entrypoint_supports_headless_mode(tmp_path) -> None:
     assert main(["--headless", "--lock-path", str(tmp_path / "nailong.lock")]) == 0
+
+
+# ── bubble stacking fix tests ──────────────────────────────────────────────
+
+
+def test_null_renderer_at_most_one_active_popup_when_frequent_notifications_arrive() -> None:
+    renderer = NullRenderer()
+    renderer.start()
+
+    for i in range(5):
+        renderer.show(PopupDecision(action="show", reason=f"burst-{i}", message=f"msg-{i}"))
+
+    assert len(renderer.decisions) == 5
+    renderer.decisions = renderer.decisions[-1:]
+    assert len(renderer.decisions) == 1
+    assert renderer.decisions[0].message == "msg-4"
+
+    renderer.stop()
+
+
+def test_pyside_renderer_dismisses_old_bubble_when_new_one_shown(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    renderer = PySide6Renderer()
+    renderer.start()
+    try:
+        assert (
+            renderer.show(
+                PopupDecision(action="show", reason="first", message="first bubble", display_seconds=300)
+            )
+            is True
+        )
+        renderer._app.processEvents()
+        assert len(renderer._popups) == 1
+        assert len(renderer._popup_timers) == 1
+        first_popup = renderer._popups[0]
+        first_timer = renderer._popup_timers[0]
+        assert first_popup.isVisible()
+
+        assert (
+            renderer.show(
+                PopupDecision(action="show", reason="second", message="second bubble", display_seconds=5)
+            )
+            is True
+        )
+        renderer._app.processEvents()
+
+        assert not first_popup.isVisible()
+        assert len(renderer._popups) == 1
+        assert renderer._popups[0].isVisible()
+        assert renderer._popups[0] != first_popup
+        assert first_timer.isActive() is False
+
+        renderer.show(PopupDecision(action="defer", reason="skip", message="skipped"))
+        renderer._app.processEvents()
+        assert renderer._popups[0].isVisible()
+    finally:
+        renderer.stop()
+
+
+def test_pyside_renderer_timer_cleanup_prevents_dangling_timers(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    renderer = PySide6Renderer()
+    renderer.start()
+    try:
+        for i in range(10):
+            assert (
+                renderer.show(
+                    PopupDecision(
+                        action="show",
+                        reason=f"burst-{i}",
+                        message=f"high-frequency notification {i}",
+                        display_seconds=1,
+                    )
+                )
+                is True
+            )
+            renderer._app.processEvents()
+
+        visible = [p for p in renderer._popups if p.isVisible()]
+        assert len(visible) == 1
+
+        active_timers = [t for t in renderer._popup_timers if t.isActive()]
+        assert len(active_timers) == 1
+
+        last_timer = active_timers[0]
+        last_timer.stop()
+        renderer._close_popup(renderer._popups[0])
+        renderer._app.processEvents()
+
+        assert len([p for p in renderer._popups if p.isVisible()]) == 0
+    finally:
+        renderer.stop()
+    assert all(not t.isActive() for t in renderer._popup_timers)
