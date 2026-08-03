@@ -352,6 +352,7 @@ class PySide6Renderer:
         self._right_eye.setGeometry(128, 36, 88, 34)
         self._mouth.setGeometry(62, 88, 116, 36)
         self._popups: list[QLabel] = []
+        self._popup_timers: list[QTimer] = []
         self._on_quit = on_quit
         self._on_clear_activity_history: Callable[[], int] | None = None
         self._on_set_do_not_disturb: Callable[[bool], None] | None = None
@@ -432,9 +433,7 @@ class PySide6Renderer:
         if self._tray is not None:
             self._tray.hide()
         self._pet_window.close()
-        for popup in self._popups:
-            popup.close()
-        self._popups.clear()
+        self._dismiss_all_popups()
 
     def exec(self) -> int:
         return self._app.exec()
@@ -484,6 +483,8 @@ class PySide6Renderer:
             self._on_set_manual_pause(enabled)
 
     def _show_on_ui_thread(self, decision: PopupDecision) -> None:
+        # Close all existing popups and cancel their timers so at most one bubble is visible.
+        self._dismiss_all_popups()
         state = decision_to_pet_state(decision)
         self._mouth.setText(MOUTH_TEXT[state.expression])
         pet_geometry = self._pet_window.frameGeometry()
@@ -512,7 +513,20 @@ class PySide6Renderer:
         popup.move(placement.x, placement.y)
         popup.show()
         self._popups.append(popup)
-        self._QTimer.singleShot(decision.display_seconds * 1000, lambda: self._close_popup(popup))
+        timer = self._QTimer(self._pet_window)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._close_popup(popup))
+        timer.start(decision.display_seconds * 1000)
+        self._popup_timers.append(timer)
+
+    def _dismiss_all_popups(self) -> None:
+        """Close every visible popup and cancel their auto-close timers."""
+        for timer in self._popup_timers:
+            timer.stop()
+        self._popup_timers.clear()
+        for popup in self._popups:
+            popup.close()
+        self._popups.clear()
 
     def _close_popup(self, popup: object) -> None:
         popup.close()
