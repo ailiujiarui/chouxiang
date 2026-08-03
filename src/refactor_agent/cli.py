@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -20,18 +19,34 @@ from refactor_agent.benchmark import (
     serialize_benchmark,
     serialize_manifest_benchmark,
 )
+from refactor_agent.benchmark_service import execute_benchmark
+from refactor_agent.cli_config import (
+    resolve_database as _resolve_database,
+    resolve_deadline as _resolve_deadline,
+    resolve_github_workspace_root as _resolve_github_workspace_root,
+    resolve_run_root as _resolve_run_root,
+)
+from refactor_agent.cli_queries import query_job_lines, query_memory_lines
 from refactor_agent.config import AppSettings
 from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
 from refactor_agent.debate_state import render_mermaid_state_diagram
-from refactor_agent.demo_cases import DEMO_CASE_NAMES, get_demo_case, materialize_demo_case
-from refactor_agent.demo_suite import DEFAULT_DEMO_SUITE_CASES, DemoSuiteRun, render_demo_suite_report
-from refactor_agent.execution_control import ExecutionControl
+from refactor_agent.demo_cases import DEMO_CASE_NAMES, DemoCase, get_demo_case, materialize_demo_case
+from refactor_agent.demo_suite import DemoSuiteRun, render_demo_suite_report
+from refactor_agent.demo_suite_service import (
+    DemoSuiteCaseError,
+    run_demo_suite as execute_demo_suite,
+    suite_mock_fail_times as _suite_mock_fail_times,
+)
+from refactor_agent.dashboard_launcher import DashboardDependencyError, launch_dashboard
 from refactor_agent.github_url import GitHubUrlError, checkout_github_url
-from refactor_agent.llm import DeepSeekClient, LLMError, MockRefactorClient
+from refactor_agent.github_url_submission import (
+    GitHubUrlCheckoutError,
+    execute_github_url_submission,
+)
+from refactor_agent.local_refactor import LocalRefactorConfigurationError, run_local_refactor
 from refactor_agent.models import RefactorRequest
-from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
-from refactor_agent.orchestrator import RefactorOrchestrator
 from refactor_agent.snippet import SnippetRefactorService
+from refactor_agent.snippet_submission import execute_snippet_submission
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.control_api import validate_control_api_settings
 
@@ -108,38 +123,22 @@ def snippet(
     tests_text = tests.read_text(encoding="utf-8") if tests else None
     if normalized_mode == "verified-refactor" and not tests_text:
         raise typer.BadParameter("--tests is required in verified-refactor mode")
-    settings = AppSettings.from_env().model_copy(
-        update={
-            "run_root": run_root,
-            "database_path": database,
-            "sandbox_backend": sandbox_backend,
-            "mock_llm": mock,
-        }
+    submission = execute_snippet_submission(
+        source_text=source_text,
+        request_text=request,
+        tests_text=tests_text,
+        mode=normalized_mode,
+        persona=normalized_persona,
+        run_root=run_root,
+        database_path=database,
+        sandbox_backend=sandbox_backend,
+        mock=mock,
+        settings_factory=AppSettings.from_env,
+        processor_factory=SnippetRefactorService,
     )
-    job = GitHubRefactorJob(
-        job_kind=RepositoryJobKind.SNIPPET,
-        job_id=f"snippet-cli-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
-        delivery_id=f"snippet-cli:{datetime.now(timezone.utc).timestamp()}",
-        repo_full_name="local/snippet",
-        default_branch=None,
-        issue_number=None,
-        issue_title="CLI snippet code review",
-        issue_text=request.strip(),
-        target_path="snippet.py",
-        tests_path="test_snippet.py",
-        event_name="snippet_cli",
-        action="submitted",
-        snippet_source=source_text,
-        snippet_tests=tests_text,
-        snippet_mode="REVIEW" if normalized_mode == "review" else "VERIFIED_REFACTOR",
-        persona="STRICT" if normalized_persona == "strict" else "TSUNDERE",
-    )
-    result = SnippetRefactorService(settings).process(job)
-    if not result.run_id:
-        raise typer.Exit(code=1)
-    report = (settings.run_root / result.run_id / "artifacts" / "report.md").read_text(encoding="utf-8")
-    _print_plain(report)
-    raise typer.Exit(code=0 if result.status == "DRY_RUN" else 1)
+    if submission.report_markdown is not None:
+        _print_plain(submission.report_markdown)
+    raise typer.Exit(code=submission.exit_code)
 
 
 @app.command()
@@ -221,38 +220,12 @@ def demo_suite(
     """Run the staged live-demo suite and print a Chinese battle report."""
     run_root = _resolve_run_root(run_root)
     database_path = _resolve_database(database, run_root)
-    selected_cases = tuple(cases or DEFAULT_DEMO_SUITE_CASES)
-    suite_runs: list[DemoSuiteRun] = []
 
-    for case_name in selected_cases:
-        try:
-            target, issue, tests = materialize_demo_case(case_name, run_root)
-            selected = get_demo_case(case_name)
-        except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=2) from exc
-
+    def report_case_started(selected: DemoCase) -> None:
         _print_plain(f"\n=== 路演案例: {selected.name} / {selected.title} ===")
-        request = RefactorRequest(
-            target_file=target,
-            issue_text=issue.read_text(encoding="utf-8"),
-            tests_path=tests,
-            repo_name=f"demo-{selected.name}",
-            max_retry=max_retry,
-        )
-        case_fail_times = _suite_mock_fail_times(case_name, mock_fail_times, real_api, dramatic_retry)
-        result = _run_request(
-            request,
-            run_root,
-            database_path,
-            timeout,
-            mock=not real_api,
-            sandbox_backend=sandbox_backend,
-            sandbox_docker_image=sandbox_docker_image,
-            mock_fail_times=case_fail_times,
-            deadline_seconds=deadline,
-        )
-        suite_runs.append(DemoSuiteRun(case_name=selected.name, title=selected.title, result=result))
+
+    def report_case_completed(suite_run: DemoSuiteRun) -> None:
+        result = suite_run.result
         status_text = "成功" if result.record.status == "SUCCESS" else "失败"
         _print_plain(
             f"完成: {status_text} | 自愈 {result.record.self_heal_count} 轮 | "
@@ -260,6 +233,30 @@ def demo_suite(
         )
         if full_report:
             _print_plain(result.report_markdown)
+
+    try:
+        suite_runs = execute_demo_suite(
+            cases,
+            run_root=run_root,
+            database_path=database_path,
+            max_retry=max_retry,
+            pytest_timeout_seconds=timeout,
+            deadline_seconds=_resolve_deadline(deadline),
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            real_api=real_api,
+            mock_fail_times=mock_fail_times,
+            dramatic_retry=dramatic_retry,
+            graph_backend=os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            on_case_started=report_case_started,
+            on_case_completed=report_case_completed,
+        )
+    except DemoSuiteCaseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    except LocalRefactorConfigurationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
     _print_plain("")
     _print_plain(render_demo_suite_report(suite_runs, run_root, database_path))
@@ -292,42 +289,26 @@ def benchmark(
 ) -> None:
     """Run the deterministic six-case benchmark and emit JSON and Markdown."""
     run_root = _resolve_run_root(run_root)
-    if manifest is not None:
-        database_path = _resolve_database(database, run_root)
-        run_record, case_records = run_manifest_benchmark(
-            manifest_path=manifest,
-            provider=provider,
-            run_root=run_root,
-            cache_root=cache_root,
-            database_path=database_path,
-            case_names=set(case or []),
-            timeout_seconds=min(timeout, float(_resolve_deadline(deadline))),
-        )
-        store = SQLiteRunStore(database_path)
-        previous = store.list_benchmark_case_results(compare) if compare else None
-        markdown = render_manifest_benchmark_markdown(run_record, case_records, previous)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "benchmark.json").write_text(
-            serialize_manifest_benchmark(run_record, case_records) + "\n",
-            encoding="utf-8",
-        )
-        (output_dir / "benchmark.md").write_text(markdown + "\n", encoding="utf-8")
-        _print_plain(markdown)
-        raise typer.Exit(code=0 if run_record.status == "SUCCESS" else 1)
-    observations = run_benchmark(
+    execution = execute_benchmark(
+        output_dir=output_dir,
         run_root=run_root,
+        timeout_seconds=timeout,
+        deadline_seconds=_resolve_deadline(deadline) if manifest is not None else deadline,
         sandbox_backend=sandbox_backend,
         graph_backend=graph_backend,
-        timeout_seconds=timeout,
+        manifest_path=manifest,
+        provider=provider,
+        compare_run_id=compare,
+        case_names=case,
+        database_path=_resolve_database(database, run_root) if manifest is not None else None,
+        cache_root=cache_root,
+        run_builtin=run_benchmark,
+        run_manifest=run_manifest_benchmark,
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "benchmark.json"
-    markdown_path = output_dir / "benchmark.md"
-    markdown = render_benchmark_markdown(observations)
-    json_path.write_text(serialize_benchmark(observations) + "\n", encoding="utf-8")
-    markdown_path.write_text(markdown + "\n", encoding="utf-8")
-    _print_plain(markdown)
-    _print_plain(f"\nJSON: {json_path}\nMarkdown: {markdown_path}")
+    _print_plain(execution.markdown)
+    if execution.mode == "MANIFEST":
+        raise typer.Exit(code=execution.exit_code)
+    _print_plain(f"\nJSON: {execution.json_path}\nMarkdown: {execution.markdown_path}")
 
 
 @app.command("state-machine")
@@ -396,35 +377,35 @@ def github_url(
     github_workspace_root = _resolve_github_workspace_root(github_workspace_root)
     body = _resolve_issue_text(issue, issue_text)
     try:
-        checkout = checkout_github_url(
+        submission = execute_github_url_submission(
             repo_url=repo_url,
-            workspace_root=github_workspace_root,
             target_path=target,
+            issue_text=body,
             tests_path=tests,
             branch=branch,
+            repo_name=repo_name,
+            max_retry=max_retry,
+            github_workspace_root=github_workspace_root,
+            run_root=run_root,
+            database_path=_resolve_database(database, run_root),
+            pytest_timeout_seconds=timeout,
+            deadline_seconds=_resolve_deadline(deadline),
+            mock=mock,
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            mock_fail_times=mock_fail_times,
+            graph_backend=os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            checkout_runner=checkout_github_url,
+            run_refactor=run_local_refactor,
         )
-    except GitHubUrlError as exc:
+    except GitHubUrlCheckoutError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=2) from exc
-
-    request = RefactorRequest(
-        target_file=checkout.target_file,
-        issue_text=body,
-        tests_path=checkout.tests_path,
-        repo_name=repo_name or checkout.repo_name,
-        max_retry=max_retry,
-    )
-    result = _run_request(
-        request,
-        run_root,
-        database,
-        timeout,
-        mock,
-        sandbox_backend,
-        sandbox_docker_image,
-        mock_fail_times,
-        deadline_seconds=deadline,
-    )
+    except LocalRefactorConfigurationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    checkout = submission.checkout
+    result = submission.run_result
     _print_plain(result.report_markdown)
     _print_plain(f"\n克隆仓库: {checkout.checkout_path}")
     if result.candidate_file is not None:
@@ -456,20 +437,16 @@ def jobs(
 ) -> None:
     """List recent local jobs, including readable legacy records."""
     run_root = _resolve_run_root(run_root)
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    records = store.list_github_jobs(limit)
-    if not records:
+    lines = query_job_lines(
+        _resolve_database(database, run_root),
+        limit,
+        store_factory=SQLiteRunStore,
+    )
+    if not lines:
         console.print("No GitHub jobs recorded yet.", markup=False)
         return
-    for record in records:
-        console.print(
-            (
-                f"{record.updated_at} | {record.status} | {record.job_id} | "
-                f"{record.repo_full_name}#{record.issue_number} | "
-                f"target={record.target_path} | run={record.run_id or '-'} | pr={record.pr_url or '-'}"
-            ),
-            markup=False,
-        )
+    for line in lines:
+        console.print(line, markup=False)
 
 
 @app.command("memories")
@@ -482,21 +459,18 @@ def memories(
 ) -> None:
     """List trajectory memory records learned from previous runs."""
     run_root = _resolve_run_root(run_root)
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    records = store.list_memory(repo_name=repo_name, target_path=target, limit=limit)
-    if not records:
+    lines = query_memory_lines(
+        _resolve_database(database, run_root),
+        repo_name=repo_name,
+        target_path=target,
+        limit=limit,
+        store_factory=SQLiteRunStore,
+    )
+    if not lines:
         _print_plain("还没有轨迹记忆。先跑一次 refactor-agent demo 或 github-url。")
         return
-    for record in records:
-        reward = f"{record.reward:.2f}" if record.reward is not None else "-"
-        signature = record.error_signature or "-"
-        _print_plain(
-            (
-                f"{record.created_at or '-'} | {record.status} | {record.repo_name} | "
-                f"{record.target_path} | reward={reward} | error={signature}\n"
-                f"  {record.lesson}"
-            )
-        )
+    for line in lines:
+        _print_plain(line)
 
 
 @app.command()
@@ -510,31 +484,23 @@ def dashboard(
     """Launch the live demo arena."""
     run_root = _resolve_run_root(run_root)
     database_path = _resolve_database(database, run_root)
-    if importlib.util.find_spec("streamlit") is None:
-        console.print("Streamlit is not installed. Install it with: python -m pip install -e .[dashboard]", markup=False)
+    try:
+        launched = launch_dashboard(
+            host=host,
+            port=port,
+            database_path=database_path,
+            run_root=run_root,
+            api_url=api_url,
+            script_path=Path(__file__).with_name("dashboard.py"),
+            module_finder=importlib.util.find_spec,
+            process_runner=subprocess.run,
+            executable=sys.executable,
+            on_ready=lambda url: console.print(f"Arena URL: {url}", markup=False),
+        )
+    except DashboardDependencyError as exc:
+        console.print(str(exc), markup=False)
         raise typer.Exit(code=1)
-
-    script = Path(__file__).with_name("dashboard.py")
-    env = os.environ.copy()
-    env["REFACTOR_AGENT_DASHBOARD_DB"] = str(database_path)
-    env["REFACTOR_AGENT_RUN_ROOT"] = str(run_root)
-    env["REFACTOR_AGENT_API_URL"] = api_url
-    console.print(f"Arena URL: http://{host}:{port}", markup=False)
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(script),
-            "--server.address",
-            host,
-            "--server.port",
-            str(port),
-        ],
-        env=env,
-    )
-    raise typer.Exit(code=completed.returncode)
+    raise typer.Exit(code=launched.returncode)
 
 
 @app.command("arena-export")
@@ -570,39 +536,21 @@ def _run_request(
 ):
     run_root = _resolve_run_root(run_root)
     try:
-        llm_client = MockRefactorClient(fail_times=mock_fail_times) if mock else DeepSeekClient()
-    except LLMError as exc:
+        return run_local_refactor(
+            request,
+            run_root=run_root,
+            database_path=_resolve_database(database, run_root),
+            pytest_timeout_seconds=timeout,
+            mock=mock,
+            sandbox_backend=sandbox_backend,
+            sandbox_docker_image=sandbox_docker_image,
+            mock_fail_times=mock_fail_times,
+            graph_backend=graph_backend or os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
+            deadline_seconds=_resolve_deadline(deadline_seconds),
+        )
+    except LocalRefactorConfigurationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
-
-    store = SQLiteRunStore(_resolve_database(database, run_root))
-    orchestrator = RefactorOrchestrator(
-        llm_client=llm_client,
-        run_root=run_root,
-        store=store,
-        pytest_timeout_seconds=timeout,
-        sandbox_backend=sandbox_backend,
-        sandbox_docker_image=sandbox_docker_image,
-        graph_backend=graph_backend or os.getenv("REFACTOR_AGENT_GRAPH_BACKEND", "langgraph"),
-    )
-    resolved_deadline = _resolve_deadline(deadline_seconds)
-    control = ExecutionControl(
-        deadline_at=datetime.now(timezone.utc) + timedelta(seconds=resolved_deadline)
-    )
-    return orchestrator.run(request, execution_control=control)
-
-
-def _suite_mock_fail_times(
-    case_name: str,
-    configured_fail_times: int,
-    real_api: bool,
-    dramatic_retry: bool,
-) -> int:
-    if real_api or not dramatic_retry:
-        return configured_fail_times
-    if case_name == "adversarial-weekend":
-        return max(configured_fail_times, 1)
-    return configured_fail_times
 
 
 def _validate_input(target: Path, issue: Path, tests: Path) -> None:
@@ -629,37 +577,6 @@ def _resolve_issue_text(issue: Path | None, issue_text: str | None) -> str:
         console.print(f"[red]issue file does not exist: {issue}[/red]")
         raise typer.Exit(code=2)
     return issue.read_text(encoding="utf-8")
-
-
-def _resolve_run_root(run_root: Path) -> Path:
-    env_run_root = os.getenv("REFACTOR_AGENT_RUN_ROOT")
-    if env_run_root and run_root == Path(".runs"):
-        return Path(env_run_root)
-    return run_root
-
-
-def _resolve_database(database: Path | None, run_root: Path) -> Path:
-    if database is not None:
-        return database
-    env_database = os.getenv("REFACTOR_AGENT_DATABASE")
-    if env_database:
-        return Path(env_database)
-    return run_root / "refactor_agent.sqlite"
-
-
-def _resolve_github_workspace_root(github_workspace_root: Path) -> Path:
-    env_workspace = os.getenv("REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT")
-    if env_workspace and github_workspace_root == Path(".github-url-workspaces"):
-        return Path(env_workspace)
-    return github_workspace_root
-
-
-def _resolve_deadline(deadline_seconds: int) -> int:
-    if deadline_seconds == 900:
-        return AppSettings(
-            job_deadline_seconds=int(os.getenv("REFACTOR_AGENT_JOB_DEADLINE_SECONDS", "900"))
-        ).job_deadline_seconds
-    return deadline_seconds
 
 
 def _print_plain(text: str) -> None:

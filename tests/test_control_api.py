@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,7 +7,11 @@ from fastapi.testclient import TestClient
 from refactor_agent.config import AppSettings
 from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.job_worker import GitHubJobWorker
-from refactor_agent.models import GitHubRefactorJob, RepositoryJobKind
+from refactor_agent.models import (
+    GitHubAutomationResult,
+    GitHubRefactorJob,
+    RepositoryJobKind,
+)
 from refactor_agent.store import SQLiteRunStore
 from refactor_agent.control_api import create_app
 
@@ -327,3 +332,70 @@ def test_legacy_webhook_job_cannot_retry(tmp_path: Path):
             headers={"Authorization": "Bearer admin-secret"},
         )
     assert response.status_code == 409
+
+
+def test_worker_can_start_and_stop_repeatedly_without_thread_leaks(tmp_path: Path):
+    worker = GitHubJobWorker(
+        _settings(tmp_path),
+        SQLiteRunStore(tmp_path / "runs.sqlite"),
+        poll_seconds=0.01,
+    )
+
+    worker_threads = []
+    for _ in range(3):
+        worker.start()
+        assert worker._thread is not None
+        worker_threads.append(worker._thread)
+        worker.stop()
+
+    assert all(not thread.is_alive() for thread in worker_threads)
+    assert not any(
+        thread.is_alive() and thread.name.startswith(worker.worker_id)
+        for thread in threading.enumerate()
+    )
+
+
+def test_worker_run_closes_heartbeat_thread(tmp_path: Path):
+    store = SQLiteRunStore(tmp_path / "runs.sqlite")
+    job = GitHubRefactorJob(
+        job_kind=RepositoryJobKind.SNIPPET,
+        job_id="snippet-lifecycle",
+        delivery_id="snippet:lifecycle",
+        repo_full_name="local/snippet",
+        issue_number=None,
+        issue_title="Lifecycle",
+        issue_text="review",
+        target_path="snippet.py",
+        tests_path="test_snippet.py",
+        event_name="snippet",
+        action="submitted",
+        snippet_source="value = 1\n",
+        snippet_mode="REVIEW",
+    )
+    store.create_github_job(job)
+    worker = GitHubJobWorker(
+        _settings(tmp_path),
+        store,
+        snippet_service=_SuccessfulSnippetService(),
+    )
+
+    assert worker.run_once() is True
+
+    record = store.get_github_job(job.job_id)
+    assert record is not None
+    assert record.status == "SUCCESS"
+    assert not any(
+        thread.is_alive() and thread.name == f"{worker.worker_id}-heartbeat"
+        for thread in threading.enumerate()
+    )
+
+
+class _SuccessfulSnippetService:
+    def process(self, job, execution_control):
+        execution_control.checkpoint("test-service")
+        return GitHubAutomationResult(
+            job_id=job.job_id,
+            repo_full_name=job.repo_full_name,
+            issue_number=job.issue_number,
+            status="SUCCESS",
+        )

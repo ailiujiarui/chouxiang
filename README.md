@@ -113,6 +113,28 @@ $env:REFACTOR_AGENT_MOCK_LLM="true"
 
 ## CLI
 
+`cli.py` 只处理命令参数、终端输出和命令编排；本地文件、Demo 与只读 GitHub URL
+共用 `local_refactor.py` 的执行服务，路径和环境默认值由 `cli_config.py` 统一解析，
+Demo Suite 案例循环由 `demo_suite_service.py` 执行，Mock/DeepSeek 与沙箱参数不会在各命令中重复装配。
+Benchmark 的内置/Manifest 分支、历史对比和证据文件由 `benchmark_service.py` 统一编排。
+Snippet 的任务构造、执行和报告定位由 `snippet_submission.py` 负责，CLI 只处理输入适配。
+只读 GitHub URL 的 checkout、请求构造和本地执行由 `github_url_submission.py` 统一处理。
+Jobs 与 trajectory memory 的只读查询和文本格式由 `cli_queries.py` 统一提供。
+Streamlit 依赖检测、环境组装和子进程执行由 `dashboard_launcher.py` 负责。
+Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_artifacts.py` 独立负责，执行流程只保留兼容转发入口。
+运行轨迹与安全分析事件由 `orchestrator_observability.py` 统一记录，事件发布失败不会中断重构执行图。
+初始执行状态、节点跳转、重试终止判定和辩论轮次收束由 `orchestrator_state.py` 统一管理。
+最终 `RunRecord` 与成功/失败 trajectory memory 由 `orchestrator_persistence.py` 按稳定顺序持久化。
+Prepare 执行节点由 `orchestrator_prepare.py` 负责历史记忆注入、基线分析、隔离工作区复制和沙箱预检。
+Minimizer 执行节点由 `orchestrator_minimizer.py` 负责目标区域选择、候选提案、LLM usage 累积和失败终止。
+AST Guard 执行节点由 `orchestrator_ast_guard.py` 负责受控重写、验证、拒绝事件和重试路由。
+Pytest 执行节点由 `orchestrator_pytest.py` 负责候选写入、沙箱回归测试、验证事件和失败重试。
+Adversary 执行节点由 `orchestrator_adversary.py` 负责规则批评、对抗测试、事件、轨迹和失败重试。
+Mutation/性能节点由 `orchestrator_mutation.py` 负责组合测试、变异挑战、post 指标和性能证据。
+Judge 执行节点由 `orchestrator_judge.py` 负责评分、裁决、轮次收束和重试/终止路由。
+Finalize 执行节点由 `orchestrator_finalize.py` 负责持久化终态、装配结果和发布最终分析事件。
+报告渲染由 `orchestrator_report.py` 负责，编排门面保留原报告函数的兼容包装。
+
 安装开发依赖：
 
 ```powershell
@@ -167,7 +189,8 @@ docker compose config --quiet
 git diff --check
 ```
 
-Docker 细节见 `docker/README.md`，当前产品设计见 `docs/designs/2026-07-19-code-judge-product-redesign.md`。
+Docker 细节见 `docker/README.md`，当前产品设计见 `docs/designs/2026-07-19-code-judge-product-redesign.md`，
+核心模块依赖规则见 `docs/architecture/core-module-boundaries.md`。
 
 ## 许可证
 

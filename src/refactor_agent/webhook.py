@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import ast
 import json
-import os
-import re
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
-from typing import Any, Literal, TypeVar
-from uuid import uuid4
+from pathlib import Path
+from typing import Any, TypeVar
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -19,13 +14,29 @@ from pydantic import BaseModel, ValidationError
 
 from refactor_agent.artifacts import resolve_artifact_path, sanitize_text
 from refactor_agent.config import AppSettings
+from refactor_agent.control_api_capabilities import (
+    build_capabilities_response,
+    product_mode,
+    runtime_capabilities as _runtime_capabilities,
+)
+from refactor_agent.control_api_config import validate_control_api_settings
+from refactor_agent.control_api_requests import (
+    DashboardUrlJobRequest,
+    RepositoryAllowlistRequest,
+    SnippetJobRequest,
+)
+from refactor_agent.control_api_jobs import (
+    build_dashboard_job_id,
+    normalize_git_ref,
+    normalize_repo_path,
+    prepare_analysis_job,
+    prepare_dashboard_url_job,
+    prepare_snippet_job,
+)
 from refactor_agent.job_worker import GitHubJobWorker
-from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import (
     AnalysisInputKind,
     AnalysisRequest,
-    EvidenceLevel,
-    GitHubRefactorJob,
     RepositoryJobKind,
 )
 from refactor_agent.repository_allowlist import (
@@ -33,47 +44,11 @@ from refactor_agent.repository_allowlist import (
     RepositoryAllowlistLimitError,
     RepositoryAllowlistPolicy,
     RepositoryNotAllowlistedError,
-    parse_github_repository_url,
 )
 from refactor_agent.store import JobTransitionError, SQLiteRunStore
-from refactor_agent.sandbox import docker_status
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-
-class DashboardUrlJobRequest(BaseModel):
-    repository_url: str
-    refactor_request: str
-    branch: str | None = None
-    target_path: str | None = None
-    tests_path: str = "tests"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
-
-
-class RepositoryAllowlistRequest(BaseModel):
-    repository: str
-
-
-class SnippetJobRequest(BaseModel):
-    source: str
-    refactor_request: str
-    tests: str | None = None
-    mode: Literal["REVIEW", "VERIFIED_REFACTOR"] = "REVIEW"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
-
-
-def _runtime_capabilities(settings: AppSettings) -> dict[str, bool]:
-    deepseek_available = bool(os.getenv("DEEPSEEK_API_KEY"))
-    llm_available = settings.mock_llm or deepseek_available
-    docker_available = settings.sandbox_backend == "docker"
-    return {
-        "deepseek_available": deepseek_available,
-        "llm_available": llm_available,
-        "url_submission": docker_available and llm_available,
-        "snippet_submission": llm_available,
-        "snippet_verified_refactor": docker_available and llm_available,
-    }
 
 
 def create_app(
@@ -180,24 +155,7 @@ def create_app(
     def capabilities() -> dict[str, Any]:
         """Expose product and sanitized effective SQLite capabilities."""
 
-        runtime_capabilities = _runtime_capabilities(settings)
-        product_mode = "demo" if settings.mock_llm else "deepseek"
-        return {
-            "sandbox_backend": settings.sandbox_backend,
-            "graph_backend": settings.graph_backend,
-            "llm_mode": "mock" if settings.mock_llm else settings.llm_provider,
-            "product_mode": product_mode,
-            "demo_limitations": (
-                "Deterministic demo supports only built-in patterns; arbitrary code requires DeepSeek."
-                if product_mode == "demo"
-                else None
-            ),
-            **runtime_capabilities,
-            "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
-            "personas": ["STRICT", "TSUNDERE"],
-            "admin_token_required": bool(settings.admin_token),
-            "sqlite": store.sqlite_diagnostics.as_public_dict(),
-        }
+        return build_capabilities_response(settings, store.sqlite_diagnostics)
 
     @app.get("/admin/repository-allowlist")
     def list_repository_allowlist(request: Request) -> dict[str, Any]:
@@ -317,21 +275,7 @@ def create_app(
                 detail="Invalid URL submission payload.",
             ) from exc
         try:
-            repo_full_name = repository_policy.require_allowed(
-                parse_github_repository_url(payload.repository_url)
-            )
-            target_path = (
-                normalize_repo_path(payload.target_path)
-                if payload.target_path and payload.target_path.strip()
-                else AUTO_TARGET_PATH
-            )
-            if target_path != AUTO_TARGET_PATH and not target_path.lower().endswith(".py"):
-                raise ValueError("Target path must reference a Python file.")
-            tests_path = normalize_repo_path(payload.tests_path)
-            branch = normalize_git_ref(payload.branch)
-            issue_text = payload.refactor_request.strip()
-            if not issue_text or len(issue_text) > 32768:
-                raise ValueError("Refactor request must contain 1 to 32768 characters.")
+            job = prepare_dashboard_url_job(payload, repository_policy)
         except RepositoryNotAllowlistedError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except ValueError as exc:
@@ -341,21 +285,6 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="URL submission requires Docker and an available configured LLM.",
             )
-        job = GitHubRefactorJob(
-            job_kind=RepositoryJobKind.DASHBOARD_URL,
-            job_id=build_dashboard_job_id(repo_full_name),
-            delivery_id=f"dashboard:{uuid4().hex}",
-            repo_full_name=repo_full_name,
-            default_branch=branch,
-            issue_number=None,
-            issue_title="Dashboard URL 本地简化任务",
-            issue_text=issue_text,
-            target_path=target_path,
-            tests_path=tests_path,
-            event_name="dashboard_url",
-            action="submitted",
-            persona=payload.persona,
-        )
         record = store.create_github_job(job)
         return _job_response(record, status.HTTP_202_ACCEPTED)
 
@@ -368,21 +297,8 @@ def create_app(
             SnippetJobRequest,
             "Invalid snippet submission payload.",
         )
-        source = payload.source.strip()
-        tests = payload.tests.strip() if payload.tests else None
-        requirement = payload.refactor_request.strip()
         try:
-            if not source or len(source.encode("utf-8")) > 128 * 1024:
-                raise ValueError("Source must contain 1 to 131072 UTF-8 bytes.")
-            if tests and len(tests.encode("utf-8")) > 128 * 1024:
-                raise ValueError("Tests must contain at most 131072 UTF-8 bytes.")
-            if not requirement or len(requirement) > 32768:
-                raise ValueError("Refactor request must contain 1 to 32768 characters.")
-            if payload.mode == "VERIFIED_REFACTOR" and not tests:
-                raise ValueError("Verified refactor mode requires pytest source.")
-            ast.parse(source, filename="snippet.py")
-            if tests:
-                ast.parse(tests, filename="test_snippet.py")
+            job = prepare_snippet_job(payload)
         except (SyntaxError, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         runtime_capabilities = _runtime_capabilities(settings)
@@ -399,25 +315,6 @@ def create_app(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Snippet submission requires Docker and an available configured LLM.",
             )
-        job_id = f"snippet-{uuid4().hex}"
-        job = GitHubRefactorJob(
-            job_kind=RepositoryJobKind.SNIPPET,
-            job_id=job_id,
-            delivery_id=f"snippet:{uuid4().hex}",
-            repo_full_name="local/snippet",
-            default_branch=None,
-            issue_number=None,
-            issue_title="Snippet code review",
-            issue_text=requirement,
-            target_path="snippet.py",
-            tests_path="test_snippet.py",
-            event_name="snippet",
-            action="submitted",
-            snippet_source=source + ("\n" if not source.endswith("\n") else ""),
-            snippet_tests=(tests + ("\n" if not tests.endswith("\n") else "")) if tests else None,
-            snippet_mode=payload.mode,
-            persona=payload.persona,
-        )
         record = store.create_github_job(job)
         return _job_response(record, status.HTTP_202_ACCEPTED)
 
@@ -431,96 +328,36 @@ def create_app(
             AnalysisRequest,
             "Invalid analysis payload.",
         )
-        instruction = payload.instruction.strip()
-        if not instruction:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Analysis instruction must contain non-whitespace characters.",
-            )
+        try:
+            prepared = prepare_analysis_job(payload, repository_policy)
+        except RepositoryNotAllowlistedError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+        except (SyntaxError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if payload.input_kind == AnalysisInputKind.SNIPPET:
-            source = (payload.source or "").strip()
-            tests = payload.tests.strip() if payload.tests else None
-            try:
-                if not source or len(source.encode("utf-8")) > 128 * 1024:
-                    raise ValueError("Source must contain 1 to 131072 UTF-8 bytes.")
-                if tests and len(tests.encode("utf-8")) > 128 * 1024:
-                    raise ValueError("Tests must contain at most 131072 UTF-8 bytes.")
-                ast.parse(source, filename="snippet.py")
-                if tests:
-                    ast.parse(tests, filename="test_snippet.py")
-            except (SyntaxError, ValueError) as exc:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
             runtime_capabilities = _runtime_capabilities(settings)
             if not runtime_capabilities["snippet_submission"]:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Task requires an available configured LLM.",
                 )
-            if tests and not runtime_capabilities["snippet_verified_refactor"]:
+            if prepared.job.snippet_tests and not runtime_capabilities["snippet_verified_refactor"]:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Snippet submission requires Docker and an available configured LLM.",
                 )
-            job = GitHubRefactorJob(
-                job_kind=RepositoryJobKind.SNIPPET,
-                job_id=f"snippet-{uuid4().hex}",
-                delivery_id=f"snippet:{uuid4().hex}",
-                repo_full_name="local/snippet",
-                issue_number=None,
-                issue_title="Snippet code analysis",
-                issue_text=instruction,
-                target_path="snippet.py",
-                tests_path="test_snippet.py",
-                event_name="analysis",
-                action="submitted",
-                snippet_source=source + ("\n" if not source.endswith("\n") else ""),
-                snippet_tests=(tests + ("\n" if not tests.endswith("\n") else "")) if tests else None,
-                snippet_mode="VERIFIED_REFACTOR" if tests else "REVIEW",
-                persona=payload.persona,
-            )
-            evidence = EvidenceLevel.USER_TESTS if tests else EvidenceLevel.STATIC
         else:
-            try:
-                repository_url = payload.repository_url or ""
-                repo_full_name = repository_policy.require_allowed(
-                    parse_github_repository_url(repository_url)
-                )
-                target_path = normalize_repo_path(payload.target_path) if payload.target_path else AUTO_TARGET_PATH
-                if target_path != AUTO_TARGET_PATH and not target_path.lower().endswith(".py"):
-                    raise ValueError("Target path must reference a Python file.")
-                tests_path = normalize_repo_path(payload.tests_path or "tests")
-                branch = normalize_git_ref(payload.ref)
-            except RepositoryNotAllowlistedError as exc:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
             if not _runtime_capabilities(settings)["url_submission"]:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Repository analysis requires Docker and an available configured LLM.",
                 )
-            job = GitHubRefactorJob(
-                job_kind=RepositoryJobKind.DASHBOARD_URL,
-                job_id=build_dashboard_job_id(repo_full_name),
-                delivery_id=f"dashboard:{uuid4().hex}",
-                repo_full_name=repo_full_name,
-                default_branch=branch,
-                issue_number=None,
-                issue_title="Repository code analysis",
-                issue_text=instruction,
-                target_path=target_path,
-                tests_path=tests_path,
-                event_name="analysis",
-                action="submitted",
-                persona=payload.persona,
-            )
-            evidence = EvidenceLevel.REPOSITORY_TESTS
-        record = store.create_github_job(job)
+        record = store.create_github_job(prepared.job)
         response_payload = _sanitize_payload(record.model_dump(mode="json", exclude={"payload_json"}))
         response_payload.update(
-            evidence_level=evidence.value,
+            evidence_level=prepared.evidence_level.value,
             report_persona=payload.persona.value,
-            product_mode="demo" if settings.mock_llm else "deepseek",
+            product_mode=product_mode(settings),
         )
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response_payload)
 
@@ -589,34 +426,6 @@ def create_app(
 app = create_app()
 
 
-def build_dashboard_job_id(repo_full_name: str) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    safe_repo = re.sub(r"[^A-Za-z0-9_.-]+", "__", repo_full_name).strip("_") or "repo"
-    return f"{safe_repo}__url__{stamp}-{uuid4().hex[:8]}"
-
-
-def validate_control_api_settings(
-    settings: AppSettings,
-    require_docker: bool = False,
-    repository_policy: RepositoryAllowlistPolicy | None = None,
-) -> None:
-    missing = []
-    if not (
-        repository_policy.list_entries()
-        if repository_policy is not None
-        else settings.allowed_repositories
-    ):
-        missing.append("REFACTOR_AGENT_ALLOWED_REPOSITORIES")
-    if missing:
-        raise RuntimeError("Control API configuration is fail-closed; missing: " + ", ".join(missing))
-    if settings.sandbox_backend != "docker":
-        raise RuntimeError("Control API requires REFACTOR_AGENT_SANDBOX_BACKEND=docker.")
-    if require_docker:
-        docker = docker_status()
-        if not docker.available:
-            raise RuntimeError(f"Control API requires an available Docker daemon: {docker.error}")
-
-
 def _require_admin(request: Request, settings: AppSettings) -> None:
     if not settings.admin_token:
         return
@@ -680,27 +489,3 @@ def _sanitize_payload(value):
     if isinstance(value, str):
         return sanitize_text(value)
     return value
-
-
-def normalize_repo_path(value: str) -> str:
-    path = PurePosixPath(value.strip().replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts or not str(path):
-        raise ValueError(f"Unsafe repository path: {value}")
-    return str(path)
-
-
-def normalize_git_ref(value: str | None) -> str | None:
-    if value is None or not value.strip():
-        return None
-    ref = value.strip()
-    invalid_tokens = ("..", "//", "@{")
-    invalid_characters = set(" ~^:?*[\\")
-    if (
-        len(ref) > 200
-        or ref.startswith(("-", "/", "."))
-        or ref.endswith(("/", ".", ".lock"))
-        or any(token in ref for token in invalid_tokens)
-        or any(character in invalid_characters or ord(character) < 32 for character in ref)
-    ):
-        raise ValueError("Branch or tag is invalid.")
-    return ref
