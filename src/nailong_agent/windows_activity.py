@@ -77,6 +77,9 @@ class NullForegroundActivitySource:
     def stop(self) -> None:
         return None
 
+    def sample_current(self) -> ForegroundWindow | None:
+        return None
+
 
 class NullIdleStateSource:
     """Portable source used when Win32 idle APIs are unavailable."""
@@ -119,6 +122,24 @@ class WindowsForegroundActivitySource:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    def set_error_handler(self, on_error: Callable[[Exception], None]) -> None:
+        self.on_error = on_error
+
+    def sample_current(self) -> ForegroundWindow | None:
+        if os.name != "nt":
+            return None
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        return _foreground_window(
+            user32,
+            kernel32,
+            hwnd,
+            self._PROCESS_QUERY_LIMITED_INFORMATION,
+        )
 
     def start(self, on_change: Callable[[ForegroundWindow], None]) -> None:
         if self._thread is not None and self._thread.is_alive():

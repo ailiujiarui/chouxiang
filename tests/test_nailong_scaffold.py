@@ -9,6 +9,7 @@ import nailong_agent.app as desktop_app
 from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
 from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetExpression, PopupDecision
+from nailong_agent.health import NailongHealthSnapshot
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -274,6 +275,7 @@ def test_pyside_settings_button_sits_below_body_and_syncs_controls(monkeypatch) 
         on_set_game_tease=lambda enabled: None,
         get_game_tease=lambda: True,
     )
+    renderer.configure_health_controls(get_health_snapshot=NailongHealthSnapshot)
     try:
         assert renderer._settings_button.geometry().top() > renderer._body.geometry().bottom()
         renderer._sync_settings_actions()
@@ -283,6 +285,7 @@ def test_pyside_settings_button_sits_below_body_and_syncs_controls(monkeypatch) 
         assert renderer._dnd_action.isChecked()
         assert renderer._game_tease_action.isChecked()
         assert renderer._test_bubble_action.isEnabled()
+        assert renderer._health_action.isEnabled()
     finally:
         renderer.stop()
 
@@ -338,6 +341,7 @@ def test_desktop_process_headless_lifecycle(tmp_path) -> None:
 
     assert process.run() == 0
     assert renderer.started is False
+    assert renderer.get_health_snapshot().silence_reason == "listener_stopped"
 
 
 def test_desktop_process_requests_and_persists_first_startup_consent(tmp_path) -> None:

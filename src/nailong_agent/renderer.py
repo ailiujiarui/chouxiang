@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from nailong_agent.events import PetExpression, PetState, PopupDecision
+from nailong_agent.health import NailongHealthSnapshot
 from nailong_agent.pet_state import PetEmotion, PetPersonalityState
 from nailong_agent.privacy import PrivacyConsent
 from nailong_agent.windows_activity import foreground_window_is_fullscreen
@@ -150,6 +151,16 @@ class NotificationControlsRenderer(Protocol):
         get_manual_pause: Callable[[], bool] | None = None,
         on_set_game_tease: Callable[[bool], None] | None = None,
         get_game_tease: Callable[[], bool] | None = None,
+        on_set_python_review: Callable[[bool], None] | None = None,
+        get_python_review: Callable[[], bool] | None = None,
+    ) -> None: ...
+
+
+class HealthControlsRenderer(Protocol):
+    def configure_health_controls(
+        self,
+        *,
+        get_health_snapshot: Callable[[], NailongHealthSnapshot],
     ) -> None: ...
 
 
@@ -171,6 +182,9 @@ class NullRenderer:
         self._get_do_not_disturb: Callable[[], bool] | None = None
         self._on_set_game_tease: Callable[[bool], None] | None = None
         self._get_game_tease: Callable[[], bool] | None = None
+        self._on_set_python_review: Callable[[bool], None] | None = None
+        self._get_python_review: Callable[[], bool] | None = None
+        self._get_health_snapshot: Callable[[], NailongHealthSnapshot] | None = None
         self._on_popup_delivery: PopupDeliveryResult | None = None
 
     def start(self) -> None:
@@ -230,6 +244,8 @@ class NullRenderer:
         get_manual_pause: Callable[[], bool] | None = None,
         on_set_game_tease: Callable[[bool], None] | None = None,
         get_game_tease: Callable[[], bool] | None = None,
+        on_set_python_review: Callable[[bool], None] | None = None,
+        get_python_review: Callable[[], bool] | None = None,
     ) -> None:
         self._on_set_do_not_disturb = on_set_do_not_disturb
         self._on_set_manual_pause = on_set_manual_pause
@@ -237,6 +253,8 @@ class NullRenderer:
         self._get_do_not_disturb = get_do_not_disturb
         self._on_set_game_tease = on_set_game_tease
         self._get_game_tease = get_game_tease
+        self._on_set_python_review = on_set_python_review
+        self._get_python_review = get_python_review
 
     def set_do_not_disturb(self, enabled: bool) -> None:
         if self._on_set_do_not_disturb is None:
@@ -252,6 +270,23 @@ class NullRenderer:
         if self._on_set_game_tease is None:
             raise RuntimeError("game tease controls are not configured")
         self._on_set_game_tease(enabled)
+
+    def set_python_review(self, enabled: bool) -> None:
+        if self._on_set_python_review is None:
+            raise RuntimeError("python review controls are not configured")
+        self._on_set_python_review(enabled)
+
+    def configure_health_controls(
+        self,
+        *,
+        get_health_snapshot: Callable[[], NailongHealthSnapshot],
+    ) -> None:
+        self._get_health_snapshot = get_health_snapshot
+
+    def get_health_snapshot(self) -> NailongHealthSnapshot:
+        if self._get_health_snapshot is None:
+            raise RuntimeError("health controls are not configured")
+        return self._get_health_snapshot()
 
 
 class PySide6Renderer:
@@ -491,6 +526,9 @@ class PySide6Renderer:
         self._get_do_not_disturb: Callable[[], bool] | None = None
         self._on_set_game_tease: Callable[[bool], None] | None = None
         self._get_game_tease: Callable[[], bool] | None = None
+        self._on_set_python_review: Callable[[bool], None] | None = None
+        self._get_python_review: Callable[[], bool] | None = None
+        self._get_health_snapshot: Callable[[], NailongHealthSnapshot] | None = None
         self._tray = None
 
         self._settings_menu = QMenu(self._pet_window)
@@ -509,8 +547,15 @@ class PySide6Renderer:
         self._game_tease_action.setCheckable(True)
         self._game_tease_action.setEnabled(False)
         self._game_tease_action.triggered.connect(self._set_game_tease)
+        self._python_review_action = QAction("自动评测已保存的 Python 代码", self._pet_window)
+        self._python_review_action.setCheckable(True)
+        self._python_review_action.setEnabled(False)
+        self._python_review_action.triggered.connect(self._set_python_review)
         self._test_bubble_action = QAction("立即测试气泡", self._pet_window)
         self._test_bubble_action.triggered.connect(self._show_test_bubble)
+        self._health_action = QAction("当前状态...", self._pet_window)
+        self._health_action.setEnabled(False)
+        self._health_action.triggered.connect(self._show_health_status)
         self._clear_history_action = QAction("删除本地活动记录", self._pet_window)
         self._clear_history_action.setEnabled(False)
         self._clear_history_action.triggered.connect(self._clear_activity_history)
@@ -521,6 +566,8 @@ class PySide6Renderer:
         self._settings_menu.addAction(self._pause_action)
         self._settings_menu.addAction(self._dnd_action)
         self._settings_menu.addAction(self._game_tease_action)
+        self._settings_menu.addAction(self._python_review_action)
+        self._settings_menu.addAction(self._health_action)
         self._settings_menu.addAction(self._test_bubble_action)
         self._settings_menu.addSeparator()
         self._settings_menu.addAction(self._clear_history_action)
@@ -542,6 +589,8 @@ class PySide6Renderer:
             menu.addAction(self._pause_action)
             menu.addAction(self._dnd_action)
             menu.addAction(self._game_tease_action)
+            menu.addAction(self._python_review_action)
+            menu.addAction(self._health_action)
             menu.addAction(self._test_bubble_action)
             menu.addSeparator()
             menu.addAction(self._clear_history_action)
@@ -668,6 +717,7 @@ class PySide6Renderer:
         return PrivacyConsent(
             activity_collection_enabled=accepted,
             remote_inference_enabled=accepted and remote.isChecked(),
+            python_review_enabled=bool(current and current.python_review_enabled),
         )
 
     def configure_privacy_controls(
@@ -694,6 +744,8 @@ class PySide6Renderer:
         get_manual_pause: Callable[[], bool] | None = None,
         on_set_game_tease: Callable[[bool], None] | None = None,
         get_game_tease: Callable[[], bool] | None = None,
+        on_set_python_review: Callable[[bool], None] | None = None,
+        get_python_review: Callable[[], bool] | None = None,
     ) -> None:
         self._on_set_do_not_disturb = on_set_do_not_disturb
         self._on_set_manual_pause = on_set_manual_pause
@@ -701,12 +753,39 @@ class PySide6Renderer:
         self._get_do_not_disturb = get_do_not_disturb
         self._on_set_game_tease = on_set_game_tease
         self._get_game_tease = get_game_tease
+        self._on_set_python_review = on_set_python_review
+        self._get_python_review = get_python_review
         self._dnd_action.setChecked(get_do_not_disturb())
         self._dnd_action.setEnabled(True)
         self._pause_action.setChecked(get_manual_pause() if get_manual_pause else False)
         self._pause_action.setEnabled(on_set_manual_pause is not None)
         self._game_tease_action.setChecked(get_game_tease() if get_game_tease else False)
         self._game_tease_action.setEnabled(on_set_game_tease is not None)
+        self._python_review_action.setChecked(get_python_review() if get_python_review else False)
+        self._python_review_action.setEnabled(on_set_python_review is not None)
+
+    def configure_health_controls(
+        self,
+        *,
+        get_health_snapshot: Callable[[], NailongHealthSnapshot],
+    ) -> None:
+        self._get_health_snapshot = get_health_snapshot
+        self._health_action.setEnabled(True)
+
+    def _show_health_status(self) -> None:
+        if self._get_health_snapshot is None:
+            return
+        summary = self._get_health_snapshot().redacted_summary()
+        dialog = self._QMessageBox(self._pet_window)
+        dialog.setIcon(self._QMessageBox.Information)
+        dialog.setWindowTitle("奶龙当前状态")
+        dialog.setText("本地运行诊断")
+        dialog.setInformativeText(summary)
+        dialog.setStandardButtons(self._QMessageBox.Close)
+        copy_button = dialog.addButton("复制脱敏摘要", self._QMessageBox.ActionRole)
+        dialog.exec()
+        if dialog.clickedButton() is copy_button:
+            self._app.clipboard().setText(summary)
 
     def _show_settings_menu(self) -> None:
         self._sync_settings_actions()
@@ -729,6 +808,8 @@ class PySide6Renderer:
             self._pause_action.setChecked(self._get_manual_pause())
         if self._get_game_tease is not None:
             self._game_tease_action.setChecked(self._get_game_tease())
+        if self._get_python_review is not None:
+            self._python_review_action.setChecked(self._get_python_review())
         if self._get_privacy_consent is not None:
             consent = self._get_privacy_consent()
             state = "已开启" if consent.activity_collection_enabled else "已关闭"
@@ -752,10 +833,22 @@ class PySide6Renderer:
         if self._on_set_game_tease is not None:
             self._on_set_game_tease(enabled)
 
+    def _set_python_review(self, enabled: bool) -> None:
+        if self._on_set_python_review is not None:
+            self._on_set_python_review(enabled)
+
     def _show_test_bubble(self) -> None:
         if not self.can_present_popup():
+            reason = (
+                self._get_health_snapshot().silence_reason
+                if self._get_health_snapshot is not None
+                else "fullscreen_blocked"
+            )
             if self._tray is not None:
-                self._tray.showMessage("奶龙", "当前是全屏应用，退出全屏后再测试气泡。")
+                self._tray.showMessage(
+                    "奶龙",
+                    f"测试气泡未显示：{reason}。退出全屏后可再次测试。",
+                )
             return
         self.show(
             PopupDecision(

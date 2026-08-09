@@ -15,6 +15,7 @@ class NailongSettings(BaseModel):
     analysis_url: str | None = None
     deepseek_model: str | None = None
     activity_listener_enabled: bool = True
+    python_review_roots: tuple[Path, ...] = Field(default_factory=lambda: (Path.cwd(),))
     maximum_popups_per_day: int | None = Field(default=None, ge=0)
     minimum_cooldown_seconds: int | None = Field(default=None, ge=0)
     maximum_cooldown_seconds: int | None = Field(default=None, ge=0)
@@ -32,6 +33,7 @@ class NailongSettings(BaseModel):
             analysis_url=os.getenv("NAILONG_ANALYSIS_URL"),
             deepseek_model=os.getenv("NAILONG_DEEPSEEK_MODEL"),
             activity_listener_enabled=_optional_bool("NAILONG_ACTIVITY_LISTENER_ENABLED", default=True),
+            python_review_roots=_path_list("NAILONG_PYTHON_REVIEW_ROOTS"),
             maximum_popups_per_day=_optional_int("NAILONG_MAXIMUM_POPUPS_PER_DAY"),
             minimum_cooldown_seconds=_optional_int("NAILONG_MINIMUM_COOLDOWN_SECONDS"),
             maximum_cooldown_seconds=_optional_int("NAILONG_MAXIMUM_COOLDOWN_SECONDS"),
@@ -103,3 +105,11 @@ def _optional_bool(name: str, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean value")
+
+
+def _path_list(name: str) -> tuple[Path, ...]:
+    value = os.getenv(name)
+    if not value:
+        return (Path.cwd(),)
+    paths = tuple(Path(item.strip()) for item in value.split(os.pathsep) if item.strip())
+    return paths or (Path.cwd(),)

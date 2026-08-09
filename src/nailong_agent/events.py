@@ -236,6 +236,7 @@ class NotificationStatus(BaseModel):
     next_regular_at: datetime | None = None
     last_popup_started_at: datetime | None = None
     pending_count: int = Field(ge=0)
+    displaying_count: int = Field(default=0, ge=0)
     suppressed_terminal_count: int = Field(ge=0)
     manual_pause_enabled: bool = False
     scheduled_do_not_disturb: bool = False

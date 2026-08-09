@@ -6,6 +6,7 @@ from pathlib import Path
 from nailong_agent.activity_collector import ForegroundWindow, IdleState, WindowActivityCollector
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PetApplicationRule, PetPreferences
+from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
 from nailong_agent import windows_activity
@@ -16,10 +17,13 @@ class FakeForegroundSource:
     def __init__(self) -> None:
         self.callback = None
         self.started = False
+        self.current_window = None
+        self.start_count = 0
 
     def start(self, on_change) -> None:
         self.callback = on_change
         self.started = True
+        self.start_count += 1
 
     def stop(self) -> None:
         self.started = False
@@ -27,6 +31,13 @@ class FakeForegroundSource:
     def emit(self, window: ForegroundWindow) -> None:
         assert self.callback is not None
         self.callback(window)
+
+    @property
+    def stopped(self) -> bool:
+        return not self.started
+
+    def sample_current(self):
+        return self.current_window
 
 
 class FakeIdleSource:
@@ -121,6 +132,97 @@ def test_collector_throttles_repeated_foreground_application(tmp_path: Path) -> 
     assert bus.wait_idle(1.0)
     assert store.activity_count() == 1
     assert len(received) == 1
+    collector.stop()
+    bus.stop()
+
+
+def test_collector_updates_privacy_minimized_health_state(tmp_path: Path) -> None:
+    source = FakeForegroundSource()
+    monitor = NailongHealthMonitor()
+    bus = EventBus()
+    bus.start()
+    collector = WindowActivityCollector(
+        source=source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=PrivacyStore(tmp_path / "privacy.sqlite"),
+        event_bus=bus,
+        preferences=PetPreferences,
+        application_rules=lambda: [],
+        health_monitor=monitor,
+    )
+
+    collector.start()
+    assert monitor.snapshot().listener_running is True
+    source.emit(
+        ForegroundWindow(
+            process_id=1,
+            executable_name="Code.exe",
+            window_title_hint="customer-project - main.py",
+        )
+    )
+    assert bus.wait_idle(1.0)
+
+    snapshot = monitor.snapshot()
+    assert snapshot.last_application_category == "code"
+    assert snapshot.last_activity_type == "unknown"
+    assert "customer-project" not in snapshot.redacted_summary()
+    collector.stop()
+    assert monitor.snapshot().listener_running is False
+    bus.stop()
+
+
+def test_collector_samples_current_foreground_once_and_deduplicates_watchdog(tmp_path: Path) -> None:
+    source = FakeForegroundSource()
+    source.current_window = ForegroundWindow(process_id=1, executable_name="Code.exe")
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    bus = EventBus()
+    bus.start()
+    collector = WindowActivityCollector(
+        source=source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=store,
+        event_bus=bus,
+        preferences=PetPreferences,
+        application_rules=lambda: [],
+        watchdog_interval_seconds=60,
+    )
+
+    collector.start()
+    assert bus.wait_idle(1.0)
+    assert store.activity_count() == 1
+    collector._watchdog_tick()
+    assert store.activity_count() == 1
+    collector.stop()
+    bus.stop()
+
+
+def test_collector_reconnects_stopped_foreground_source(tmp_path: Path) -> None:
+    source = FakeForegroundSource()
+    source.current_window = ForegroundWindow(process_id=1, executable_name="Code.exe")
+    monitor = NailongHealthMonitor()
+    bus = EventBus()
+    bus.start()
+    current_time = [0.0]
+    collector = WindowActivityCollector(
+        source=source,
+        privacy_policy=PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True)),
+        privacy_store=PrivacyStore(tmp_path / "privacy.sqlite"),
+        event_bus=bus,
+        preferences=PetPreferences,
+        application_rules=lambda: [],
+        clock=lambda: current_time[0],
+        health_monitor=monitor,
+        watchdog_interval_seconds=60,
+        reconnect_interval_seconds=30,
+    )
+
+    collector.start()
+    source.started = False
+    current_time[0] = 31
+    collector._watchdog_tick()
+
+    assert source.start_count == 2
+    assert monitor.snapshot().listener_running is True
     collector.stop()
     bus.stop()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import re
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -396,6 +397,7 @@ class NotificationStore:
             game_tease_filter = (
                 "AND kind = ? AND source_event_id LIKE ?" if game_tease_only else ""
             )
+
             query_parameters: list[str] = [now.isoformat()]
             if game_tease_only:
                 query_parameters.extend([NotificationKind.LIGHT_TEASE.value, "game-session:%"])
@@ -434,6 +436,74 @@ class NotificationStore:
                 (local_date,),
             )
         return _intent_from_row(row)
+
+    def reserve_python_review(
+        self,
+        *,
+        fingerprint: str,
+        now: datetime,
+        cooldown_seconds: int,
+        maximum_reviews_per_day: int,
+    ) -> str | None:
+        """Atomically enforce content dedupe, cooldown, and the daily review budget."""
+
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("python review fingerprint must be a SHA-256 digest")
+        current = _as_utc(now)
+        local_date = current.astimezone().date().isoformat()
+        cutoff = current - timedelta(seconds=cooldown_seconds)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            duplicate = connection.execute(
+                """
+                SELECT 1 FROM python_review_tasks
+                WHERE fingerprint = ? AND created_at >= ?
+                LIMIT 1
+                """,
+                (fingerprint, cutoff.isoformat()),
+            ).fetchone()
+            if duplicate is not None:
+                return None
+            latest = connection.execute("SELECT MAX(created_at) FROM python_review_tasks").fetchone()[0]
+            if latest is not None and datetime.fromisoformat(latest) > cutoff:
+                return None
+            count = connection.execute(
+                "SELECT COUNT(*) FROM python_review_tasks WHERE local_date = ?",
+                (local_date,),
+            ).fetchone()[0]
+            if int(count) >= maximum_reviews_per_day:
+                return None
+            task_id = f"python-review-{uuid4().hex}"
+            connection.execute(
+                """
+                INSERT INTO python_review_tasks
+                    (task_id, fingerprint, local_date, created_at, status)
+                VALUES (?, ?, ?, ?, 'RUNNING')
+                """,
+                (task_id, fingerprint, local_date, current.isoformat()),
+            )
+        return task_id
+
+    def complete_python_review(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        error_code: str | None,
+        now: datetime,
+    ) -> bool:
+        if status not in {"COMPLETED", "FAILED"}:
+            raise ValueError("invalid python review status")
+        with self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE python_review_tasks
+                SET status = ?, error_code = ?, completed_at = ?
+                WHERE task_id = ? AND status = 'RUNNING'
+                """,
+                (status, error_code, _as_utc(now).isoformat(), task_id),
+            ).rowcount
+        return bool(updated)
 
     def dismiss_pending_game_teases(self, *, now: datetime) -> int:
         with self._connect() as connection:
@@ -476,7 +546,12 @@ class NotificationStore:
             preferences = self._preferences(connection)
             pending_count = int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM notification_intents WHERE status IN ('PENDING', 'DISPLAYING')"
+                    "SELECT COUNT(*) FROM notification_intents WHERE status = 'PENDING'"
+                ).fetchone()[0]
+            )
+            displaying_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM notification_intents WHERE status = 'DISPLAYING'"
                 ).fetchone()[0]
             )
             suppressed_count = int(
@@ -493,6 +568,7 @@ class NotificationStore:
             next_regular_at=_parse_datetime(runtime["next_regular_at"]),
             last_popup_started_at=_parse_datetime(runtime["last_popup_started_at"]),
             pending_count=pending_count,
+            displaying_count=displaying_count,
             suppressed_terminal_count=suppressed_count,
             manual_pause_enabled=preferences.manual_pause_enabled,
             scheduled_do_not_disturb=_is_scheduled_do_not_disturb(preferences, now),
@@ -771,6 +847,20 @@ class NotificationStore:
                     local_date TEXT PRIMARY KEY,
                     popup_count INTEGER NOT NULL CHECK(popup_count >= 0)
                 );
+
+                CREATE TABLE IF NOT EXISTS python_review_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    fingerprint TEXT NOT NULL,
+                    local_date TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL CHECK(status IN ('RUNNING', 'COMPLETED', 'FAILED')),
+                    error_code TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_python_review_dedupe
+                ON python_review_tasks (fingerprint, created_at);
+                CREATE INDEX IF NOT EXISTS idx_python_review_budget
+                ON python_review_tasks (local_date, created_at);
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(pet_preferences)")}

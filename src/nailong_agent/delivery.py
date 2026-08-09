@@ -5,6 +5,7 @@ from threading import Event, Thread
 
 from nailong_agent.event_bus import EventBus, EventBusError
 from nailong_agent.events import NotificationIntent, PopupDecision
+from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.notification_service import NotificationPort
 
 
@@ -18,11 +19,13 @@ class NotificationDeliveryPump:
         bus: EventBus,
         poll_seconds: float = 1.0,
         presentation_gate: Callable[[], bool] | None = None,
+        health_monitor: NailongHealthMonitor | None = None,
     ) -> None:
         self.notifications = notifications
         self.bus = bus
         self.poll_seconds = poll_seconds
         self.presentation_gate = presentation_gate
+        self.health_monitor = health_monitor
         self._stop = Event()
         self._thread: Thread | None = None
 
@@ -45,9 +48,13 @@ class NotificationDeliveryPump:
         self.notifications.poll_long_tasks()
         game_tease_only = False
         if self.presentation_gate is not None and not self.presentation_gate():
+            if self.health_monitor is not None:
+                self.health_monitor.record_delivery(fullscreen_blocked=True)
             if not self.notifications.get_preferences().game_tease_enabled:
                 return False
             game_tease_only = True
+        elif self.health_monitor is not None:
+            self.health_monitor.record_delivery(fullscreen_blocked=False)
         intent = self.notifications.lease_next(game_tease_only=game_tease_only)
         if intent is None:
             return False
@@ -57,6 +64,13 @@ class NotificationDeliveryPump:
             published = False
         if not published:
             self.notifications.acknowledge(intent.notification_id, "failed")
+            if self.health_monitor is not None:
+                self.health_monitor.record_delivery(
+                    outcome="failed",
+                    error_code="delivery_publish_failed",
+                )
+        elif self.health_monitor is not None:
+            self.health_monitor.record_delivery(outcome="queued_for_render")
         return published
 
     def _run(self) -> None:

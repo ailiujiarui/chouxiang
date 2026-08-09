@@ -12,6 +12,7 @@ from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEA
 from nailong_agent.contracts import PetPersonalityResponse
 from nailong_agent.delivery import NotificationDeliveryPump, _popup_decision
 from nailong_agent.event_bus import EventBus
+from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.events import (
     NotificationIntent,
     NotificationKind,
@@ -199,6 +200,20 @@ def test_fullscreen_gate_preserves_pending_notification_and_popup_budget(tmp_pat
         bus.stop()
 
 
+def test_fullscreen_gate_updates_local_health_state(tmp_path: Path) -> None:
+    _, service = _service(tmp_path)
+    monitor = NailongHealthMonitor()
+    pump = NotificationDeliveryPump(
+        notifications=service,
+        bus=EventBus(),
+        presentation_gate=lambda: False,
+        health_monitor=monitor,
+    )
+
+    assert pump.run_once() is False
+    assert monitor.snapshot().fullscreen_blocked is True
+
+
 def test_fullscreen_gate_leases_only_enabled_game_session_tease(tmp_path: Path) -> None:
     clock, service = _service(tmp_path)
     service.set_game_tease_enabled(True)
@@ -244,6 +259,9 @@ def test_fullscreen_gate_leases_only_enabled_game_session_tease(tmp_path: Path) 
         )
     assert statuses[ordinary.notification_id] == "PENDING"
     assert statuses[game_tease.notification_id] == "DISPLAYING"
+    status = service.get_status()
+    assert status.pending_count == 1
+    assert status.displaying_count == 1
 
 
 def test_disabling_game_tease_dismisses_pending_game_session_notification(tmp_path: Path) -> None:

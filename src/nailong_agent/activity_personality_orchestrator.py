@@ -15,6 +15,7 @@ from nailong_agent.contracts import (
 )
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import ActivityEvent, ActivityType, ActivityWindow, EventEnvelope
+from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.notification_service import NotificationPort
 from nailong_agent.personality_agent import PetPersonalityAgent
 
@@ -39,6 +40,7 @@ class ActivityPersonalityOrchestrator:
         scheduler_interval_seconds: float = 5.0,
         game_interruption_grace_seconds: int = 15,
         clock: Callable[[], datetime] | None = None,
+        health_monitor: NailongHealthMonitor | None = None,
     ) -> None:
         if personality_state_ttl_seconds < 1:
             raise ValueError("personality state expiry must be positive")
@@ -56,6 +58,7 @@ class ActivityPersonalityOrchestrator:
         self.scheduler_interval_seconds = scheduler_interval_seconds
         self.game_interruption_grace = timedelta(seconds=game_interruption_grace_seconds)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.health_monitor = health_monitor
         self._recent_messages: list[str] = []
         self._aggregator_lock = Lock()
         self._activity_state_lock = Lock()
@@ -175,6 +178,12 @@ class ActivityPersonalityOrchestrator:
         with self._processing_lock:
             activity_event_id = event_id or _window_event_id(window)
             classification = self.recognizer.classify(window)
+            if self.health_monitor is not None:
+                self.health_monitor.record_classification(
+                    application_category=window.dominant_application,
+                    activity_type=classification.activity.value,
+                    confidence=classification.confidence,
+                )
             game_tease_enabled = False
             with self._activity_state_lock:
                 gaming_started_at = self._gaming_started_at

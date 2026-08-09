@@ -208,7 +208,7 @@ def test_unified_event_rejects_naive_time_and_unsafe_application() -> None:
 
 def test_store_persists_unified_events_and_windows_then_clears_both(tmp_path) -> None:
     store = PrivacyStore(tmp_path / "pet.sqlite")
-    consent = PrivacyConsent(activity_collection_enabled=True)
+    consent = PrivacyConsent(activity_collection_enabled=True, python_review_enabled=True)
     policy = PrivacyPolicy(consent)
     store.save_consent(consent)
     decision = policy.admit_activity(RawActivitySignal(source="window", application_id="code", activity=ActivityType.CODING, confidence=0.8))
