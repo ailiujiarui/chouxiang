@@ -9,6 +9,7 @@ from nailong_agent.events import (
     NotificationIntent,
     NotificationKind,
     NotificationStatus,
+    PetPreferences,
 )
 from nailong_agent.contracts import PetPersonalityResponse
 from nailong_agent.notification_policy import NotificationCandidate, NotificationPolicy
@@ -44,9 +45,13 @@ class NotificationPort(Protocol):
 
     def set_manual_pause(self, enabled: bool) -> None: ...
 
+    def set_game_tease_enabled(self, enabled: bool) -> None: ...
+
+    def get_preferences(self) -> PetPreferences: ...
+
     def get_status(self) -> NotificationStatus: ...
 
-    def lease_next(self) -> NotificationIntent | None: ...
+    def lease_next(self, *, game_tease_only: bool = False) -> NotificationIntent | None: ...
 
     def acknowledge(self, notification_id: str, outcome: str) -> bool: ...
 
@@ -109,14 +114,24 @@ class NotificationService:
         preferences = self.store.get_preferences()
         self.store.save_preferences(preferences.model_copy(update={"manual_pause_enabled": enabled}))
 
+    def set_game_tease_enabled(self, enabled: bool) -> None:
+        preferences = self.store.get_preferences()
+        self.store.save_preferences(preferences.model_copy(update={"game_tease_enabled": enabled}))
+        if not enabled:
+            self.store.dismiss_pending_game_teases(now=self.clock())
+
+    def get_preferences(self) -> PetPreferences:
+        return self._effective_preferences()
+
     def get_status(self) -> NotificationStatus:
         return self.store.status(now=self.clock())
 
-    def lease_next(self) -> NotificationIntent | None:
+    def lease_next(self, *, game_tease_only: bool = False) -> NotificationIntent | None:
         return self.store.lease_next_intent(
             now=self.clock(),
             minimum_start_spacing_seconds=self.minimum_popup_start_spacing_seconds,
             preferences=self._effective_preferences(),
+            game_tease_only=game_tease_only,
         )
 
     def ingest_personality_response(
@@ -179,5 +194,6 @@ def _candidate_for_personality_response(response: PetPersonalityResponse):
         "remind": NotificationKind.DEBUG_HINT,
         "celebrate": NotificationKind.PYTEST_CELEBRATION,
         "ask": NotificationKind.LIGHT_TEASE,
+        "tease": NotificationKind.LIGHT_TEASE,
     }
     return NotificationCandidate(kinds[response.intent], response.message)

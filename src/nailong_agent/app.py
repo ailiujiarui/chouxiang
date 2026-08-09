@@ -111,15 +111,30 @@ class DesktopProcess:
             else None
         )
         self.renderer: PopupRenderer | None = None
+        self._renderer_reports_delivery = False
 
     def run(self) -> int:
         if not self.lock.acquire():
             return 2
         try:
             self.renderer = self.renderer_factory()
+            configure_popup_delivery = getattr(self.renderer, "configure_popup_delivery", None)
+            self._renderer_reports_delivery = (
+                callable(configure_popup_delivery) and self.notification_service is not None
+            )
+            if self._renderer_reports_delivery:
+                configure_popup_delivery(self._acknowledge_popup_delivery)
+            if self.delivery_pump is not None:
+                can_present_popup = getattr(self.renderer, "can_present_popup", None)
+                if callable(can_present_popup):
+                    self.delivery_pump.presentation_gate = can_present_popup
             configure_privacy_controls = getattr(self.renderer, "configure_privacy_controls", None)
             if callable(configure_privacy_controls):
-                configure_privacy_controls(on_clear_activity_history=self.privacy_store.clear_activity_history)
+                configure_privacy_controls(
+                    on_clear_activity_history=self.privacy_store.clear_activity_history,
+                    get_privacy_consent=lambda: self.privacy_policy.consent,
+                    on_save_privacy_consent=self._save_privacy_consent,
+                )
             configure_notification_controls = getattr(self.renderer, "configure_notification_controls", None)
             if callable(configure_notification_controls) and self.notification_service is not None:
                 configure_notification_controls(
@@ -127,17 +142,22 @@ class DesktopProcess:
                     get_do_not_disturb=lambda: self.notification_service.get_status().do_not_disturb,
                     on_set_manual_pause=self.notification_service.set_manual_pause,
                     get_manual_pause=lambda: self.notification_service.get_status().manual_pause_enabled,
+                    on_set_game_tease=self.notification_service.set_game_tease_enabled,
+                    get_game_tease=lambda: self.notification_service.get_preferences().game_tease_enabled,
                 )
             if self.privacy_policy.needs_initial_consent:
                 request_privacy_consent = getattr(self.renderer, "request_privacy_consent", None)
                 consent = request_privacy_consent() if callable(request_privacy_consent) else None
                 consent = consent or PrivacyConsent()
-                self.privacy_store.save_consent(consent)
-                self.privacy_policy.consent = consent
+                self._save_privacy_consent(consent)
             self.bus.subscribe("PopupDecision", self._render_popup)
             if self.activity_orchestrator is not None:
                 self.activity_orchestrator.subscribe(self.bus)
             self.bus.start()
+            if self.activity_orchestrator is not None:
+                start_orchestrator = getattr(self.activity_orchestrator, "start", None)
+                if callable(start_orchestrator):
+                    start_orchestrator()
             if self.activity_collector is not None:
                 self.activity_collector.start()
             self.renderer.start()
@@ -153,6 +173,10 @@ class DesktopProcess:
             if self.activity_collector is not None:
                 self.activity_collector.stop()
             self.bus.wait_idle(2.0)
+            if self.activity_orchestrator is not None:
+                stop_orchestrator = getattr(self.activity_orchestrator, "stop", None)
+                if callable(stop_orchestrator):
+                    stop_orchestrator()
             if self.delivery_pump is not None:
                 self.delivery_pump.stop()
             if self.analysis_subscriber is not None:
@@ -161,6 +185,10 @@ class DesktopProcess:
             if self.renderer is not None:
                 self.renderer.stop()
             self.lock.release()
+
+    def _save_privacy_consent(self, consent: PrivacyConsent) -> None:
+        self.privacy_store.save_consent(consent)
+        self.privacy_policy.consent = consent
 
     def _render_popup(self, envelope: EventEnvelope) -> None:
         if self.renderer is None:
@@ -180,11 +208,17 @@ class DesktopProcess:
             if self.notification_service is not None and notification_id:
                 self.notification_service.acknowledge(notification_id, "failed")
             raise
+        if self._renderer_reports_delivery and accepted is not False:
+            return
         if self.notification_service is not None and notification_id:
             self.notification_service.acknowledge(
                 notification_id,
                 "dismissed" if accepted is False else "shown",
             )
+
+    def _acknowledge_popup_delivery(self, notification_id: str, outcome: str) -> None:
+        if self.notification_service is not None:
+            self.notification_service.acknowledge(notification_id, outcome)
 
 
 def create_renderer(*, headless: bool = False) -> PopupRenderer:

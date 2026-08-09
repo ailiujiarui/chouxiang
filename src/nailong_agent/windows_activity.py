@@ -52,6 +52,18 @@ def read_fullscreen_state(user32, hwnd) -> bool:
     return is_fullscreen_rectangle(_rectangle_values(window), _rectangle_values(monitor.rcMonitor))
 
 
+def foreground_window_is_fullscreen() -> bool:
+    """Check foreground geometry without reading title or process data."""
+    if os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        return bool(hwnd and read_fullscreen_state(user32, hwnd))
+    except (AttributeError, OSError):
+        return False
+
+
 def _rectangle_values(rectangle: wintypes.RECT) -> tuple[int, int, int, int]:
     return rectangle.left, rectangle.top, rectangle.right, rectangle.bottom
 
@@ -264,7 +276,16 @@ def _foreground_window(user32, kernel32, hwnd, access: int) -> ForegroundWindow 
 
 def _ide_activity_hint(title: str | None, executable_name: str) -> str | None:
     """Return a bounded local hint; the raw title is discarded by the privacy gate."""
-    if executable_name.casefold() not in {"code.exe", "cursor.exe", "pycharm64.exe", "idea64.exe"}:
+    if executable_name.casefold() not in {
+        "code.exe",
+        "codex.exe",
+        "cursor.exe",
+        "windsurf.exe",
+        "zed.exe",
+        "pycharm64.exe",
+        "idea64.exe",
+        "devenv.exe",
+    }:
         return None
     value = (title or "").casefold()
     if any(marker in value for marker in ("debug", "调试", "breakpoint", "断点")):

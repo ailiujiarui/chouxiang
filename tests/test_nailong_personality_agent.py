@@ -256,6 +256,57 @@ def test_low_confidence_proactive_activity_stays_silent_but_user_action_gets_rep
     assert "不乱猜" in user_requested.message
 
 
+@pytest.mark.parametrize(
+    ("activity", "expected_intent"),
+    [("coding", "encourage"), ("idle", "remind")],
+)
+def test_standard_personality_speaks_for_confident_coding_and_idle(
+    activity: str,
+    expected_intent: str,
+) -> None:
+    response = PetPersonalityAgent().decide(
+        make_input(classified_activity=activity, classification_confidence=0.9)
+    )
+
+    assert response is not None
+    assert response.intent == expected_intent
+    assert "本龙" in response.message
+
+
+@pytest.mark.parametrize("activity", ["unknown", "meeting", "entertainment"])
+def test_non_interruptible_activity_scenarios_remain_silent(activity: str) -> None:
+    assert PetPersonalityAgent().decide(
+        make_input(classified_activity=activity, classification_confidence=0.9)
+    ) is None
+
+
+def test_game_tease_requires_explicit_preference_and_high_confidence() -> None:
+    enabled_context = PetDecisionContext(game_tease_enabled=True)
+
+    assert PetPersonalityAgent().decide(
+        make_input(classified_activity="gaming", classification_confidence=0.9)
+    ) is None
+    response = PetPersonalityAgent().decide(
+        make_input(
+            classified_activity="gaming",
+            classification_confidence=0.9,
+            context=enabled_context,
+        )
+    )
+    low_confidence = PetPersonalityAgent().decide(
+        make_input(
+            classified_activity="gaming",
+            classification_confidence=0.1,
+            context=enabled_context,
+        )
+    )
+
+    assert response is not None
+    assert response.intent == "tease"
+    assert "本龙" in response.message
+    assert low_confidence is None
+
+
 def test_missing_activity_classification_stays_silent_without_calling_provider() -> None:
     provider = FakeProvider({"message": "不应生成"})
 

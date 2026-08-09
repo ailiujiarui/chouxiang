@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from threading import Event, Thread
 
 from nailong_agent.event_bus import EventBus, EventBusError
@@ -16,10 +17,12 @@ class NotificationDeliveryPump:
         notifications: NotificationPort,
         bus: EventBus,
         poll_seconds: float = 1.0,
+        presentation_gate: Callable[[], bool] | None = None,
     ) -> None:
         self.notifications = notifications
         self.bus = bus
         self.poll_seconds = poll_seconds
+        self.presentation_gate = presentation_gate
         self._stop = Event()
         self._thread: Thread | None = None
 
@@ -40,7 +43,12 @@ class NotificationDeliveryPump:
 
     def run_once(self) -> bool:
         self.notifications.poll_long_tasks()
-        intent = self.notifications.lease_next()
+        game_tease_only = False
+        if self.presentation_gate is not None and not self.presentation_gate():
+            if not self.notifications.get_preferences().game_tease_enabled:
+                return False
+            game_tease_only = True
+        intent = self.notifications.lease_next(game_tease_only=game_tease_only)
         if intent is None:
             return False
         try:
@@ -63,6 +71,6 @@ def _popup_decision(intent: NotificationIntent) -> PopupDecision:
         reason=f"proactive:{intent.kind.value}",
         message=intent.message,
         priority=intent.priority,
-        display_seconds=8 if intent.priority == "high" else 6,
+        display_seconds=15 if intent.priority == "high" else 12,
         dedupe_key=intent.notification_id,
     )

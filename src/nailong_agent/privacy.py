@@ -47,6 +47,10 @@ _APPLICATION_CATEGORIES = {
     "code": "code",
     "visual studio code": "code",
     "vscode": "code",
+    "codex": "code",
+    "cursor": "code",
+    "windsurf": "code",
+    "zed": "code",
     "chrome": "browser",
     "firefox": "browser",
     "msedge": "browser",
@@ -58,7 +62,14 @@ _APPLICATION_CATEGORIES = {
     "windows terminal": "terminal",
     "idea64": "ide",
     "pycharm64": "ide",
+    "devenv": "ide",
     "explorer": "explorer",
+    "game": "game",
+    "leagueclient": "game",
+    "league of legends": "game",
+    "leagueoflegends": "game",
+    "deltaforceclient-win64-shipping": "game",
+    "deltaforce": "game",
 }
 
 

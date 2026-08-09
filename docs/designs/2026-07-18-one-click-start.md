@@ -1,6 +1,12 @@
 # 一键启动设计
 
 > 认证更新（2026-07-20）：本文关于“默认或强制 Admin Token”的描述已被 `2026-07-20-local-no-admin-token.md` 取代。当前一键启动默认为 localhost 单用户无令牌模式；只有显式配置 `REFACTOR_AGENT_ADMIN_TOKEN` 时才启用 Bearer 校验。
+>
+> 启动体验更新（2026-08-08）：本文记录的参数化 `start.ps1`、默认 mock 和
+> 手动 `-Desktop` 流程已被 `2026-08-08-one-click-product-startup.md` 取代。
+> 随后本机优先方案又取代了应用镜像和 Compose 启动链路，详见
+> `2026-08-08-host-first-one-click-startup.md`。当前用户入口仍为根目录
+> `start.cmd`/`stop.cmd`，固定启动完整产品。
 
 日期：2026-07-18
 状态：已实现、验证并完成 code review

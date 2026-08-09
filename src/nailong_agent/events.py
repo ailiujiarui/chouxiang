@@ -222,6 +222,7 @@ class PetPreferences(BaseModel):
     maximum_cooldown_seconds: int = Field(default=15 * 60, ge=0)
     maximum_popups_per_day: int = Field(default=12, ge=0)
     personality_intensity: Literal["LOW", "STANDARD", "HIGH"] = "STANDARD"
+    game_tease_enabled: bool = False
 
 
 class PetApplicationRule(BaseModel):

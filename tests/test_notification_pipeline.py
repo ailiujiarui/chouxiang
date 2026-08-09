@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+import sqlite3
 from threading import Event
 
 import httpx
 
 from nailong_agent.app import DesktopProcess
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
-from nailong_agent.delivery import NotificationDeliveryPump
+from nailong_agent.contracts import PetPersonalityResponse
+from nailong_agent.delivery import NotificationDeliveryPump, _popup_decision
 from nailong_agent.event_bus import EventBus
-from nailong_agent.events import NotificationKind, PetApplicationRule, PetPreferences
+from nailong_agent.events import (
+    NotificationIntent,
+    NotificationKind,
+    PetApplicationRule,
+    PetPreferences,
+    PopupDecision,
+)
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -164,6 +172,124 @@ def test_notification_delivery_reaches_renderer_and_acknowledges_popup(tmp_path:
         renderer.stop()
 
 
+def test_fullscreen_gate_preserves_pending_notification_and_popup_budget(tmp_path: Path) -> None:
+    clock, service = _service(tmp_path)
+    bus = EventBus()
+    gate_open = False
+    pump = NotificationDeliveryPump(
+        notifications=service,
+        bus=bus,
+        presentation_gate=lambda: gate_open,
+    )
+    receipt = service.ingest_analysis_event(
+        _event(1, AnalysisEventType.TASK_STARTED, "fullscreen-task", clock())
+    )
+
+    assert receipt.notification_id is not None
+    assert pump.run_once() is False
+    assert service.get_status().pending_count == 1
+    assert service.get_status().remaining_daily_popup_budget == 12
+
+    gate_open = True
+    bus.start()
+    try:
+        assert pump.run_once() is True
+        assert service.get_status().remaining_daily_popup_budget == 11
+    finally:
+        bus.stop()
+
+
+def test_fullscreen_gate_leases_only_enabled_game_session_tease(tmp_path: Path) -> None:
+    clock, service = _service(tmp_path)
+    service.set_game_tease_enabled(True)
+    ordinary = service.ingest_analysis_event(
+        _event(1, AnalysisEventType.TASK_STARTED, "ordinary-task", clock())
+    )
+    clock.advance(seconds=300)
+    game_tease = service.ingest_personality_response(
+        event_id="game-session:123",
+        occurred_at=clock(),
+        response=PetPersonalityResponse(
+            persona_version="nailong-v1",
+            message="哼，玩得还挺投入。本龙才不是催你。",
+            intent="tease",
+        ),
+    )
+    decisions: list[PopupDecision] = []
+    bus = EventBus()
+    bus.subscribe(
+        "PopupDecision",
+        lambda envelope: decisions.append(PopupDecision.model_validate(envelope.payload)),
+    )
+    bus.start()
+    try:
+        pump = NotificationDeliveryPump(
+            notifications=service,
+            bus=bus,
+            presentation_gate=lambda: False,
+        )
+        assert pump.run_once() is True
+        assert bus.wait_idle(1.0)
+    finally:
+        bus.stop()
+
+    assert ordinary.notification_id is not None
+    assert game_tease.notification_id is not None
+    assert [decision.dedupe_key for decision in decisions] == [game_tease.notification_id]
+    with sqlite3.connect(service.store.database_path) as connection:
+        statuses = dict(
+            connection.execute(
+                "SELECT notification_id, status FROM notification_intents"
+            ).fetchall()
+        )
+    assert statuses[ordinary.notification_id] == "PENDING"
+    assert statuses[game_tease.notification_id] == "DISPLAYING"
+
+
+def test_disabling_game_tease_dismisses_pending_game_session_notification(tmp_path: Path) -> None:
+    clock, service = _service(tmp_path)
+    service.set_game_tease_enabled(True)
+    receipt = service.ingest_personality_response(
+        event_id="game-session:456",
+        occurred_at=clock(),
+        response=PetPersonalityResponse(
+            persona_version="nailong-v1",
+            message="本龙只是顺便提醒一下。",
+            intent="tease",
+        ),
+    )
+    assert receipt.notification_id is not None
+
+    service.set_game_tease_enabled(False)
+
+    with sqlite3.connect(service.store.database_path) as connection:
+        status = connection.execute(
+            "SELECT status FROM notification_intents WHERE notification_id = ?",
+            (receipt.notification_id,),
+        ).fetchone()[0]
+    assert status == "DISMISSED"
+
+
+def test_popup_delivery_durations_allow_time_to_notice_bubbles() -> None:
+    normal = NotificationIntent(
+        task_id="normal",
+        kind=NotificationKind.ENCOURAGEMENT,
+        message="normal",
+        priority="normal",
+        dedupe_key="normal",
+    )
+    high = NotificationIntent(
+        task_id="high",
+        kind=NotificationKind.FINAL_CELEBRATION,
+        message="high",
+        priority="high",
+        dedupe_key="high",
+    )
+
+    assert _popup_decision(normal).display_seconds == 12
+    assert _popup_decision(high).display_seconds == 15
+
+
 def test_long_task_reminder_fires_once_at_one_third_of_deadline(tmp_path: Path) -> None:
     clock, service = _service(tmp_path)
     deadline = clock() + timedelta(seconds=900)
@@ -281,6 +407,7 @@ def test_preferences_and_application_rules_survive_store_reopen(tmp_path: Path) 
         do_not_disturb_end=time(7, 0),
         maximum_popups_per_day=8,
         personality_intensity="HIGH",
+        game_tease_enabled=True,
     )
     store.save_preferences(preferences)
     store.replace_application_rules([PetApplicationRule(application_id="game", rule="block")])
@@ -289,6 +416,35 @@ def test_preferences_and_application_rules_survive_store_reopen(tmp_path: Path) 
 
     assert reopened.get_preferences() == preferences
     assert reopened.list_application_rules() == [PetApplicationRule(application_id="game", rule="block")]
+
+
+def test_legacy_preferences_table_adds_game_tease_disabled_by_default(tmp_path: Path) -> None:
+    database = tmp_path / "legacy-notifications.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            CREATE TABLE pet_preferences (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                notifications_enabled INTEGER NOT NULL DEFAULT 1,
+                activity_listener_enabled INTEGER NOT NULL DEFAULT 1,
+                manual_pause_enabled INTEGER NOT NULL DEFAULT 0,
+                do_not_disturb_start TEXT,
+                do_not_disturb_end TEXT,
+                minimum_cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+                maximum_cooldown_seconds INTEGER NOT NULL DEFAULT 900,
+                maximum_popups_per_day INTEGER NOT NULL DEFAULT 12,
+                personality_intensity TEXT NOT NULL DEFAULT 'STANDARD'
+            )
+            """
+        )
+        connection.execute("INSERT INTO pet_preferences (id) VALUES (1)")
+
+    store = NotificationStore(database)
+
+    assert store.get_preferences().game_tease_enabled is False
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(pet_preferences)")}
+    assert "game_tease_enabled" in columns
 
 
 def test_notification_service_manual_pause_persists_and_is_exposed_in_status(tmp_path: Path) -> None:

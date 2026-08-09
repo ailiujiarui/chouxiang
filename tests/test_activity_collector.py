@@ -153,6 +153,8 @@ def test_window_title_and_ide_hint_are_used_only_for_local_minimization(tmp_path
     assert "customer-project" not in serialized
     assert "main.py" not in serialized
     assert _ide_activity_hint("debug - Visual Studio Code", "Code.exe") == "debugging"
+    assert _ide_activity_hint("editor - project.py", "Codex.exe") == "coding"
+    assert _ide_activity_hint("debug - solution", "devenv.exe") == "debugging"
     assert _ide_activity_hint("chat - Teams", "Teams.exe") is None
     collector.stop()
     bus.stop()
@@ -205,6 +207,12 @@ def test_idle_seconds_handles_tick_counter_wraparound() -> None:
 def test_fullscreen_rectangle_requires_exact_monitor_coverage() -> None:
     assert windows_activity.is_fullscreen_rectangle((0, 0, 1920, 1080), (0, 0, 1920, 1080))
     assert not windows_activity.is_fullscreen_rectangle((0, 32, 1920, 1080), (0, 0, 1920, 1080))
+
+
+def test_foreground_fullscreen_probe_is_portable_and_fail_open(monkeypatch) -> None:
+    monkeypatch.setattr("nailong_agent.windows_activity.os.name", "posix")
+
+    assert windows_activity.foreground_window_is_fullscreen() is False
 
 
 def test_read_idle_seconds_uses_last_input_info() -> None:

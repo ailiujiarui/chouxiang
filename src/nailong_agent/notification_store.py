@@ -66,7 +66,8 @@ class NotificationStore:
                     activity_listener_enabled = ?, manual_pause_enabled = ?,
                     do_not_disturb_start = ?, do_not_disturb_end = ?,
                     minimum_cooldown_seconds = ?, maximum_cooldown_seconds = ?,
-                    maximum_popups_per_day = ?, personality_intensity = ?
+                    maximum_popups_per_day = ?, personality_intensity = ?,
+                    game_tease_enabled = ?
                 WHERE id = 1
                 """,
                 (
@@ -78,6 +79,7 @@ class NotificationStore:
                     preferences.maximum_cooldown_seconds,
                     preferences.maximum_popups_per_day,
                     preferences.personality_intensity,
+                    int(preferences.game_tease_enabled),
                 ),
             )
 
@@ -368,6 +370,7 @@ class NotificationStore:
         now: datetime,
         minimum_start_spacing_seconds: int = 30,
         preferences: PetPreferences | None = None,
+        game_tease_only: bool = False,
     ) -> NotificationIntent | None:
         """Lease one pending intent while atomically enforcing spacing and daily budget."""
 
@@ -390,16 +393,23 @@ class NotificationStore:
             last_started = _parse_datetime(runtime["last_popup_started_at"])
             if last_started is not None and now < last_started + timedelta(seconds=minimum_start_spacing_seconds):
                 return None
+            game_tease_filter = (
+                "AND kind = ? AND source_event_id LIKE ?" if game_tease_only else ""
+            )
+            query_parameters: list[str] = [now.isoformat()]
+            if game_tease_only:
+                query_parameters.extend([NotificationKind.LIGHT_TEASE.value, "game-session:%"])
             row = connection.execute(
-                """
+                f"""
                 SELECT * FROM notification_intents
                 WHERE status = 'PENDING' AND available_at <= ?
+                    {game_tease_filter}
                 ORDER BY terminal DESC,
                     CASE priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
                     created_at ASC
                 LIMIT 1
                 """,
-                (now.isoformat(),),
+                query_parameters,
             ).fetchone()
             if row is None:
                 return None
@@ -424,6 +434,24 @@ class NotificationStore:
                 (local_date,),
             )
         return _intent_from_row(row)
+
+    def dismiss_pending_game_teases(self, *, now: datetime) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE notification_intents
+                SET status = 'DISMISSED', acknowledged_at = ?
+                WHERE status = 'PENDING'
+                    AND kind = ?
+                    AND source_event_id LIKE ?
+                """,
+                (
+                    _as_utc(now).isoformat(),
+                    NotificationKind.LIGHT_TEASE.value,
+                    "game-session:%",
+                ),
+            )
+        return cursor.rowcount
 
     def acknowledge(self, notification_id: str, outcome: str, *, now: datetime) -> bool:
         """Acknowledge a displaying intent once; stale or duplicate acknowledgements return false."""
@@ -645,6 +673,7 @@ class NotificationStore:
             maximum_cooldown_seconds=int(row["maximum_cooldown_seconds"]),
             maximum_popups_per_day=int(row["maximum_popups_per_day"]),
             personality_intensity=row["personality_intensity"],
+            game_tease_enabled=bool(row["game_tease_enabled"]),
         )
 
     def _initialize(self) -> None:
@@ -714,7 +743,8 @@ class NotificationStore:
                     maximum_cooldown_seconds INTEGER NOT NULL DEFAULT 900 CHECK(maximum_cooldown_seconds >= 0),
                     maximum_popups_per_day INTEGER NOT NULL DEFAULT 12 CHECK(maximum_popups_per_day >= 0),
                     personality_intensity TEXT NOT NULL DEFAULT 'STANDARD'
-                        CHECK(personality_intensity IN ('LOW', 'STANDARD', 'HIGH'))
+                        CHECK(personality_intensity IN ('LOW', 'STANDARD', 'HIGH')),
+                    game_tease_enabled INTEGER NOT NULL DEFAULT 0 CHECK(game_tease_enabled IN (0, 1))
                 );
 
                 CREATE TABLE IF NOT EXISTS consumed_personality_events (
@@ -743,6 +773,11 @@ class NotificationStore:
                 );
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(pet_preferences)")}
+            if "game_tease_enabled" not in columns:
+                connection.execute(
+                    "ALTER TABLE pet_preferences ADD COLUMN game_tease_enabled INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(
                 "UPDATE notification_intents SET status = 'PENDING' WHERE status = 'DISPLAYING'"
             )

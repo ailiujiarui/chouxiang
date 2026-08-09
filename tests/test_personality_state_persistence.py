@@ -62,14 +62,14 @@ def test_orchestrator_persists_emotion_when_personality_chooses_silence(tmp_path
     bus.subscribe("ActivityEvent", orchestrator.on_activity_event)
     bus.start()
     try:
-        assert bus.publish(_coding_event("event-1", 0).envelope())
-        assert bus.publish(_coding_event("event-2", 61).envelope())
+        assert bus.publish(_gaming_event("event-1", 0).envelope())
+        assert bus.publish(_gaming_event("event-2", 61).envelope())
         assert bus.wait_idle(1.0)
     finally:
         bus.stop()
 
     state = notifications.get_personality_state()
-    assert state.emotion is PetEmotion.CURIOUS
+    assert state.emotion is PetEmotion.CHEERFUL
     assert state.task_id is not None
     assert notifications.get_status().pending_count == 0
 
@@ -97,13 +97,13 @@ def test_desktop_process_restores_unexpired_personality_state(tmp_path: Path) ->
     assert renderer.states[-1].bubble_visible is False
 
 
-def _coding_event(event_id: str, seconds: int) -> ActivityEvent:
+def _gaming_event(event_id: str, seconds: int) -> ActivityEvent:
     return ActivityEvent(
         event_id=event_id,
         occurred_at=datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc) + timedelta(seconds=seconds),
         source="window",
-        application_id="code",
-        activity=ActivityType.CODING,
+        application_id="game",
+        activity=ActivityType.GAMING,
         confidence=0.95,
-        summary="application=code; activity=coding; source=window",
+        summary="application=game; activity=gaming; source=window",
     )
