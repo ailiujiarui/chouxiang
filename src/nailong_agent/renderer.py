@@ -834,8 +834,25 @@ class PySide6Renderer:
             self._on_set_game_tease(enabled)
 
     def _set_python_review(self, enabled: bool) -> None:
+        if enabled and not self._confirm_python_review():
+            self._python_review_action.blockSignals(True)
+            self._python_review_action.setChecked(False)
+            self._python_review_action.blockSignals(False)
+            return
         if self._on_set_python_review is not None:
             self._on_set_python_review(enabled)
+
+    def _confirm_python_review(self) -> bool:
+        dialog = self._QMessageBox(self._pet_window)
+        dialog.setIcon(self._QMessageBox.Warning)
+        dialog.setWindowTitle("自动 Python 评测授权")
+        dialog.setText("允许奶龙把刚保存的 Python 源码发送给 DeepSeek 做静态评测吗？")
+        dialog.setInformativeText(
+            "只读取启动目录或 NAILONG_PYTHON_REVIEW_ROOTS 下的 .py 文件；源码不会写入活动数据库。"
+        )
+        dialog.setStandardButtons(self._QMessageBox.Yes | self._QMessageBox.No)
+        dialog.setDefaultButton(self._QMessageBox.No)
+        return dialog.exec() == self._QMessageBox.Yes
 
     def _show_test_bubble(self) -> None:
         if not self.can_present_popup():

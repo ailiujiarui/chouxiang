@@ -376,6 +376,24 @@ def test_settings_can_update_privacy_consent_without_restarting(tmp_path) -> Non
     assert process.privacy_policy.consent == consent
 
 
+def test_desktop_process_persists_python_review_authorization_callback(tmp_path) -> None:
+    renderer = NullRenderer()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    notifications = NotificationService.from_database(tmp_path / "notifications.sqlite")
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=lambda: renderer,
+        privacy_store=store,
+        notification_service=notifications,
+    )
+
+    assert process.run() == 0
+    renderer.set_python_review(True)
+
+    assert store.load_consent() == PrivacyConsent(python_review_enabled=True)
+    assert process.privacy_policy.consent.python_review_enabled is True
+
+
 def test_desktop_process_keeps_legacy_renderers_compatible_and_fail_closed(tmp_path) -> None:
     class LegacyRenderer(NullRenderer):
         request_privacy_consent = None

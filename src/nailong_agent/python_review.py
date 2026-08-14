@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from nailong_agent.contracts import PetPersonalityResponse
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetPreferences
+from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.notification_service import NotificationPort
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.privacy import PrivacyConsent
@@ -261,6 +262,7 @@ class AutomaticPythonReviewService:
         poll_interval_seconds: float = 3.0,
         cooldown_seconds: int = 10 * 60,
         maximum_reviews_per_day: int = 3,
+        health_monitor: NailongHealthMonitor | None = None,
     ) -> None:
         self.source_provider = source_provider
         self.reviewer = reviewer
@@ -274,6 +276,7 @@ class AutomaticPythonReviewService:
         self.poll_interval_seconds = poll_interval_seconds
         self.cooldown_seconds = cooldown_seconds
         self.maximum_reviews_per_day = maximum_reviews_per_day
+        self.health_monitor = health_monitor
         self._coding_active = False
         self._state_lock = Lock()
         self._processing_lock = Lock()
@@ -287,6 +290,7 @@ class AutomaticPythonReviewService:
         if self._thread is not None and self._thread.is_alive():
             return
         self.source_provider.prime()
+        self._record_health(enabled=self.consent().python_review_enabled, silence_reason="waiting_coding")
         self._stopped.clear()
         self._thread = Thread(target=self._run, name="nailong-python-review", daemon=True)
         self._thread.start()
@@ -325,9 +329,20 @@ class AutomaticPythonReviewService:
                 or status.do_not_disturb
                 or status.scheduled_do_not_disturb
             ):
+                if not consent.activity_collection_enabled or not consent.python_review_enabled:
+                    self._record_health(enabled=consent.python_review_enabled, silence_reason="not_authorized")
+                elif not coding_active:
+                    self._record_health(enabled=True, silence_reason="waiting_coding")
+                elif preferences.manual_pause_enabled:
+                    self._record_health(enabled=True, silence_reason="manual_pause")
+                elif status.do_not_disturb:
+                    self._record_health(enabled=True, silence_reason="do_not_disturb")
+                elif status.scheduled_do_not_disturb:
+                    self._record_health(enabled=True, silence_reason="scheduled_do_not_disturb")
                 return False
             snapshot = self.source_provider.capture_latest()
             if snapshot is None:
+                self._record_health(enabled=True, silence_reason="waiting_save")
                 return False
             now = self.clock()
             reservation = self.store.reserve_python_review(
@@ -337,8 +352,10 @@ class AutomaticPythonReviewService:
                 maximum_reviews_per_day=self.maximum_reviews_per_day,
             )
             if reservation is None:
+                self._record_health(enabled=True, silence_reason="cooldown")
                 return False
             task_id = reservation
+            self._record_health(enabled=True, status="running")
             try:
                 result = self.reviewer.review(snapshot)
             except Exception as exc:
@@ -352,6 +369,11 @@ class AutomaticPythonReviewService:
                 status=result.status.upper(),
                 error_code=result.error_code,
                 now=self.clock(),
+            )
+            self._record_health(
+                enabled=True,
+                status=result.status,
+                error_code=result.error_code,
             )
             self.notifications.ingest_personality_response(
                 event_id=f"python-review:{task_id}",
@@ -368,6 +390,22 @@ class AutomaticPythonReviewService:
                 self.process_once()
             except Exception:
                 logger.exception("automatic Python review loop failed")
+
+    def _record_health(
+        self,
+        *,
+        enabled: bool,
+        status: str | None = None,
+        error_code: str | None = None,
+        silence_reason: str | None = None,
+    ) -> None:
+        if self.health_monitor is not None:
+            self.health_monitor.record_python_review(
+                enabled=enabled,
+                status=status,
+                error_code=error_code,
+                silence_reason=silence_reason,
+            )
 
 
 def _sensitive_python_path(path: Path) -> bool:

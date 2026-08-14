@@ -1,7 +1,7 @@
 # Nailong 主动通知更新
 
 日期：2026-07-24  
-状态：已实现，待 Pull Request review
+状态：已实现并完成 code review（2026-08-14 同步）
 
 > 2026-08-08 proposed reliability update: the running activity orchestrator
 > needs a due-window scheduler and less silent coding/idle personality policy.

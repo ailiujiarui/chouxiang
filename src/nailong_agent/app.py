@@ -400,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
             store=notification_store,
             consent=lambda: privacy_policy.consent,
             preferences=notification_store.get_preferences,
+            health_monitor=health_monitor,
         )
         if settings.activity_listener_enabled
         and notifications is not None

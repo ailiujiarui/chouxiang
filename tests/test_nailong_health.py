@@ -127,3 +127,21 @@ def test_health_monitor_reduces_untrusted_diagnostic_values_to_fixed_enums() -> 
     assert snapshot.last_error_code == "runtime_error"
     assert "customer" not in snapshot.redacted_summary()
     assert "private-value" not in snapshot.redacted_summary()
+
+
+def test_health_snapshot_exposes_python_review_state_without_untrusted_values() -> None:
+    monitor = NailongHealthMonitor()
+    monitor.record_python_review(
+        enabled=True,
+        status="failed",
+        error_code="token=private-value",
+        silence_reason="private-project-content",
+    )
+
+    snapshot = monitor.snapshot(consent=PrivacyConsent(python_review_enabled=True))
+
+    assert snapshot.python_review_enabled is True
+    assert snapshot.python_review_last_status == "failed"
+    assert snapshot.python_review_last_error_code == "runtime_error"
+    assert snapshot.python_review_silence_reason == "not_authorized"
+    assert "private-value" not in snapshot.redacted_summary()

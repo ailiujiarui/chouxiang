@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import Lock
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +29,17 @@ _ERROR_CODES = {
     "runtime_error",
 }
 _DELIVERY_OUTCOMES = {"dismissed", "failed", "queued_for_render", "shown"}
+_PYTHON_REVIEW_STATUSES = {"idle", "running", "completed", "failed"}
+_PYTHON_REVIEW_SILENCE_REASONS = {
+    "not_authorized",
+    "waiting_coding",
+    "waiting_save",
+    "manual_pause",
+    "do_not_disturb",
+    "scheduled_do_not_disturb",
+    "cooldown",
+    "daily_budget",
+}
 _SILENCE_REASON_LABELS = {
     "activity_listener_disabled": "活动监听已关闭",
     "awaiting_activity": "正在等待新的活动信号",
@@ -65,6 +77,10 @@ class NailongHealthSnapshot(BaseModel):
     silence_reason: str = "listener_stopped"
     last_error_code: str | None = None
     last_delivery_outcome: str | None = None
+    python_review_enabled: bool = False
+    python_review_last_status: Literal["idle", "running", "completed", "failed"] = "idle"
+    python_review_last_error_code: str | None = None
+    python_review_silence_reason: str = "not_authorized"
 
     def redacted_summary(self) -> str:
         event_time = self.last_event_at.astimezone().strftime("%Y-%m-%d %H:%M:%S") if self.last_event_at else "无"
@@ -79,6 +95,9 @@ class NailongHealthSnapshot(BaseModel):
         )
         return "\n".join(
             (
+                f"Python review enabled: {self.python_review_enabled}",
+                f"Python review status: {self.python_review_last_status}",
+                f"Python review silence: {self.python_review_silence_reason}",
                 f"监听运行：{'是' if self.listener_running else '否'}",
                 f"最近活动：{event_time}",
                 f"应用分类：{self.last_application_category or '无'}",
@@ -174,6 +193,35 @@ class NailongHealthMonitor:
             last_error_code=_safe_value(error_code, _ERROR_CODES, "runtime_error")
         )
 
+    def record_python_review(
+        self,
+        *,
+        enabled: bool,
+        status: str | None = None,
+        error_code: str | None = None,
+        silence_reason: str | None = None,
+    ) -> None:
+        updates: dict[str, object] = {"python_review_enabled": bool(enabled)}
+        if status is not None:
+            updates["python_review_last_status"] = _safe_value(
+                status,
+                _PYTHON_REVIEW_STATUSES,
+                "failed",
+            )
+        if error_code is not None:
+            updates["python_review_last_error_code"] = _safe_value(
+                error_code,
+                _ERROR_CODES | {"llm_unavailable", "untrusted_source_marker", "sensitive_source"},
+                "runtime_error",
+            )
+        if silence_reason is not None:
+            updates["python_review_silence_reason"] = _safe_value(
+                silence_reason,
+                _PYTHON_REVIEW_SILENCE_REASONS,
+                "not_authorized",
+            )
+        self._update(**updates)
+
     def snapshot(
         self,
         *,
@@ -187,7 +235,10 @@ class NailongHealthMonitor:
             state = self._state
         if fullscreen_blocked is None:
             fullscreen_blocked = state.fullscreen_blocked
-        updates: dict[str, object] = {"fullscreen_blocked": fullscreen_blocked}
+        updates: dict[str, object] = {
+            "fullscreen_blocked": fullscreen_blocked,
+            "python_review_enabled": bool(consent and consent.python_review_enabled),
+        }
         if status is not None:
             updates.update(
                 pending_count=status.pending_count,
