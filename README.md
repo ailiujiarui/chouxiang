@@ -1,10 +1,27 @@
-# Refactor Agent
+# 奶龙桌宠
 
-面向 Python 的本地代码审判与安全精简工具。当前支持：
+一个会观察、吐槽、提醒和陪你写代码的 Windows 桌宠。奶龙常驻桌面，
+用纯文字表情和上方气泡表达状态；它背后的代码审判与 DeepSeek 评测能力，
+负责把“看到了什么”和“该怎么提醒你”变成具体、带点傲娇的回应。
 
-1. 粘贴 Python 代码，执行 AST 分析、多 Agent 对抗和人格化审查；
-2. 粘贴 Python 代码并提供 pytest，执行完整的本地验证精简；
-3. 只读克隆 allowlist 中的 GitHub 仓库，在本地完成分析与验证。
+奶龙当前支持：
+
+1. 常驻桌面、拖动、设置、暂停监听、免打扰和本地活动记录清理；
+2. 识别编码、调试、测试失败、编译成功、长时间 idle、会议和娱乐等状态；
+3. 用户授权后，检测已保存的 Python 文件并调用真实 DeepSeek 做静态评测；
+4. 通过中度傲娇气泡输出鼓励、轻微吐槽、调试提示和评测报告；
+5. 通过后台代码审判能力完成 AST 分析、多 Agent 对抗、验证和人格化审查。
+
+## 奶龙为什么有点抽象
+
+这里的“抽象”不是随机胡闹，而是奶龙表达状态的方式：
+
+- 眼睛和嘴巴直接用文字表示，表情变化靠“（大笑）”“（得意）”“（困倦）”等状态文字完成；
+- 待机、编码、调试、测试失败或庆祝等状态，会在奶龙上方变成一句短气泡；
+- 语气是中度傲娇：先说具体观察到的代码或活动，再补一句“本龙只是顺便提醒”的态度，不攻击用户本人；
+- 它也会选择安静：遇到免打扰、暂停、全屏、会议、冷却或隐私未授权时，不会强行冒泡。
+
+奶龙不是 Dashboard 浮层，也不是普通通知器；它是一个有状态、有边界、偶尔嘴硬的桌面陪伴角色。
 
 项目不接收 GitHub Webhook，不创建分支、commit、push、Pull Request 或 Issue 评论。
 
@@ -64,7 +81,7 @@ Dashboard；后续仍然只需双击 `start.cmd`。
 
 SQLite 默认使用统一的 5000ms `busy_timeout` 和 `auto` journal 策略；可通过 `REFACTOR_AGENT_SQLITE_JOURNAL_MODE=auto|wal|delete` 与 `REFACTOR_AGENT_SQLITE_BUSY_TIMEOUT_MS` 调整。WAL 只会在安全 SQLite 版本和本地文件系统上启用，备份与回退步骤见 [`docker/README.md`](docker/README.md#wal-备份与回退)。
 
-### Nailong 桌面主动通知
+### 奶龙桌宠启动与主动通知
 
 奶龙随 `start.cmd` 自动启动。首次运行会在项目 `.venv` 中安装完整本地产品依赖，
 不会修改全局 Python 环境。重复启动会复用现有 API、Dashboard 和奶龙进程，
@@ -76,7 +93,7 @@ SQLite 默认使用统一的 5000ms `busy_timeout` 和 `auto` journal 策略；�
 
 桌面端通过现有分析事件流接收任务状态，按冷却、免打扰和终态优先级规则显示弹窗。默认数据目录为 `.runs`，其中包含 `nailong-agent.lock`、`nailong_privacy.sqlite` 和 `nailong_notifications.sqlite`。`NAILONG_DEEPSEEK_MODEL` 可在 `.env` 中覆盖桌宠模型。桌宠数据库不会保存 API Key、源代码、原始窗口内容、截图、OCR、剪贴板或终端正文。完整的事件映射、接口和验证方式见 [`docs/designs/2026-07-24-nailong-proactive-notifications-update.md`](docs/designs/2026-07-24-nailong-proactive-notifications-update.md)。
 
-#### Nailong 活动监听
+#### 奶龙活动监听
 
 活动监听默认由 `NAILONG_ACTIVITY_LISTENER_ENABLED=true` 创建；可设置为 `false`，或在本次启动使用 `--no-activity-listener` 关闭。该开关只控制是否创建监听器，已持久化的 `activity_listener_enabled`、手动暂停和应用白名单/黑名单仍在每次事件处理时生效。
 
@@ -84,7 +101,7 @@ SQLite 默认使用统一的 5000ms `busy_timeout` 和 `auto` journal 策略；�
 
 只允许通过隐私策略后的统一最小化事件写入 `nailong_privacy.sqlite`，其中只包含归一化应用类别、活动类型、置信度和固定格式摘要。空闲、全屏、会议等原始采集信号只在本地隐私边界内用于分类和拦截，不会写入统一事件。可在桌宠隐私控制中使用“删除本地活动记录”清除活动事件和聚合记录，首次授权选择不会被删除。
 
-## Nailong 自动 Python 评测
+## 奶龙自动 Python 评测
 
 桌宠默认不会上传源码。要启用自动评测：
 
