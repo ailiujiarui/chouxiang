@@ -68,34 +68,46 @@ _SCENARIO_BY_ACTIVITY_LABEL = {
 
 _MESSAGES: dict[PersonalityIntensity, dict[PersonalityScenario, str]] = {
     PersonalityIntensity.LOW: {
+        PersonalityScenario.ENTERTAINMENT: "玩得挺专心。本龙只是提醒一下，别忘了偶尔看看时间。",
+        PersonalityScenario.CODING: "你在认真写代码。本龙就在旁边看着，记得一步一步来。",
         PersonalityScenario.DEBUGGING: "看起来还在调试。先看最近一次变化，本龙陪你理一理。",
         PersonalityScenario.TEST_FAILED: "测试没有通过。先看第一条失败，本龙陪你一起排查。",
         PersonalityScenario.TEST_SUCCEEDED: "测试通过了。本龙也替你高兴。",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过了，记得继续确认测试结果。",
         PersonalityScenario.LONG_WORK: "你已经忙一阵了。本龙陪你休息一下再继续。",
+        PersonalityScenario.IDLE: "休息一会儿也好。本龙会替你看着，回来再继续。",
     },
     PersonalityIntensity.STANDARD: {
+        PersonalityScenario.ENTERTAINMENT: "哼，玩得还挺投入。本龙才不是催你，偶尔抬头看看时间。",
+        PersonalityScenario.CODING: "哼，写得还挺专心。本龙只是路过，顺便提醒你别忘了小步验证。",
         PersonalityScenario.DEBUGGING: "哼，这个问题还挺会躲。本龙只是顺手陪你从最近一次变化开始看。",
         PersonalityScenario.TEST_FAILED: "哼，这个测试又闹脾气了。本龙还没认输，先看第一条失败。",
         PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……和你也有那么一点功劳。",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦，勉强有本龙几分风范。下一步再确认测试。",
         PersonalityScenario.LONG_WORK: "你已经忙很久了。本龙才不是担心你，起来喝口水再继续？",
+        PersonalityScenario.IDLE: "发呆够久啦。本龙才没有等你，回来时先挑一件小事继续？",
     },
     PersonalityIntensity.HIGH: {
+        PersonalityScenario.ENTERTAINMENT: "哼，玩得都不肯停了？本龙才不是担心你，记得看看时间！",
+        PersonalityScenario.CODING: "哼，终于有点认真工作的样子了！本龙就在这盯着，写完记得马上验证。",
         PersonalityScenario.DEBUGGING: "哼，这个问题躲得倒挺快，可躲不过本龙的龙角！先从最近一次变化查起。",
         PersonalityScenario.TEST_FAILED: "哼，这个测试还敢闹脾气？本龙可没认输，先揪住第一条失败。",
         PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……咳，你也确实干得漂亮！",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦！勉强追上本龙甩尾巴的速度，下一步再确认测试。",
         PersonalityScenario.LONG_WORK: "忙这么久，连本龙的零食都要放凉了。本龙才不是担心你，先喝口水！",
+        PersonalityScenario.IDLE: "喂，发呆也该有个限度！本龙才没在等你，回来先做一件最小的事。",
     },
 }
 
 _CATCHPHRASE_FREE_MESSAGES = {
+    PersonalityScenario.ENTERTAINMENT: "玩得挺投入，龙角都快替你盯时间了。偶尔休息一下。",
+    PersonalityScenario.CODING: "写得挺专心，龙角都安静下来了。做完这一小步记得验证。",
     PersonalityScenario.DEBUGGING: "这个问题躲得挺快，龙角都快被它绕晕了。先查最近一次变化。",
     PersonalityScenario.TEST_FAILED: "这个测试又把尾巴翘起来了。先抓第一条失败，后面的噪声等等。",
     PersonalityScenario.TEST_SUCCEEDED: "测试确实通过了，小爪子都忍不住要鼓掌。",
     PersonalityScenario.COMPILE_SUCCEEDED: "编译已经通过，龙角接收到好消息了。下一步再确认测试。",
     PersonalityScenario.LONG_WORK: "忙了这么久，连零食都该歇一会儿。先喝口水再继续？",
+    PersonalityScenario.IDLE: "休息得差不多了，龙角还记得刚才的进度。回来先做一件小事。",
 }
 
 _CATCHPHRASE_STEMS = (
@@ -111,15 +123,15 @@ _CATCHPHRASE_STEMS = (
 
 _INTENTS: dict[
     PersonalityScenario,
-    Literal["encourage", "remind", "celebrate", "ask", "stay_silent"],
+    Literal["encourage", "remind", "celebrate", "ask", "tease", "stay_silent"],
 ] = {
-    PersonalityScenario.CODING: "stay_silent",
+    PersonalityScenario.CODING: "encourage",
     PersonalityScenario.DEBUGGING: "encourage",
     PersonalityScenario.TEST_FAILED: "remind",
     PersonalityScenario.TEST_SUCCEEDED: "celebrate",
     PersonalityScenario.COMPILE_SUCCEEDED: "celebrate",
     PersonalityScenario.LONG_WORK: "remind",
-    PersonalityScenario.IDLE: "stay_silent",
+    PersonalityScenario.IDLE: "remind",
     PersonalityScenario.MEETING: "stay_silent",
     PersonalityScenario.ENTERTAINMENT: "stay_silent",
     PersonalityScenario.UNKNOWN: "stay_silent",
@@ -202,6 +214,8 @@ class PetPersonalityAgent:
         confidence = state["classification_confidence"]
         intent = _INTENTS[scenario]
         message = _MESSAGES[self.intensity].get(scenario, "保持安静")
+        if scenario is PersonalityScenario.ENTERTAINMENT and state["context"].game_tease_enabled:
+            intent = "tease"
         if scenario in _CATCHPHRASE_FREE_MESSAGES and _should_avoid_catchphrase(
             message,
             state["context"].recent_messages,

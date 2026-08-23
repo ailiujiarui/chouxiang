@@ -80,6 +80,23 @@ def test_allowed_signal_becomes_unified_minimized_activity() -> None:
 
 
 @pytest.mark.parametrize(
+    "process_name",
+    ["League of Legends.exe", "DeltaForceClient-Win64-Shipping.exe"],
+)
+def test_known_game_processes_are_minimized_without_leaking_process_name(process_name: str) -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(source="window", application_id=process_name)
+    )
+
+    assert decision.allowed is True
+    assert decision.event is not None
+    assert decision.event.application_id == "game"
+    assert process_name.casefold() not in decision.event.model_dump_json().casefold()
+
+
+@pytest.mark.parametrize(
     ("activity_hint", "expected_activity"),
     [
         ("pytest failed", ActivityType.TEST_FAILED),
@@ -120,6 +137,31 @@ def test_unknown_application_is_reduced_to_a_nonidentifying_category() -> None:
     assert decision.event is not None
     assert decision.event.application_id == "other"
     assert "acme" not in decision.event.model_dump_json().casefold()
+
+
+@pytest.mark.parametrize(
+    ("executable", "category"),
+    [
+        ("Codex.exe", "code"),
+        ("Cursor.exe", "code"),
+        ("Windsurf.exe", "code"),
+        ("Zed.exe", "code"),
+        ("devenv.exe", "ide"),
+    ],
+)
+def test_development_tools_are_reduced_to_safe_categories(
+    executable: str,
+    category: str,
+) -> None:
+    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
+
+    decision = policy.admit_activity(
+        RawActivitySignal(source="window", application_id=executable)
+    )
+
+    assert decision.event is not None
+    assert decision.event.application_id == category
+    assert executable.casefold() not in decision.event.model_dump_json().casefold()
 
 
 def test_remote_summary_accepts_only_unified_event_and_is_redacted() -> None:
@@ -166,7 +208,7 @@ def test_unified_event_rejects_naive_time_and_unsafe_application() -> None:
 
 def test_store_persists_unified_events_and_windows_then_clears_both(tmp_path) -> None:
     store = PrivacyStore(tmp_path / "pet.sqlite")
-    consent = PrivacyConsent(activity_collection_enabled=True)
+    consent = PrivacyConsent(activity_collection_enabled=True, python_review_enabled=True)
     policy = PrivacyPolicy(consent)
     store.save_consent(consent)
     decision = policy.admit_activity(RawActivitySignal(source="window", application_id="code", activity=ActivityType.CODING, confidence=0.8))

@@ -113,3 +113,16 @@ def test_rejects_out_of_order_and_private_events() -> None:
         aggregator.ingest(_event(59, activity=ActivityType.DEBUGGING))
     with pytest.raises(ValueError, match="public"):
         aggregator.ingest(_event(66, sensitivity="private"))
+
+
+def test_flush_due_waits_for_complete_window_and_only_emits_once() -> None:
+    aggregator = ActivityEventAggregator()
+    aggregator.ingest(_event(1))
+
+    assert aggregator.flush_due(START + timedelta(seconds=59)) is None
+    window = aggregator.flush_due(START + timedelta(seconds=60))
+
+    assert window is not None
+    assert window.window_started_at == START
+    assert window.window_ended_at == START + timedelta(seconds=60)
+    assert aggregator.flush_due(START + timedelta(seconds=120)) is None

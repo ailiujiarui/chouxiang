@@ -9,6 +9,7 @@ import nailong_agent.app as desktop_app
 from nailong_agent.app import DesktopProcess, SingleInstanceLock, main
 from nailong_agent.event_bus import EventBus, EventBusError
 from nailong_agent.events import ActivityEvent, ActivityType, EventEnvelope, PetExpression, PopupDecision
+from nailong_agent.health import NailongHealthSnapshot
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
@@ -16,6 +17,7 @@ from nailong_agent.renderer import (
     MOUTH_TEXT,
     NullRenderer,
     PySide6Renderer,
+    clamp_window_position,
     decision_to_pet_state,
     place_bubble_above_pet,
 )
@@ -109,6 +111,14 @@ def test_bubble_is_clamped_above_pet_without_covering_it() -> None:
     assert 28 <= placement.tail_x <= 420 - 28
 
 
+def test_dragged_window_is_clamped_inside_available_screen() -> None:
+    assert clamp_window_position(
+        available=(100, 50, 800, 600),
+        window_size=(240, 190),
+        desired=(-500, 900),
+    ) == (100, 460)
+
+
 def test_pyside_bubble_wraps_long_text_and_stays_above_pet(monkeypatch) -> None:
     pytest.importorskip("PySide6")
     from PySide6.QtGui import QColor, QPalette, QTextCursor
@@ -185,6 +195,134 @@ def test_pyside_renderer_click_callback_is_local_only() -> None:
     assert clicked == [True]
 
 
+def test_pyside_delivery_ack_waits_until_bubble_paints(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    results: list[tuple[str, str]] = []
+    renderer = PySide6Renderer(fullscreen_probe=lambda: False)
+    renderer.configure_popup_delivery(lambda notification_id, outcome: results.append((notification_id, outcome)))
+    try:
+        assert renderer.can_present_popup() is True
+        assert renderer.show(
+            PopupDecision(
+                action="show",
+                reason="delivery-test",
+                message="visible after paint",
+                dedupe_key="notification-1",
+            )
+        ) is True
+        assert results == []
+
+        renderer._app.processEvents()
+        renderer._app.processEvents()
+
+        assert results == [("notification-1", "shown")]
+    finally:
+        renderer.stop()
+
+
+def test_pyside_renderer_blocks_delivery_while_foreground_is_fullscreen(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    renderer = PySide6Renderer(fullscreen_probe=lambda: True)
+    try:
+        assert renderer.can_present_popup() is False
+    finally:
+        renderer.stop()
+
+
+def test_pyside_render_failure_reports_failed_delivery(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    results: list[tuple[str, str]] = []
+    renderer = PySide6Renderer(fullscreen_probe=lambda: False)
+    renderer.configure_popup_delivery(lambda notification_id, outcome: results.append((notification_id, outcome)))
+    renderer._SpeechBubble = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("render failed"))
+    try:
+        renderer._show_on_ui_thread(
+            PopupDecision(
+                action="show",
+                reason="delivery-test",
+                message="will fail",
+                dedupe_key="notification-2",
+            )
+        )
+
+        assert results == [("notification-2", "failed")]
+    finally:
+        renderer.stop()
+
+
+def test_pyside_settings_button_sits_below_body_and_syncs_controls(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    consent = PrivacyConsent(activity_collection_enabled=True)
+    renderer = PySide6Renderer()
+    renderer.configure_privacy_controls(
+        on_clear_activity_history=lambda: 0,
+        get_privacy_consent=lambda: consent,
+        on_save_privacy_consent=lambda value: None,
+    )
+    renderer.configure_notification_controls(
+        on_set_do_not_disturb=lambda enabled: None,
+        get_do_not_disturb=lambda: True,
+        on_set_manual_pause=lambda enabled: None,
+        get_manual_pause=lambda: True,
+        on_set_game_tease=lambda enabled: None,
+        get_game_tease=lambda: True,
+    )
+    renderer.configure_health_controls(get_health_snapshot=NailongHealthSnapshot)
+    try:
+        assert renderer._settings_button.geometry().top() > renderer._body.geometry().bottom()
+        renderer._sync_settings_actions()
+        assert renderer._privacy_action.isEnabled()
+        assert "已开启" in renderer._privacy_action.text()
+        assert renderer._pause_action.isChecked()
+        assert renderer._dnd_action.isChecked()
+        assert renderer._game_tease_action.isChecked()
+        assert renderer._test_bubble_action.isEnabled()
+        assert renderer._health_action.isEnabled()
+    finally:
+        renderer.stop()
+
+
+def test_pyside_drag_moves_pet_and_bubble_without_triggering_click(monkeypatch) -> None:
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QPoint
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    clicked: list[bool] = []
+    renderer = PySide6Renderer(on_click=lambda: clicked.append(True))
+    renderer.start()
+    try:
+        renderer._app.processEvents()
+        popup = renderer._popups[-1]
+        original_window = renderer._pet_window.pos()
+        original_popup = popup.pos()
+        timer_count = len(renderer._popup_timers)
+        drag_start = renderer._pet_window.frameGeometry().topLeft() + QPoint(60, 60)
+
+        renderer._begin_drag(drag_start)
+        assert renderer._update_drag(drag_start + QPoint(-80, -60)) is True
+        assert renderer._end_drag() is True
+        renderer._app.processEvents()
+
+        assert renderer._pet_window.pos() != original_window
+        assert popup.pos() != original_popup
+        assert len(renderer._popup_timers) == timer_count
+        assert clicked == []
+
+        renderer._begin_drag(drag_start)
+        assert renderer._end_drag() is False
+        assert clicked == [True]
+    finally:
+        renderer.stop()
+
+
 def test_single_instance_lock_rejects_second_owner(tmp_path) -> None:
     path = tmp_path / "nailong.lock"
     first = SingleInstanceLock(path)
@@ -203,6 +341,7 @@ def test_desktop_process_headless_lifecycle(tmp_path) -> None:
 
     assert process.run() == 0
     assert renderer.started is False
+    assert renderer.get_health_snapshot().silence_reason == "listener_stopped"
 
 
 def test_desktop_process_requests_and_persists_first_startup_consent(tmp_path) -> None:
@@ -218,6 +357,41 @@ def test_desktop_process_requests_and_persists_first_startup_consent(tmp_path) -
     assert process.run() == 0
     assert renderer.consent_requested is True
     assert store.load_consent() == renderer.consent_response
+
+
+def test_settings_can_update_privacy_consent_without_restarting(tmp_path) -> None:
+    renderer = NullRenderer()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=lambda: renderer,
+        privacy_store=store,
+    )
+
+    assert process.run() == 0
+    consent = PrivacyConsent(activity_collection_enabled=True, remote_inference_enabled=True)
+    renderer.save_privacy_consent(consent)
+
+    assert store.load_consent() == consent
+    assert process.privacy_policy.consent == consent
+
+
+def test_desktop_process_persists_python_review_authorization_callback(tmp_path) -> None:
+    renderer = NullRenderer()
+    store = PrivacyStore(tmp_path / "privacy.sqlite")
+    notifications = NotificationService.from_database(tmp_path / "notifications.sqlite")
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=lambda: renderer,
+        privacy_store=store,
+        notification_service=notifications,
+    )
+
+    assert process.run() == 0
+    renderer.set_python_review(True)
+
+    assert store.load_consent() == PrivacyConsent(python_review_enabled=True)
+    assert process.privacy_policy.consent.python_review_enabled is True
 
 
 def test_desktop_process_keeps_legacy_renderers_compatible_and_fail_closed(tmp_path) -> None:
@@ -367,6 +541,38 @@ def test_desktop_process_starts_and_stops_injected_activity_collector(tmp_path) 
 
     assert process.run() == 0
     assert (collector.starts, collector.stops) == (1, 1)
+
+
+def test_desktop_process_manages_activity_orchestrator_around_collector(tmp_path) -> None:
+    lifecycle: list[str] = []
+
+    class OrchestratorProbe:
+        def subscribe(self, bus) -> None:
+            lifecycle.append("orchestrator:subscribe")
+
+        def start(self) -> None:
+            lifecycle.append("orchestrator:start")
+
+        def stop(self) -> None:
+            lifecycle.append("orchestrator:stop")
+
+    class CollectorProbe:
+        def start(self) -> None:
+            lifecycle.append("collector:start")
+
+        def stop(self) -> None:
+            lifecycle.append("collector:stop")
+
+    process = DesktopProcess(
+        lock_path=tmp_path / "nailong.lock",
+        renderer_factory=NullRenderer,
+        activity_orchestrator=OrchestratorProbe(),  # type: ignore[arg-type]
+        activity_collector=CollectorProbe(),  # type: ignore[arg-type]
+    )
+
+    assert process.run() == 0
+    assert lifecycle.index("orchestrator:start") < lifecycle.index("collector:start")
+    assert lifecycle.index("collector:stop") < lifecycle.index("orchestrator:stop")
 
 
 def test_desktop_process_stops_activity_collection_before_delivery(tmp_path) -> None:

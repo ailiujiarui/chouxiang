@@ -91,6 +91,7 @@ class ActivityRecognizer:
             "code": (ActivityType.CODING, 0.72),
             "ide": (ActivityType.CODING, 0.72),
             "terminal": (ActivityType.CODING, 0.68),
+            "game": (ActivityType.GAMING, 0.72),
         }
         activity, confidence = application_scores.get(
             window.dominant_application,

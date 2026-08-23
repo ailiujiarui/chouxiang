@@ -3,6 +3,10 @@
 Date: 2026-07-24
 Status: implemented; review passed
 
+> 2026-08-08 interaction update implemented and reviewed: settings button,
+> runtime privacy reauthorization, and bounded drag behavior are specified in
+> `2026-08-08-nailong-settings-and-drag.md`.
+
 ## Goal
 
 Make the Nailong desktop pet visibly expressive using parenthesized literal
