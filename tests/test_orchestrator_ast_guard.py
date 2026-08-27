@@ -133,6 +133,139 @@ def test_code_change_percent_positive():
     assert expected > 0
 
 
+def _real_state(original_code: str, fixed_code: str, max_attempts: int = 2):
+    state = initial_execution_state(max_attempts)
+    state.update(
+        {
+            "attempt": 1,
+            "original_code": original_code,
+            "current_code": original_code,
+            "allowed_regions": ["value"],
+            "llm_result": LLMRefactorResult(
+                thought="candidate",
+                fixed_code=fixed_code,
+                insult_review="review",
+            ),
+            "round_messages": [
+                AgentDebateMessage(round=1, agent="MINIMIZER", content="candidate")
+            ],
+        }
+    )
+    return state
+
+
+def _run_real_guard(state, allowed_import_roots: set[str] = set()):
+    events: list[tuple] = []
+    trajectory: list[tuple] = []
+
+    guard_ast_execution_node(
+        state,
+        allowed_import_roots=allowed_import_roots,
+        defender=Defender(),
+        emit_analysis_event=lambda *args, **kwargs: events.append((args, kwargs)),
+        record_trajectory=lambda *args: trajectory.append(args),
+    )
+    return events, trajectory
+
+
+def test_real_guard_rejects_dangerous_import_and_call_in_candidate():
+    """Prompt-injection-style candidate must be stopped by the structural guard."""
+    original = "def value(flag):\n    return 1 if flag else 0\n"
+    candidate = "def value(flag):\n    import os\n    os.system('id')\n    return int(flag)\n"
+    state = _real_state(original, candidate)
+
+    events, trajectory = _run_real_guard(state)
+
+    assert state["rewrite"].ok is False
+    rules = {item.rule for item in state["rewrite"].findings}
+    assert "import-not-allowlisted" in rules or "blocked-call" in rules
+    assert state["validation"].ok is False
+    assert state["previous_error"].startswith("AST guard rejected candidate:")
+    assert state["next_node"] in {"minimizer", "finalize"}
+    assert events[0][0][0] is AnalysisEventType.AST_REJECTED
+    assert trajectory[0][1] == "AST_REJECTED"
+
+
+def test_real_guard_rejects_change_outside_allowed_region():
+    original = (
+        "def value(flag):\n"
+        "    return 1 if flag else 0\n"
+        "\n"
+        "def helper(x):\n"
+        "    return x * 2\n"
+    )
+    candidate = (
+        "def value(flag):\n"
+        "    return int(flag)\n"
+        "\n"
+        "def helper(x):\n"
+        "    return x * 999\n"
+    )
+    state = _real_state(original, candidate)
+
+    _run_real_guard(state)
+
+    assert state["rewrite"].ok is False
+    rules = {item.rule for item in state["rewrite"].findings}
+    assert "non-target-changed" in rules
+    assert state["validation"].ok is False
+    assert state["next_node"] in {"minimizer", "finalize"}
+
+
+def test_real_guard_rejects_new_public_symbol():
+    original = "def value(flag):\n    return 1 if flag else 0\n"
+    candidate = (
+        "def value(flag):\n"
+        "    return int(flag)\n"
+        "\n"
+        "def backdoor():\n"
+        "    return 0\n"
+    )
+    state = _real_state(original, candidate)
+
+    _run_real_guard(state)
+
+    assert state["rewrite"].ok is False
+    rules = {item.rule for item in state["rewrite"].findings}
+    assert "public-api-added" in rules or "non-target-changed" in rules
+    assert state["validation"].ok is False
+    assert state["next_node"] in {"minimizer", "finalize"}
+
+
+def test_real_guard_rejects_signature_change():
+    original = "def value(flag):\n    return 1 if flag else 0\n"
+    candidate = "def value(flag, extra=False):\n    return int(flag)\n"
+    state = _real_state(original, candidate)
+
+    _run_real_guard(state)
+
+    assert state["rewrite"].ok is False
+    rules = {item.rule for item in state["rewrite"].findings}
+    assert "signature-changed" in rules
+    assert state["next_node"] in {"minimizer", "finalize"}
+
+
+def test_real_guard_accepts_legitimate_simplification():
+    original = (
+        "def value(flag):\n"
+        "    if flag:\n"
+        "        return 1\n"
+        "    else:\n"
+        "        return 0\n"
+    )
+    candidate = "def value(flag):\n    return 1 if flag else 0\n"
+    state = _real_state(original, candidate)
+
+    events, trajectory = _run_real_guard(state)
+
+    assert state["rewrite"].ok is True
+    assert state["validation"].ok is True
+    assert state["current_code"] == candidate
+    assert state["next_node"] == "pytest"
+    assert events == []
+    assert trajectory[0][1] == "DEFENDER_REVIEWED"
+
+
 def _state(max_attempts: int):
     state = initial_execution_state(max_attempts)
     state.update(

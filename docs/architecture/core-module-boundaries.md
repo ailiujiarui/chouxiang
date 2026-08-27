@@ -182,3 +182,11 @@ Store、Webhook、CLI 和 Orchestrator 的目标业务边界已经完成渐进�
 - Mock、真实 DeepSeek 配置选择和 Docker sandbox 命令/失败关闭路径分别有独立测试。当前 Docker Desktop daemon 未运行，因此本次没有执行真实容器 smoke，也没有发起真实 DeepSeek 网络调用。
 - 当前环境采样：四个核心门面的冷导入约 1.75 秒；代表性单任务墙钟约 4.29 秒，其中 pytest 约 3.97 秒、峰值追踪内存约 31.2 MiB、目标模块导入约 0.0006 秒；未发现明显回归或临时目录残留。
 - 原 CLI 命令/参数、FastAPI 路由与响应字段、Pydantic 模型继续由集成测试覆盖；2026 年 8 月已移除 Orchestrator 的重复兼容包装（`_build_report`、`_summarize_*`、`_request_with_memory` 等），调用方统一导入拆分后的模块。
+
+## 包边界决策（2026-08-27）
+
+`nailong_agent` 与 `refactor_agent` 维持**单一仓库、单一发行版**，不物理拆包。理由：
+
+- `nailong_agent` 依赖 `refactor_agent` 的共享基础设施（`analysis_events` 事件契约、`sqlite_runtime`、`artifacts.sanitize_text`、`ast_analyzer`）和懒加载的 LLM 适配器；物理拆包仍需声明 `refactor-agent` 为依赖，收益小于打包复杂度。
+- 拆包所需的边界已经落成：依赖方向单向（`refactor_agent` 永不导入 `nailong_agent`）、桌面包只通过白名单接缝消费引擎、`tests/test_module_boundaries.py` 持续守卫这两条。
+- 未来拆分是机械操作：把 `src/nailong_agent/` 移到独立包目录并新增 pyproject（`dependencies = ["refactor-agent", "PySide6>=6.7", ...]`），启动脚本与 CI 按新包名调整即可，业务代码无需迁移。

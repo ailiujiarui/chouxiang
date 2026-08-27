@@ -38,7 +38,8 @@ def test_startup_bootstraps_the_full_product_without_global_python_changes() -> 
     assert "api.pid" in script
     assert "dashboard.pid" in script
     assert "nailong-desktop.pid" in script
-    assert "REFACTOR_AGENT_SANDBOX_BACKEND = \"docker\"" in script
+    assert "REFACTOR_AGENT_SANDBOX_BACKEND = $sandboxBackend" in script
+    assert "$sandboxBackend = \"subprocess\"" in script
     assert "REFACTOR_AGENT_SANDBOX_VOLUME" in script
     assert ".runs\\logs" in script
     assert 'Start-Process "http://127.0.0.1:8501"' in script

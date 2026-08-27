@@ -105,17 +105,23 @@ if (-not $systemPython) {
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw "Git was not found. Install Git for Windows, then run start.cmd again."
 }
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker CLI was not found. Install Docker Desktop, start it, then run start.cmd again."
-}
 
-$savedErrorAction = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-& docker info *> $null
-$dockerInfoExitCode = $LASTEXITCODE
-$ErrorActionPreference = $savedErrorAction
-if ($dockerInfoExitCode -ne 0) {
-    throw "Docker Desktop is not running or is not reachable. Start Docker Desktop, then run start.cmd again."
+$dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+if (-not $dockerCommand) {
+    Write-Warning "Docker CLI was not found. Falling back to the local subprocess sandbox; untrusted generated code runs directly on the host. Install Docker Desktop for the recommended isolated sandbox."
+    $dockerAvailable = $false
+} else {
+    $savedErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & docker info *> $null
+    $dockerInfoExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $savedErrorAction
+    if ($dockerInfoExitCode -ne 0) {
+        Write-Warning "Docker Desktop is not running or is not reachable. Falling back to the local subprocess sandbox; untrusted generated code runs directly on the host. Start Docker Desktop to enable the recommended isolated sandbox."
+        $dockerAvailable = $false
+    } else {
+        $dockerAvailable = $true
+    }
 }
 
 $venvDirectory = Join-Path $repoRoot ".venv"
@@ -156,17 +162,23 @@ if (-not (Test-Path -LiteralPath $venvPythonw)) {
     throw "pythonw.exe is missing from .venv. Reinstall Windows Python, remove .venv, then run start.cmd again."
 }
 
-$pythonBaseImage = if ($env:PYTHON_BASE_IMAGE) { $env:PYTHON_BASE_IMAGE } else { "python:3.12-slim" }
-$pipIndexUrl = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { "https://pypi.org/simple" }
-Write-Host "Preparing secure sandbox..."
-& docker build `
-    --build-arg "PYTHON_BASE_IMAGE=$pythonBaseImage" `
-    --build-arg "PIP_INDEX_URL=$pipIndexUrl" `
-    -f docker/sandbox.Dockerfile `
-    -t refactor-agent-sandbox:py312 `
-    .
-if ($LASTEXITCODE -ne 0) {
-    throw "Sandbox image build failed. Check Docker and Python package network access, then run start.cmd again."
+$sandboxBackend = "subprocess"
+if ($dockerAvailable) {
+    $pythonBaseImage = if ($env:PYTHON_BASE_IMAGE) { $env:PYTHON_BASE_IMAGE } else { "python:3.12-slim" }
+    $pipIndexUrl = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { "https://pypi.org/simple" }
+    Write-Host "Preparing secure sandbox..."
+    & docker build `
+        --build-arg "PYTHON_BASE_IMAGE=$pythonBaseImage" `
+        --build-arg "PIP_INDEX_URL=$pipIndexUrl" `
+        -f docker/sandbox.Dockerfile `
+        -t refactor-agent-sandbox:py312 `
+        .
+    if ($LASTEXITCODE -ne 0) {
+        throw "Sandbox image build failed. Check Docker and Python package network access, then run start.cmd again."
+    }
+    $sandboxBackend = "docker"
+} else {
+    Write-Host "Sandbox:                  subprocess (degraded, no Docker)"
 }
 
 $dataDirectory = Join-Path $repoRoot ".runs"
@@ -179,7 +191,7 @@ $env:PYTHONIOENCODING = "utf-8"
 $env:REFACTOR_AGENT_RUN_ROOT = $dataDirectory
 $env:REFACTOR_AGENT_DATABASE = Join-Path $dataDirectory "refactor_agent.sqlite"
 $env:REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT = $githubWorkspaceDirectory
-$env:REFACTOR_AGENT_SANDBOX_BACKEND = "docker"
+$env:REFACTOR_AGENT_SANDBOX_BACKEND = $sandboxBackend
 $env:REFACTOR_AGENT_DASHBOARD_DB = $env:REFACTOR_AGENT_DATABASE
 $env:REFACTOR_AGENT_API_URL = "http://127.0.0.1:8000"
 Remove-Item Env:REFACTOR_AGENT_SANDBOX_VOLUME -ErrorAction SilentlyContinue
