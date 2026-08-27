@@ -6,7 +6,6 @@ import pytest
 from refactor_agent.analysis_events import AnalysisEventType
 from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.models import AgentDebateMessage, SandboxResult
-from refactor_agent.orchestrator import _summarize_failure
 from refactor_agent.orchestrator_pytest import (
     run_pytest_execution_node,
     summarize_pytest_failure,
@@ -142,13 +141,12 @@ def test_pytest_node_records_failure_and_closes_round(
     ]
 
 
-def test_failure_summary_caps_output_and_keeps_compatibility_export():
+def test_failure_summary_caps_output():
     result = _result(passed=False, returncode=3, stdout="x" * 9000)
 
     summary = summarize_pytest_failure(result)
 
     assert len(summary) == 8000
-    assert _summarize_failure(result) == summary
     assert summarize_pytest_failure(_result(passed=False, returncode=7)) == (
         "pytest 失败，返回码 7"
     )

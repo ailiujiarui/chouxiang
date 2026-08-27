@@ -12,12 +12,8 @@ from rich.console import Console
 
 from refactor_agent.arena_export import write_arena_report
 from refactor_agent.benchmark import (
-    render_benchmark_markdown,
-    render_manifest_benchmark_markdown,
     run_benchmark,
     run_manifest_benchmark,
-    serialize_benchmark,
-    serialize_manifest_benchmark,
 )
 from refactor_agent.benchmark_service import execute_benchmark
 from refactor_agent.cli_config import (
@@ -35,10 +31,9 @@ from refactor_agent.demo_suite import DemoSuiteRun, render_demo_suite_report
 from refactor_agent.demo_suite_service import (
     DemoSuiteCaseError,
     run_demo_suite as execute_demo_suite,
-    suite_mock_fail_times as _suite_mock_fail_times,
 )
 from refactor_agent.dashboard_launcher import DashboardDependencyError, launch_dashboard
-from refactor_agent.github_url import GitHubUrlError, checkout_github_url
+from refactor_agent.github_url import checkout_github_url
 from refactor_agent.github_url_submission import (
     GitHubUrlCheckoutError,
     execute_github_url_submission,

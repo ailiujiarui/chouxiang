@@ -211,7 +211,7 @@ class NailongHealthMonitor:
         if error_code is not None:
             updates["python_review_last_error_code"] = _safe_value(
                 error_code,
-                _ERROR_CODES | {"llm_unavailable", "untrusted_source_marker", "sensitive_source"},
+                _ERROR_CODES | {"llm_unavailable", "sensitive_source"},
                 "runtime_error",
             )
         if silence_reason is not None:

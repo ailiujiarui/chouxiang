@@ -8,7 +8,6 @@ from refactor_agent.models import (
     MutationTestResult,
     RewardBreakdown,
 )
-from refactor_agent.orchestrator import _summarize_judge
 from refactor_agent.orchestrator_judge import (
     run_judge_execution_node,
     summarize_judge,
@@ -104,10 +103,9 @@ def test_judge_node_routes_failed_candidate(
     assert "Surviving mutants: replace return value" in state["previous_error"]
 
 
-def test_judge_summary_keeps_compatibility_export():
+def test_judge_summary_output():
     reward = _reward()
 
-    assert summarize_judge(reward) == _summarize_judge(reward)
     assert "裁判评分=3.50" in summarize_judge(reward)
 
 

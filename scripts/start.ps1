@@ -137,9 +137,18 @@ $ErrorActionPreference = $savedErrorAction
 if ($dependencyCheckExitCode -ne 0) {
     $pipIndexUrl = if ($env:PIP_INDEX_URL) { $env:PIP_INDEX_URL } else { "https://pypi.org/simple" }
     Write-Host "Installing local product dependencies..."
-    & $venvPython -m pip install --disable-pip-version-check --index-url $pipIndexUrl -e ".[desktop,dashboard]"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Product dependency installation failed. Check Python package network access, then run start.cmd again."
+    $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uvCommand) {
+        $env:UV_DEFAULT_INDEX = $pipIndexUrl
+        & $uvCommand.Source sync --extra desktop --extra dashboard
+        if ($LASTEXITCODE -ne 0) {
+            throw "Product dependency installation failed. Check Python package network access, then run start.cmd again."
+        }
+    } else {
+        & $venvPython -m pip install --disable-pip-version-check --index-url $pipIndexUrl -e ".[desktop,dashboard]"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Product dependency installation failed. Check Python package network access, then run start.cmd again."
+        }
     }
 }
 

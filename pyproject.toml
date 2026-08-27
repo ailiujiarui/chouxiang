@@ -35,7 +35,16 @@ desktop = [
 dev = [
     "pytest>=8.0",
     "streamlit>=1.36",
+    "ruff>=0.8",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F"]
+ignore = []
 
 [project.scripts]
 refactor-agent = "refactor_agent.cli:app"

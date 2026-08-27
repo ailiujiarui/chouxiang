@@ -21,7 +21,7 @@ from nailong_agent.pet_state import (
     PetEmotion,
     PetGraphState,
 )
-from refactor_agent.llm import LLMProvider
+from nailong_agent.llm_provider import LLMProvider
 
 
 class _LLMPersonalityResponse(BaseModel):

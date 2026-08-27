@@ -10,10 +10,6 @@ from refactor_agent.models import (
     MutationTestResult,
     PerformanceProfile,
 )
-from refactor_agent.orchestrator import (
-    _combined_mutation_tests_path,
-    _summarize_mutation,
-)
 from refactor_agent.orchestrator_mutation import (
     combined_mutation_tests_path,
     run_mutation_execution_node,
@@ -125,14 +121,13 @@ def test_combined_mutation_tests_replaces_stale_directory_and_copies_inputs(
     assert not (combined / "stale.txt").exists()
     assert (combined / "baseline" / "test_base.py").is_file()
     assert (combined / "adversarial" / "test_adversarial.py").is_file()
-    assert _combined_mutation_tests_path(workspace, baseline, None) == baseline
+    assert combined_mutation_tests_path(workspace, baseline, None) == baseline
 
 
-def test_mutation_summary_keeps_compatibility_export():
+def test_mutation_summary_output():
     result = MutationTestResult(total=4, killed=3, survived=1)
 
     assert "75.0%" in summarize_mutation(result)
-    assert _summarize_mutation(result) == summarize_mutation(result)
 
 
 def _state(tmp_path: Path):

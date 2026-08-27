@@ -9,7 +9,6 @@ from refactor_agent.models import (
     SafetyFinding,
     TargetRegion,
 )
-from refactor_agent.orchestrator import _code_change_percent
 from refactor_agent.orchestrator_ast_guard import (
     code_change_percent,
     guard_ast_execution_node,
@@ -128,11 +127,10 @@ def test_ast_guard_rejection_closes_round_and_routes_retry_or_finalize(
     )
 
 
-def test_code_change_percent_keeps_orchestrator_compatibility_export():
+def test_code_change_percent_positive():
     expected = code_change_percent("value = 1\n", "value = 2\n")
 
     assert expected > 0
-    assert _code_change_percent("value = 1\n", "value = 2\n") == expected
 
 
 def _state(max_attempts: int):

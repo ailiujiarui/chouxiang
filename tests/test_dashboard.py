@@ -19,6 +19,8 @@ from refactor_agent.dashboard import (
 from refactor_agent.models import RunRecord
 from refactor_agent.store import SQLiteRunStore
 
+_DASHBOARD_SCRIPT = str(Path(__file__).resolve().parent / "streamlit_dashboard_app.py")
+
 
 def test_load_trajectory_handles_jsonl(tmp_path: Path):
     path = tmp_path / "trajectory.jsonl"
@@ -411,7 +413,7 @@ def test_streamlit_dashboard_renders_four_operations_tabs(monkeypatch):
     streamlit = pytest.importorskip("streamlit.testing.v1")
     monkeypatch.setenv("REFACTOR_AGENT_API_URL", "http://127.0.0.1:1")
 
-    app = streamlit.AppTest.from_file("tests/streamlit_dashboard_app.py").run(timeout=10)
+    app = streamlit.AppTest.from_file(_DASHBOARD_SCRIPT).run(timeout=10)
 
     assert [tab.label for tab in app.tabs] == ["任务", "执行过程", "代码变更", "基准测试"]
     assert app.title[0].value == "代码审判助手"
@@ -454,7 +456,7 @@ def test_streamlit_dashboard_only_asks_for_token_when_api_requires_it(monkeypatc
     monkeypatch.setattr(dashboard_module, "DashboardApiClient", TokenProtectedClient)
     monkeypatch.setenv("REFACTOR_AGENT_API_URL", "http://testserver")
 
-    app = streamlit.AppTest.from_file("tests/streamlit_dashboard_app.py").run(timeout=10)
+    app = streamlit.AppTest.from_file(_DASHBOARD_SCRIPT).run(timeout=10)
 
     admin_inputs = [item for item in app.text_input if item.label == "管理员令牌"]
     assert len(admin_inputs) == 1
@@ -584,7 +586,7 @@ def test_streamlit_dashboard_renders_chinese_controls_and_artifact_sections(monk
     monkeypatch.setattr(dashboard_module, "DashboardApiClient", FakeDashboardApiClient)
     monkeypatch.setenv("REFACTOR_AGENT_API_URL", "http://testserver")
 
-    app = streamlit.AppTest.from_file("tests/streamlit_dashboard_app.py").run(timeout=10)
+    app = streamlit.AppTest.from_file(_DASHBOARD_SCRIPT).run(timeout=10)
 
     button_labels = {item.label for item in app.button}
     assert {"刷新数据", "取消任务", "重新执行"} <= button_labels

@@ -2,8 +2,6 @@ from refactor_agent.ast_analyzer import (
     analyze_ast,
     ast_hotspot_prompt,
     ast_prompt_summary,
-    controlled_subtree_rewrite,
-    select_target_regions,
     validate_candidate_source,
 )
 

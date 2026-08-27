@@ -114,7 +114,7 @@ def _assert_inside_workspace(workspace_root: Path, path: Path) -> None:
     resolved_path = path.resolve()
     try:
         resolved_path.relative_to(resolved_root)
-    except ValueError as exc:
+    except ValueError:
         raise GitHubUrlError(f"Refusing to use checkout outside workspace root: {resolved_path}")
 
 

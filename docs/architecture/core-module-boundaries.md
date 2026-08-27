@@ -65,7 +65,7 @@ flowchart LR
 - `control_api_config.py` 独立执行 allowlist 非空、Docker 后端和 Docker daemon 的 fail-closed 启动校验；它不依赖 FastAPI 或 `webhook.py`，动态 allowlist 通过显式传入的策略读取。
 - `AnalysisRequest` 是统一 `/analysis` 入口的共享公共模型，继续由 `models.py` 提供。
 - `webhook.py` 继续兼容导出原有三个请求模型名称，调用方无需迁移导入路径。
-- `webhook.py` 和 `control_api.py` 继续兼容导出 `normalize_repo_path()`、`normalize_git_ref()`，`build_dashboard_job_id()` 也保留原有 `webhook.py` 导入路径。
+- `control_api.py` 兼容导出 `normalize_repo_path()`、`normalize_git_ref()`（来源为 `control_api_jobs.py`），`webhook.py` 不再重复导出这两个函数和 `build_dashboard_job_id()`。
 - `webhook.py` 和 `control_api.py` 继续兼容导出 `validate_control_api_settings()`，调用方无需迁移导入路径。
 - CLI 参数、API 路由、请求字段、默认值和响应字段保持不变。
 
@@ -138,7 +138,7 @@ flowchart LR
 - `dashboard_launcher.py` 负责 Streamlit 依赖检测、环境副本组装和子进程执行；CLI 通过回调在启动前打印 Arena URL，并透传子进程退出码。
 - `cli.py` 继续保留全部命令名称、参数、默认值和退出码，只负责参数归一化、调用应用服务以及将客户端初始化错误翻译为终端错误；运行阶段的 `LLMError` 仍按原路径传播。
 - `_run_request()` 作为现有 CLI 内部兼容入口保留，调用方向只能是 `cli.py` 到 `local_refactor.py`，新服务不得反向导入 CLI。
-- 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()`、`_resolve_deadline()` 和 `_suite_mock_fail_times()` 继续由 `cli.py` 兼容导出。
+- 原有 `_resolve_run_root()`、`_resolve_database()`、`_resolve_github_workspace_root()` 和 `_resolve_deadline()` 继续由 `cli.py` 兼容导出。
 
 ## Orchestrator
 
@@ -148,27 +148,27 @@ flowchart LR
 - `orchestrator_observability.py` 独立负责追加脱敏轨迹并发布白名单分析事件；事件 sink 异常继续被隔离，不中断执行图。
 - `orchestrator.py` 保留 `_trajectory()`、`_emit_analysis_event()` 和 `_phase_started()` 兼容门面。Observability 不导入 Orchestrator、执行图或 Store，也不创建线程和数据库连接。
 - `orchestrator_state.py` 统一创建每次运行的全新初始状态，执行显式节点跳转、重试/终止判定，并收束类型化的辩论轮次。
-- `orchestrator.py` 不再直接写入 `next_node`，并保留 `_retry_or_finalize()` 与 `_close_round()` 兼容门面；状态模块不依赖 Orchestrator、Store、LLM 或沙箱。
+- `orchestrator.py` 不再直接写入 `next_node`；状态模块不依赖 Orchestrator、Store、LLM 或沙箱。
 - `orchestrator_persistence.py` 根据最终状态构造稳定的 `RunRecord`，并保持“运行记录先写、trajectory memory 后写”的原有顺序；它通过窄 Store 协议工作，不持有 SQLite 连接。
 - 失败轨迹、报告、产物和最终分析事件不属于该持久化边界，继续由 Orchestrator 分别调用既有独立模块。
 - `orchestrator_prepare.py` 独立实现 Prepare 节点：读取历史 memory、生成 LLM 请求副本、分析基线、复制隔离工作区并执行沙箱后端预检。
-- `_RefactorWorkflow.prepare()` 继续作为执行图的稳定节点入口，只发布阶段事件并委托 Prepare 模块；`_request_with_memory()` 保留兼容导出。Prepare 仅通过只读协议查询 memory，不持有 Store 或 SQLite 连接。
+- `_RefactorWorkflow.prepare()` 继续作为执行图的稳定节点入口，只发布阶段事件并委托 Prepare 模块。Prepare 仅通过只读协议查询 memory，不持有 Store 或 SQLite 连接。
 - `orchestrator_minimizer.py` 独立实现 Minimizer 节点：增加尝试次数、选择受控目标区域、请求候选、累积 LLM usage，并把公开化的 LLM 失败转换为 Finalize 路由。
 - `_RefactorWorkflow.minimizer()` 继续作为执行图入口并发布阶段事件；Minimizer 模块通过窄 Agent 协议和轨迹回调工作，不反向依赖 Orchestrator 或 Store。
 - `orchestrator_ast_guard.py` 独立实现 AST Guard 节点：受控子树重写、代码变化率、候选验证、Defender 消息、拒绝事件、轨迹及重试路由集中在该模块。
-- `_RefactorWorkflow.ast_guard()` 只发布阶段事件并委托；原 `_rewrite_metadata()` 与 `_code_change_percent()` 继续作为兼容包装。
+- `_RefactorWorkflow.ast_guard()` 只发布阶段事件并委托。
 - `orchestrator_pytest.py` 独立实现 Pytest 节点：候选写入、沙箱测试、Defender 消息、通过/失败事件、失败轨迹、轮次收束与重试路由集中在该模块。
-- `_RefactorWorkflow.pytest()` 只发布阶段事件并传入显式沙箱配置及 `ExecutionControl`；原 `_summarize_failure()` 保留兼容包装。
+- `_RefactorWorkflow.pytest()` 只发布阶段事件并传入显式沙箱配置及 `ExecutionControl`。
 - `orchestrator_adversary.py` 独立实现 Adversary 节点：规则批评、对抗测试生成、消息与轨迹、通过/失败事件、轮次收束和重试路由集中在该模块。
-- `_RefactorWorkflow.adversary()` 只发布阶段事件并传入 Agent、沙箱参数、`ExecutionControl` 与回调；三个原摘要函数保留兼容包装。
+- `_RefactorWorkflow.adversary()` 只发布阶段事件并传入 Agent、沙箱参数、`ExecutionControl` 与回调。
 - `orchestrator_mutation.py` 独立实现 Mutation/性能节点：post 指标、组合测试目录、变异挑战、性能采样、轨迹和 Judge 路由集中在该模块。
-- `_RefactorWorkflow.mutation()` 只发布阶段事件并显式传入资源限制与 `ExecutionControl`；组合路径和摘要函数保留兼容包装。
+- `_RefactorWorkflow.mutation()` 只发布阶段事件并显式传入资源限制与 `ExecutionControl`。
 - `orchestrator_judge.py` 独立实现 Judge 节点：多目标评分、裁决元数据、轮次收束、轨迹以及重试/终止状态转换集中在该模块。
-- `_RefactorWorkflow.judge()` 只发布阶段事件并传入 Judge、图后端和轨迹回调；原摘要函数保留兼容包装。
+- `_RefactorWorkflow.judge()` 只发布阶段事件并传入 Judge、图后端和轨迹回调。
 - `orchestrator_finalize.py` 独立实现 Finalize 节点：终态持久化、失败轨迹、报告/产物回调、`RefactorRunResult` 装配和最终分析事件集中在该模块。
-- `_RefactorWorkflow.finalize()` 只发布阶段事件并显式注入稳定回调及运行上下文，报告渲染仍由原兼容入口提供。
+- `_RefactorWorkflow.finalize()` 只发布阶段事件并显式注入稳定回调及运行上下文。
 - `orchestrator_report.py` 独立实现决策摘要、技术附录、证据矩阵、图轨迹和多 Agent 轮次的 Markdown 渲染。
-- `orchestrator.py` 保留 `_build_report()` 与 `_build_technical_report()` 原参数签名作为兼容层，调用方不会接触新的内部格式化函数。
+- `orchestrator.py` 通过 `run_finalize_execution_node` 直接注入 `orchestrator_report.build_report`，不再保留重复的兼容包装。
 
 ## 完成状态
 
@@ -181,4 +181,4 @@ Store、Webhook、CLI 和 Orchestrator 的目标业务边界已经完成渐进�
 - Worker 重复启动/停止和单任务心跳线程退出有直接回归测试；SQLite Store 始终通过连接工厂为每次操作创建线程内连接，并通过并发、锁等待和跨进程快照测试。
 - Mock、真实 DeepSeek 配置选择和 Docker sandbox 命令/失败关闭路径分别有独立测试。当前 Docker Desktop daemon 未运行，因此本次没有执行真实容器 smoke，也没有发起真实 DeepSeek 网络调用。
 - 当前环境采样：四个核心门面的冷导入约 1.75 秒；代表性单任务墙钟约 4.29 秒，其中 pytest 约 3.97 秒、峰值追踪内存约 31.2 MiB、目标模块导入约 0.0006 秒；未发现明显回归或临时目录残留。
-- 原 CLI 命令/参数、FastAPI 路由与响应字段、Pydantic 模型以及 Store/Orchestrator 门面继续由兼容层和集成测试覆盖；本次拆分不要求调用方迁移。
+- 原 CLI 命令/参数、FastAPI 路由与响应字段、Pydantic 模型继续由集成测试覆盖；2026 年 8 月已移除 Orchestrator 的重复兼容包装（`_build_report`、`_summarize_*`、`_request_with_memory` 等），调用方统一导入拆分后的模块。

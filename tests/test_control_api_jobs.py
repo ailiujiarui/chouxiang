@@ -5,7 +5,6 @@ import pytest
 from refactor_agent.control_api import normalize_git_ref as PublicNormalizeGitRef
 from refactor_agent.control_api import normalize_repo_path as PublicNormalizeRepoPath
 from refactor_agent.control_api_jobs import (
-    build_dashboard_job_id,
     normalize_git_ref,
     normalize_repo_path,
     prepare_analysis_job,
@@ -16,7 +15,6 @@ from refactor_agent.control_api_requests import DashboardUrlJobRequest, SnippetJ
 from refactor_agent.locator import AUTO_TARGET_PATH
 from refactor_agent.models import AnalysisRequest, EvidenceLevel, RepositoryJobKind
 from refactor_agent.repository_allowlist import RepositoryNotAllowlistedError
-from refactor_agent.webhook import build_dashboard_job_id as CompatibleBuildDashboardJobId
 
 
 def test_prepare_dashboard_url_job_normalizes_and_preserves_legacy_job_shape() -> None:
@@ -122,7 +120,6 @@ def test_prepare_jobs_propagates_allowlist_denial_without_http_dependency() -> N
 def test_job_helper_compatibility_exports_are_stable() -> None:
     assert PublicNormalizeGitRef is normalize_git_ref
     assert PublicNormalizeRepoPath is normalize_repo_path
-    assert CompatibleBuildDashboardJobId is build_dashboard_job_id
 
 
 class _AllowlistPolicy:

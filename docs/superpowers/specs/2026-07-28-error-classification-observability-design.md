@@ -33,7 +33,6 @@ The code set includes the existing LLM classifications and adds persistence-spec
 | `CLIENT_ERROR` | Provider transport or non-auth client failure. | The language model request could not be completed. Try again. |
 | `PARSE_ERROR` | Provider response was invalid for the expected contract. | The language model returned an invalid result. Try again. |
 | `INPUT_TOO_LARGE` | Request exceeds the accepted input limit. | The submitted content is too large. Reduce it and try again. |
-| `INJECTION_DETECTED` | Untrusted input matched a prompt-injection safeguard. | The submitted content could not be processed safely. |
 | `DATABASE_LOCKED` | SQLite rejected an operation because the database is locked or busy. | The local database is busy. Try again shortly. |
 | `INTERNAL_ERROR` | An unexpected failure reached an isolation boundary. | The task could not be completed because of an internal error. |
 

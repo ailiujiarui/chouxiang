@@ -14,7 +14,6 @@ class ErrorCode(StrEnum):
     CLIENT_ERROR = "CLIENT_ERROR"
     PARSE_ERROR = "PARSE_ERROR"
     INPUT_TOO_LARGE = "INPUT_TOO_LARGE"
-    INJECTION_DETECTED = "INJECTION_DETECTED"
     DATABASE_LOCKED = "DATABASE_LOCKED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -27,7 +26,6 @@ _PUBLIC_MESSAGES = {
     ErrorCode.CLIENT_ERROR: "The language model request could not be completed. Try again.",
     ErrorCode.PARSE_ERROR: "The language model returned an invalid result. Try again.",
     ErrorCode.INPUT_TOO_LARGE: "The submitted content is too large. Reduce it and try again.",
-    ErrorCode.INJECTION_DETECTED: "The submitted content could not be processed safely.",
     ErrorCode.DATABASE_LOCKED: "The local database is busy. Try again shortly.",
     ErrorCode.INTERNAL_ERROR: "The task could not be completed because of an internal error.",
 }

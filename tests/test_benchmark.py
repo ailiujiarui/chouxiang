@@ -1,5 +1,4 @@
 import json
-import refactor_agent.cli as cli
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -7,9 +6,7 @@ from refactor_agent.benchmark import (
     BENCHMARK_CASES,
     BenchmarkObservation,
     render_benchmark_markdown,
-    render_manifest_benchmark_markdown,
     serialize_benchmark,
-    serialize_manifest_benchmark,
 )
 from refactor_agent.benchmark_runner import normalized_result_hash
 from refactor_agent.cli import app
@@ -57,13 +54,6 @@ def test_benchmark_serialization_and_markdown_are_reproducible():
     markdown = render_benchmark_markdown(observations)
     assert "Sample count: 1" in markdown
     assert "| simple | simple-function | SUCCESS | 1 | 5 -> 2 | 3 -> 1 | 100.0% | pass | 8.00 |" in markdown
-
-
-def test_cli_keeps_benchmark_compatibility_exports():
-    assert cli.render_benchmark_markdown is render_benchmark_markdown
-    assert cli.render_manifest_benchmark_markdown is render_manifest_benchmark_markdown
-    assert cli.serialize_benchmark is serialize_benchmark
-    assert cli.serialize_manifest_benchmark is serialize_manifest_benchmark
 
 
 def test_benchmark_cli_writes_json_and_markdown(tmp_path, monkeypatch):
