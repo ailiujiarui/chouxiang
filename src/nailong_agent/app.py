@@ -28,7 +28,8 @@ from nailong_agent.python_review import (
     PythonReviewBubbleFormatter,
     RecentPythonSourceProvider,
 )
-from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
+from nailong_agent.renderer import PySide6Renderer
+from nailong_agent.renderer_core import NullRenderer, PopupRenderer
 from nailong_agent.windows_activity import create_foreground_source, create_idle_source
 
 

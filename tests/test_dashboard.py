@@ -8,12 +8,14 @@ import pytest
 from refactor_agent import dashboard_views
 from refactor_agent import dashboard as dashboard_module
 from refactor_agent.dashboard_api import DashboardApiClient, DashboardApiError
-from refactor_agent.dashboard_views import build_event_timeline, build_task_rows, job_actions
-from refactor_agent.dashboard import (
+from refactor_agent.dashboard import load_dashboard_runs
+from refactor_agent.dashboard_views import (
     build_agent_chat_messages,
     build_before_after_rows,
+    build_event_timeline,
     build_overview_chart_rows,
-    load_dashboard_runs,
+    build_task_rows,
+    job_actions,
     load_trajectory,
 )
 from refactor_agent.models import RunRecord

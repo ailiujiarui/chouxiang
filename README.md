@@ -63,7 +63,7 @@ Input Adapter
 
 ## 一键启动
 
-需要 Windows、Docker Desktop 和 Python 3.11 或更高版本。首次使用时：
+需要 Windows 和 Python 3.11 或更高版本；Docker Desktop 可选。首次使用时：
 
 ```text
 1. 将 .env.example 复制为 .env
@@ -75,6 +75,12 @@ Input Adapter
 后台启动这三个进程。Docker 只构建和运行用于执行不可信代码的安全 sandbox，
 不再构建应用镜像，也不通过 Compose 启动日常产品。启动完成后会自动打开
 Dashboard；后续仍然只需双击 `start.cmd`。
+
+**Docker 可选**：检测不到 Docker 或 daemon 未运行时，启动器降级为本地
+`subprocess` 沙箱并给出警告。降级模式只保留**审查模式**（`REVIEW`，不执行
+代码）：所有需要执行不可信生成代码的任务（`verified-refactor`、URL 仓库分析）
+会被 `/capabilities` 与 API 层双重禁用，产品不会在宿主机上直接运行 LLM 生成的代码。
+要启用完整执行能力，请安装并启动 Docker Desktop。
 
 默认地址：
 

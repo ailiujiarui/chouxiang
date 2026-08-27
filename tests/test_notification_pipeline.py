@@ -24,7 +24,7 @@ from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.privacy_store import PrivacyStore
-from nailong_agent.renderer import NullRenderer
+from nailong_agent.renderer_core import NullRenderer
 from refactor_agent.analysis_events import AnalysisEvent, AnalysisEventType
 
 

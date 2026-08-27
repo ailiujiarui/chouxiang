@@ -108,7 +108,7 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $dockerCommand) {
-    Write-Warning "Docker CLI was not found. Falling back to the local subprocess sandbox; untrusted generated code runs directly on the host. Install Docker Desktop for the recommended isolated sandbox."
+    Write-Warning "Docker CLI was not found. Running in review-only mode: verified-refactor and URL analysis tasks are disabled, and no untrusted generated code is executed on the host. Install Docker Desktop for full sandboxed execution."
     $dockerAvailable = $false
 } else {
     $savedErrorAction = $ErrorActionPreference
@@ -117,7 +117,7 @@ if (-not $dockerCommand) {
     $dockerInfoExitCode = $LASTEXITCODE
     $ErrorActionPreference = $savedErrorAction
     if ($dockerInfoExitCode -ne 0) {
-        Write-Warning "Docker Desktop is not running or is not reachable. Falling back to the local subprocess sandbox; untrusted generated code runs directly on the host. Start Docker Desktop to enable the recommended isolated sandbox."
+        Write-Warning "Docker Desktop is not running or is not reachable. Running in review-only mode: verified-refactor and URL analysis tasks are disabled, and no untrusted generated code is executed on the host. Start Docker Desktop to enable full sandboxed execution."
         $dockerAvailable = $false
     } else {
         $dockerAvailable = $true
@@ -178,7 +178,7 @@ if ($dockerAvailable) {
     }
     $sandboxBackend = "docker"
 } else {
-    Write-Host "Sandbox:                  subprocess (degraded, no Docker)"
+    Write-Host "Sandbox:                  review-only (degraded, no Docker)"
 }
 
 $dataDirectory = Join-Path $repoRoot ".runs"

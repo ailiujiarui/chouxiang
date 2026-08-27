@@ -190,3 +190,9 @@ Store、Webhook、CLI 和 Orchestrator 的目标业务边界已经完成渐进�
 - `nailong_agent` 依赖 `refactor_agent` 的共享基础设施（`analysis_events` 事件契约、`sqlite_runtime`、`artifacts.sanitize_text`、`ast_analyzer`）和懒加载的 LLM 适配器；物理拆包仍需声明 `refactor-agent` 为依赖，收益小于打包复杂度。
 - 拆包所需的边界已经落成：依赖方向单向（`refactor_agent` 永不导入 `nailong_agent`）、桌面包只通过白名单接缝消费引擎、`tests/test_module_boundaries.py` 持续守卫这两条。
 - 未来拆分是机械操作：把 `src/nailong_agent/` 移到独立包目录并新增 pyproject（`dependencies = ["refactor-agent", "PySide6>=6.7", ...]`），启动脚本与 CI 按新包名调整即可，业务代码无需迁移。
+
+## God File 处理（2026-08-27）
+
+- `dashboard.py` 已拆分：纯格式化/派生 helper 与 `DashboardRun`/`DashboardChatMessage` 迁入 `dashboard_views.py`（960 → 701 行），`dashboard.py` 只保留 Streamlit 外壳与 `load_dashboard_runs`。外部调用方（`arena_export.py`、测试）改从 `dashboard_views` 导入。
+- `renderer.py` 已拆分：气泡几何、状态映射、渲染器协议与 `NullRenderer` 迁入 `renderer_core.py`（977 → 709 行），`PySide6Renderer`（Qt 耦合）留在 `renderer.py`。`app.py` 与测试改从 `renderer_core` 导入纯件。
+- `ast_analyzer.py`（约 1060 行）**保持单体**：它是一组紧密耦合的安全守卫（`controlled_subtree_rewrite`、`validate_candidate_source`、`_import_change_findings`、`_safety_findings` 等共享 `BLOCKED_*` 常量并互相引用），拆分收益低于破坏安全边界的风险；后续如拆分应只移动纯度量函数，不得动重写与安全校验路径。

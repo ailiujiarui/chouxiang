@@ -11,7 +11,7 @@ from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.personality_agent import PetPersonalityAgent
 from nailong_agent.pet_state import PetEmotion
-from nailong_agent.renderer import NullRenderer
+from nailong_agent.renderer_core import NullRenderer
 
 
 class MutableClock:
