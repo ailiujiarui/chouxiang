@@ -356,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         ActivityPersonalityOrchestrator(
             personality_agent=PetPersonalityAgent(
                 intensity=notification_store.get_preferences().personality_intensity.lower(),
+                abstraction=notification_store.get_preferences().abstraction_level.lower(),
             ),
             notifications=notifications,
             recognizer=ActivityRecognizer(

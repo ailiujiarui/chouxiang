@@ -19,7 +19,11 @@ function Import-LocalEnvironment {
         "REFACTOR_AGENT_SQLITE_JOURNAL_MODE",
         "REFACTOR_AGENT_SQLITE_BUSY_TIMEOUT_MS",
         "PYTHON_BASE_IMAGE",
-        "PIP_INDEX_URL"
+        "PIP_INDEX_URL",
+        "REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS",
+        "REFACTOR_AGENT_STARTUP_PORT_FALLBACK",
+        "REFACTOR_AGENT_MAX_RESTARTS",
+        "REFACTOR_AGENT_WATCHDOG"
     )
 
     foreach ($line in Get-Content -LiteralPath $environmentFile -Encoding utf8) {
@@ -66,11 +70,41 @@ function Get-ManagedProcessId([object]$process) {
     return [int]$process.Id
 }
 
-function Assert-PortAvailable([int]$port) {
-    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-    if ($listener) {
-        throw "Port $port is already used by another process. Stop that process, then run start.cmd again."
+function Find-PortOwner([int]$port) {
+    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) {
+        return $null
     }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
+    if (-not $process) {
+        return $null
+    }
+    return [pscustomobject]@{ ProcessId = $listener.OwningProcess; Name = $process.Name; CommandLine = $process.CommandLine }
+}
+
+function Resolve-Port([int]$preferred, [string]$label) {
+    if (-not (Find-PortOwner $preferred)) {
+        return $preferred
+    }
+    if ($portFallbackEnabled) {
+        for ($candidate = $preferred + 1; $candidate -lt $preferred + 20; $candidate++) {
+            if (-not (Find-PortOwner $candidate)) {
+                Write-Warning "Port $preferred for $label is in use; using port $candidate instead."
+                return $candidate
+            }
+        }
+        throw "Could not find a free port near $preferred for $label."
+    }
+    $owner = Find-PortOwner $preferred
+    $ownerDetail = "PID $($owner.ProcessId) ($($owner.Name))"
+    if ($owner.CommandLine) {
+        $ownerDetail += "`n  command: $($owner.CommandLine)"
+    }
+    throw (
+        "Port $preferred for $label is already in use by $ownerDetail.`n" +
+        "  Stop that process, or run stop.cmd if it is a leftover managed process, then run start.cmd again.`n" +
+        "  To auto-pick a free port instead, set REFACTOR_AGENT_STARTUP_PORT_FALLBACK=1 in .env."
+    )
 }
 
 function Test-Healthy([string]$url) {
@@ -82,11 +116,81 @@ function Test-Healthy([string]$url) {
     return $response -and $response.StatusCode -eq 200
 }
 
+function Wait-Healthy([string]$url, [int]$processId, [string]$label) {
+    $deadline = (Get-Date).AddSeconds($startupTimeoutSeconds)
+    $delay = 1
+    while ((Get-Date) -lt $deadline) {
+        if (Test-Healthy $url) {
+            return $true
+        }
+        if ($processId -gt 0 -and -not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+            Write-Warning "$label process exited while waiting for health; giving up on it."
+            return $false
+        }
+        Start-Sleep -Seconds $delay
+        $delay = [Math]::Min($delay * 2, 5)
+    }
+    return $false
+}
+
 function Show-LogTail([string]$path) {
     if (Test-Path -LiteralPath $path) {
         Write-Host "--- $path ---"
         Get-Content -LiteralPath $path -Tail 80 -ErrorAction SilentlyContinue
     }
+}
+
+function Rotate-Log([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        return
+    }
+    $stamp = Get-Date -Format "yyyyMMddHHmmss"
+    Move-Item -LiteralPath $path -Destination "$path.$stamp" -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath (Split-Path $path) -Filter "$(Split-Path $path -Leaf).*" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -Skip $maxRotatedLogs |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+function Clear-StalePidFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        return
+    }
+    $raw = Get-Content -LiteralPath $path -Encoding ascii | Select-Object -First 1
+    $managedProcessId = 0
+    if ([int]::TryParse($raw, [ref]$managedProcessId) -and (Get-Process -Id $managedProcessId -ErrorAction SilentlyContinue)) {
+        return
+    }
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+
+function Start-ManagedService(
+    [string]$label,
+    [string[]]$arguments,
+    [string]$outLog,
+    [string]$errLog,
+    [int]$restartLimit
+) {
+    Rotate-Log $outLog
+    Rotate-Log $errLog
+    for ($attempt = 1; $attempt -le $restartLimit; $attempt++) {
+        $process = Start-Process `
+            -FilePath $venvPythonw `
+            -ArgumentList $arguments `
+            -WorkingDirectory $repoRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -PassThru
+        Start-Sleep -Seconds 2
+        if (-not $process.HasExited) {
+            return $process
+        }
+        Write-Warning "$label exited during startup (attempt $attempt/$restartLimit, code $($process.ExitCode)). Retrying..."
+        Start-Sleep -Seconds 2
+    }
+    Show-LogTail $errLog
+    throw "$label failed to stay alive after $restartLimit startup attempts. See $errLog."
 }
 
 Import-LocalEnvironment
@@ -97,6 +201,12 @@ if (-not $env:REFACTOR_AGENT_MOCK_LLM) {
 if (-not $env:REFACTOR_AGENT_ALLOWED_REPOSITORIES) {
     $env:REFACTOR_AGENT_ALLOWED_REPOSITORIES = "owner/repository"
 }
+
+$startupTimeoutSeconds = if ($env:REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS) { [double]$env:REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS } else { 120 }
+$portFallbackEnabled = $env:REFACTOR_AGENT_STARTUP_PORT_FALLBACK -eq "1"
+$maxRestarts = if ($env:REFACTOR_AGENT_MAX_RESTARTS) { [int]$env:REFACTOR_AGENT_MAX_RESTARTS } else { 3 }
+$watchdogEnabled = $env:REFACTOR_AGENT_WATCHDOG -ne "0"
+$maxRotatedLogs = 5
 
 $systemPython = Get-Command python -ErrorAction SilentlyContinue
 if (-not $systemPython) {
@@ -193,123 +303,125 @@ $env:REFACTOR_AGENT_DATABASE = Join-Path $dataDirectory "refactor_agent.sqlite"
 $env:REFACTOR_AGENT_GITHUB_WORKSPACE_ROOT = $githubWorkspaceDirectory
 $env:REFACTOR_AGENT_SANDBOX_BACKEND = $sandboxBackend
 $env:REFACTOR_AGENT_DASHBOARD_DB = $env:REFACTOR_AGENT_DATABASE
-$env:REFACTOR_AGENT_API_URL = "http://127.0.0.1:8000"
 Remove-Item Env:REFACTOR_AGENT_SANDBOX_VOLUME -ErrorAction SilentlyContinue
 Remove-Item Env:REFACTOR_AGENT_SANDBOX_DATA_ROOT -ErrorAction SilentlyContinue
 
+Clear-StalePidFile (Join-Path $dataDirectory "api.pid")
+Clear-StalePidFile (Join-Path $dataDirectory "dashboard.pid")
+Clear-StalePidFile (Join-Path $dataDirectory "nailong-desktop.pid")
+
 $apiPattern = "-m\s+refactor_agent\.cli\s+serve(?:\s|$)"
-$dashboardPattern = "-m\s+streamlit\s+run.*refactor_agent[\\/]dashboard\.py.*--server\.port\s+8501"
-$nailongPattern = "-m\s+nailong_agent(?:\s|$).*--data-dir\s+`"?" + [regex]::Escape($dataDirectory)
+$nailongPattern = "-m\s+nailong_agent(?:\s|$).*--data-dir\s+`"?`"?" + [regex]::Escape($dataDirectory)
 
 $apiProcess = Find-ManagedProcess $apiPattern $venvPythonw
+$apiPort = 8000
 if (-not $apiProcess) {
-    Assert-PortAvailable 8000
+    $apiPort = Resolve-Port 8000 "Local API"
     $apiOut = Join-Path $logDirectory "api.stdout.log"
     $apiError = Join-Path $logDirectory "api.stderr.log"
-    Remove-Item -LiteralPath $apiOut, $apiError -Force -ErrorAction SilentlyContinue
-    $apiProcess = Start-Process `
-        -FilePath $venvPythonw `
-        -ArgumentList @("-m", "refactor_agent.cli", "serve", "--host", "127.0.0.1", "--port", "8000") `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $apiOut `
-        -RedirectStandardError $apiError `
-        -PassThru
-    Start-Sleep -Seconds 1
-    if ($apiProcess.HasExited) {
-        Show-LogTail $apiError
-        throw "Local API exited during startup with code $($apiProcess.ExitCode)."
-    }
+    $apiProcess = Start-ManagedService "Local API" @("-m", "refactor_agent.cli", "serve", "--host", "127.0.0.1", "--port", "$apiPort") $apiOut $apiError $maxRestarts
     $apiProcessId = Get-ManagedProcessId $apiProcess
-    Write-Host "Local API:                started (PID $apiProcessId)"
+    Write-Host "Local API:                started (PID $apiProcessId, port $apiPort)"
 } else {
     $apiProcessId = Get-ManagedProcessId $apiProcess
-    Write-Host "Local API:                already running (PID $apiProcessId)"
+    Write-Host "Local API:                already running (PID $apiProcessId, port $apiPort)"
 }
 Set-Content -LiteralPath (Join-Path $dataDirectory "api.pid") -Value $apiProcessId -Encoding ascii
+$apiBaseUrl = "http://127.0.0.1:$apiPort"
+$env:REFACTOR_AGENT_API_URL = $apiBaseUrl
 
-$dashboardProcess = Find-ManagedProcess $dashboardPattern $venvPythonw
+$dashboardScript = Join-Path $repoRoot "src\refactor_agent\dashboard.py"
+$dashboardProcess = Find-ManagedProcess "-m\s+streamlit\s+run.*refactor_agent[\\/]dashboard\.py.*--server\.port\s+8501" $venvPythonw
+$dashboardPort = 8501
 if (-not $dashboardProcess) {
-    Assert-PortAvailable 8501
+    $dashboardPort = Resolve-Port 8501 "Dashboard"
     $dashboardOut = Join-Path $logDirectory "dashboard.stdout.log"
     $dashboardError = Join-Path $logDirectory "dashboard.stderr.log"
-    Remove-Item -LiteralPath $dashboardOut, $dashboardError -Force -ErrorAction SilentlyContinue
-    $dashboardScript = Join-Path $repoRoot "src\refactor_agent\dashboard.py"
-    $dashboardProcess = Start-Process `
-        -FilePath $venvPythonw `
-        -ArgumentList @(
-            "-m", "streamlit", "run", "`"$dashboardScript`"",
-            "--server.address", "127.0.0.1",
-            "--server.port", "8501",
-            "--server.headless", "true",
-            "--browser.gatherUsageStats", "false"
-        ) `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $dashboardOut `
-        -RedirectStandardError $dashboardError `
-        -PassThru
-    Start-Sleep -Seconds 1
-    if ($dashboardProcess.HasExited) {
-        Show-LogTail $dashboardError
-        throw "Dashboard exited during startup with code $($dashboardProcess.ExitCode)."
-    }
+    $dashboardProcess = Start-ManagedService "Dashboard" @(
+        "-m", "streamlit", "run", "`"$dashboardScript`"",
+        "--server.address", "127.0.0.1",
+        "--server.port", "$dashboardPort",
+        "--server.headless", "true",
+        "--browser.gatherUsageStats", "false"
+    ) $dashboardOut $dashboardError $maxRestarts
     $dashboardProcessId = Get-ManagedProcessId $dashboardProcess
-    Write-Host "Dashboard:                started (PID $dashboardProcessId)"
+    Write-Host "Dashboard:                started (PID $dashboardProcessId, port $dashboardPort)"
 } else {
     $dashboardProcessId = Get-ManagedProcessId $dashboardProcess
-    Write-Host "Dashboard:                already running (PID $dashboardProcessId)"
+    Write-Host "Dashboard:                already running (PID $dashboardProcessId, port $dashboardPort)"
 }
 Set-Content -LiteralPath (Join-Path $dataDirectory "dashboard.pid") -Value $dashboardProcessId -Encoding ascii
 
-$deadline = (Get-Date).AddMinutes(2)
-do {
-    Start-Sleep -Seconds 2
-    $apiHealthy = Test-Healthy "http://127.0.0.1:8000/health"
-    $dashboardHealthy = Test-Healthy "http://127.0.0.1:8501/_stcore/health"
-    if ($apiHealthy -and $dashboardHealthy) {
-        break
-    }
-} while ((Get-Date) -lt $deadline)
-
-if (-not $apiHealthy -or -not $dashboardHealthy) {
+$apiHealthy = Wait-Healthy "$apiBaseUrl/health" $apiProcessId "Local API"
+if (-not $apiHealthy) {
     Show-LogTail (Join-Path $logDirectory "api.stderr.log")
-    Show-LogTail (Join-Path $logDirectory "dashboard.stderr.log")
-    throw "Local services did not become healthy within two minutes. Run stop.cmd, then review .runs\logs."
+    throw "Local API did not become healthy within $startupTimeoutSeconds seconds. See .runs\logs."
+}
+$dashboardHealthy = Wait-Healthy "http://127.0.0.1:$dashboardPort/_stcore/health" $dashboardProcessId "Dashboard"
+if (-not $dashboardHealthy) {
+    Write-Warning "Dashboard did not become healthy within $startupTimeoutSeconds seconds; continuing with the API and Nailong only. See .runs\logs\dashboard.stderr.log"
 }
 
 $nailongProcess = Find-ManagedProcess $nailongPattern $venvPythonw
 if (-not $nailongProcess) {
     $nailongOut = Join-Path $logDirectory "nailong.stdout.log"
     $nailongError = Join-Path $logDirectory "nailong.stderr.log"
-    Remove-Item -LiteralPath $nailongOut, $nailongError -Force -ErrorAction SilentlyContinue
-    $nailongProcess = Start-Process `
-        -FilePath $venvPythonw `
-        -ArgumentList @(
+    try {
+        $nailongProcess = Start-ManagedService "Nailong Desktop" @(
             "-m", "nailong_agent",
-            "--analysis-url", "http://127.0.0.1:8000",
+            "--analysis-url", $apiBaseUrl,
             "--data-dir", "`"$dataDirectory`""
-        ) `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $nailongOut `
-        -RedirectStandardError $nailongError `
-        -PassThru
-    Start-Sleep -Seconds 1
-    if ($nailongProcess.HasExited) {
-        Show-LogTail $nailongError
-        throw "Nailong Desktop exited during startup with code $($nailongProcess.ExitCode)."
+        ) $nailongOut $nailongError $maxRestarts
+        $nailongProcessId = Get-ManagedProcessId $nailongProcess
+        Write-Host "Nailong Desktop:          started (PID $nailongProcessId)"
+    } catch {
+        $nailongProcessId = 0
+        Write-Warning "Nailong Desktop failed to start; continuing without the pet. See .runs\logs\nailong.stderr.log"
     }
-    $nailongProcessId = Get-ManagedProcessId $nailongProcess
-    Write-Host "Nailong Desktop:          started (PID $nailongProcessId)"
 } else {
     $nailongProcessId = Get-ManagedProcessId $nailongProcess
     Write-Host "Nailong Desktop:          already running (PID $nailongProcessId)"
 }
-Set-Content -LiteralPath (Join-Path $dataDirectory "nailong-desktop.pid") -Value $nailongProcessId -Encoding ascii
+if ($nailongProcessId -gt 0) {
+    Set-Content -LiteralPath (Join-Path $dataDirectory "nailong-desktop.pid") -Value $nailongProcessId -Encoding ascii
+}
 
-Write-Host "Refactor Agent API:       http://127.0.0.1:8000"
-Write-Host "Refactor Agent Dashboard: http://127.0.0.1:8501"
+if ($watchdogEnabled -and $apiHealthy) {
+    $servicesManifest = Join-Path $dataDirectory "services.json"
+    $manifest = @(
+        [pscustomobject]@{
+            name = "Local API"
+            pid_file = "api.pid"
+            args = @("-m", "refactor_agent.cli", "serve", "--host", "127.0.0.1", "--port", "$apiPort")
+        }
+        [pscustomobject]@{
+            name = "Dashboard"
+            pid_file = "dashboard.pid"
+            args = @("-m", "streamlit", "run", "`"$dashboardScript`"", "--server.address", "127.0.0.1", "--server.port", "$dashboardPort", "--server.headless", "true", "--browser.gatherUsageStats", "false")
+        }
+        [pscustomobject]@{
+            name = "Nailong Desktop"
+            pid_file = "nailong-desktop.pid"
+            args = @("-m", "nailong_agent", "--analysis-url", $apiBaseUrl, "--data-dir", "`"$dataDirectory`"")
+        }
+    ) | ConvertTo-Json -Depth 4
+    Set-Content -LiteralPath $servicesManifest -Value $manifest -Encoding utf8
+    Remove-Item -LiteralPath (Join-Path $dataDirectory "watchdog.stop") -Force -ErrorAction SilentlyContinue
+    $watchdogScript = Join-Path $PSScriptRoot "watchdog.ps1"
+    $watchdogProcess = Start-Process `
+        -FilePath (Get-Command powershell).Source `
+        -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$watchdogScript`"", "`"$dataDirectory`"") `
+        -WorkingDirectory $repoRoot `
+        -WindowStyle Hidden `
+        -PassThru
+    Set-Content -LiteralPath (Join-Path $dataDirectory "watchdog.pid") -Value $watchdogProcess.Id -Encoding ascii
+    Write-Host "Watchdog:                 started (PID $watchdogProcess.Id)"
+} else {
+    Write-Host "Watchdog:                 disabled"
+}
+
+Write-Host "Refactor Agent API:       $apiBaseUrl"
+Write-Host "Refactor Agent Dashboard: http://127.0.0.1:$dashboardPort"
 if ($env:REFACTOR_AGENT_MOCK_LLM -eq "true") {
     Write-Host "Product Mode:             offline demo"
 } elseif ($env:DEEPSEEK_API_KEY) {
@@ -318,4 +430,6 @@ if ($env:REFACTOR_AGENT_MOCK_LLM -eq "true") {
     Write-Warning "DEEPSEEK_API_KEY is not configured. The product is running, but LLM task entry points are disabled."
 }
 
-Start-Process "http://127.0.0.1:8501"
+if ($dashboardHealthy) {
+    Start-Process "http://127.0.0.1:$dashboardPort"
+}

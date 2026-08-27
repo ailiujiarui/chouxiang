@@ -425,6 +425,7 @@ def test_preferences_and_application_rules_survive_store_reopen(tmp_path: Path) 
         do_not_disturb_end=time(7, 0),
         maximum_popups_per_day=8,
         personality_intensity="HIGH",
+        abstraction_level="SURREAL",
         game_tease_enabled=True,
     )
     store.save_preferences(preferences)
@@ -460,9 +461,11 @@ def test_legacy_preferences_table_adds_game_tease_disabled_by_default(tmp_path: 
     store = NotificationStore(database)
 
     assert store.get_preferences().game_tease_enabled is False
+    assert store.get_preferences().abstraction_level == "LITERAL"
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(pet_preferences)")}
     assert "game_tease_enabled" in columns
+    assert "abstraction_level" in columns
 
 
 def test_notification_service_manual_pause_persists_and_is_exposed_in_status(tmp_path: Path) -> None:

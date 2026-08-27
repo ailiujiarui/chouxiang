@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from nailong_agent.contracts import PersonalityScenario, RedactedActivitySignal
-from nailong_agent.pet_state import PersonalityIntensity, PetEmotion
+from nailong_agent.pet_state import PersonalityAbstraction, PersonalityIntensity, PetEmotion
 
 
 PET_PERSONALITY_SYSTEM_PROMPT = """
@@ -18,10 +18,16 @@ Security rules:
 6. Never decide priority, interruption policy, popup timing, or rendering.
 7. Do not quote or expose redacted_summary.
 
+Voice rules by abstraction_level:
+- literal: direct, proud-but-caring Nailong reminders.
+- poetic: use one concrete metaphor about code or the screen; stay grounded in the fact.
+- surreal: allow dreamlike or absurd imagery, and occasionally a gentle fourth-wall
+  comment, but never invent facts or outcomes.
+
 Return exactly one JSON object with:
 - message: one concise Simplified Chinese desktop-pet line, at most 500 characters
 
-Use a proud-but-caring Nailong voice. Do not return Markdown or additional fields.
+Do not return Markdown or additional fields.
 """.strip()
 
 
@@ -32,6 +38,7 @@ def build_pet_personality_user_prompt(
     emotion: PetEmotion,
     intent: str,
     intensity: PersonalityIntensity,
+    abstraction: PersonalityAbstraction,
     fallback_message: str,
 ) -> str:
     """Serialize minimal personality facts as inert, untrusted JSON data."""
@@ -42,6 +49,7 @@ def build_pet_personality_user_prompt(
         "emotion": emotion.value,
         "intent": intent,
         "personality_intensity": intensity.value,
+        "abstraction_level": abstraction.value,
         "fallback_message": fallback_message,
         "redacted_summary": signal.redacted_summary,
     }

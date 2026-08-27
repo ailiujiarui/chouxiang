@@ -35,6 +35,14 @@
 - 语气是中度傲娇：先说具体观察到的代码或活动，再补一句“本龙只是顺便提醒”的态度，不攻击用户本人；
 - 它也会选择安静：遇到免打扰、暂停、全屏、会议、冷却或隐私未授权时，不会强行冒泡。
 
+抽象度（`abstraction_level` 偏好，默认 `LITERAL`，持久化于桌宠设置）：
+
+- `LITERAL`：直白提醒，现状不变；
+- `POETIC`：把状态写成一句隐喻，如“你的光标像一只认真的萤火虫，正挨个点亮分号”；
+- `SURREAL`：更荒诞的表达，并在安静状态下偶发打破第四面墙的元评论，如“本龙偶尔怀疑，自己只是你终端里一场还不错的幻觉”。
+
+抽象只改变措辞，绝不改变技术事实、优先级或打断策略；识别仍然以本地分类为准。
+
 奶龙不是 Dashboard 浮层，也不是普通通知器；它是一个有状态、有边界、偶尔嘴硬的桌面陪伴角色。
 
 产品本身不接收 GitHub Webhook，不创建分支、commit、push、Pull Request 或
@@ -81,6 +89,15 @@ Dashboard；后续仍然只需双击 `start.cmd`。
 代码）：所有需要执行不可信生成代码的任务（`verified-refactor`、URL 仓库分析）
 会被 `/capabilities` 与 API 层双重禁用，产品不会在宿主机上直接运行 LLM 生成的代码。
 要启用完整执行能力，请安装并启动 Docker Desktop。
+
+启动弹性（全部可选，在 `.env` 中设置）：
+
+- `REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS=120`：API/Dashboard 健康等待上限（指数退避重试）。
+- `REFACTOR_AGENT_STARTUP_PORT_FALLBACK=1`：默认端口被占用时自动顺延寻找空闲端口；不设置时给出占用进程的 PID 与命令行并提示。
+- `REFACTOR_AGENT_MAX_RESTARTS=3`：服务启动初期退出时的自动重试次数。
+- `REFACTOR_AGENT_WATCHDOG=1`：后台 watchdog 每 10 秒检测三个服务进程，异常退出自动重启（`stop.cmd` 会先停掉 watchdog）。
+
+日志默认按时间戳滚动保留最近 5 份（`.runs\logs\*.log.<时间戳>`），启动前会清理残留 PID 文件；Dashboard 启动失败时降级为"API + 奶龙"，奶龙启动失败时不影响 API/Dashboard。
 
 默认地址：
 

@@ -68,7 +68,7 @@ class NotificationStore:
                     do_not_disturb_start = ?, do_not_disturb_end = ?,
                     minimum_cooldown_seconds = ?, maximum_cooldown_seconds = ?,
                     maximum_popups_per_day = ?, personality_intensity = ?,
-                    game_tease_enabled = ?
+                    abstraction_level = ?, game_tease_enabled = ?
                 WHERE id = 1
                 """,
                 (
@@ -80,6 +80,7 @@ class NotificationStore:
                     preferences.maximum_cooldown_seconds,
                     preferences.maximum_popups_per_day,
                     preferences.personality_intensity,
+                    preferences.abstraction_level,
                     int(preferences.game_tease_enabled),
                 ),
             )
@@ -749,6 +750,7 @@ class NotificationStore:
             maximum_cooldown_seconds=int(row["maximum_cooldown_seconds"]),
             maximum_popups_per_day=int(row["maximum_popups_per_day"]),
             personality_intensity=row["personality_intensity"],
+            abstraction_level=row["abstraction_level"],
             game_tease_enabled=bool(row["game_tease_enabled"]),
         )
 
@@ -820,6 +822,8 @@ class NotificationStore:
                     maximum_popups_per_day INTEGER NOT NULL DEFAULT 12 CHECK(maximum_popups_per_day >= 0),
                     personality_intensity TEXT NOT NULL DEFAULT 'STANDARD'
                         CHECK(personality_intensity IN ('LOW', 'STANDARD', 'HIGH')),
+                    abstraction_level TEXT NOT NULL DEFAULT 'LITERAL'
+                        CHECK(abstraction_level IN ('LITERAL', 'POETIC', 'SURREAL')),
                     game_tease_enabled INTEGER NOT NULL DEFAULT 0 CHECK(game_tease_enabled IN (0, 1))
                 );
 
@@ -867,6 +871,10 @@ class NotificationStore:
             if "game_tease_enabled" not in columns:
                 connection.execute(
                     "ALTER TABLE pet_preferences ADD COLUMN game_tease_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            if "abstraction_level" not in columns:
+                connection.execute(
+                    "ALTER TABLE pet_preferences ADD COLUMN abstraction_level TEXT NOT NULL DEFAULT 'LITERAL'"
                 )
             connection.execute(
                 "UPDATE notification_intents SET status = 'PENDING' WHERE status = 'DISPLAYING'"

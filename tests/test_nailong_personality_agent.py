@@ -9,9 +9,17 @@ from nailong_agent.contracts import (
     PersonalityScenario,
     RedactedActivitySignal,
 )
-from nailong_agent.personality_agent import PetPersonalityAgent
+from nailong_agent.personality_agent import (
+    PetPersonalityAgent,
+    _ABSTRACT_MESSAGES,
+    _META_MESSAGES,
+)
 from nailong_agent.pet_graph import PET_NODE_ORDER
-from nailong_agent.pet_state import PersonalityIntensity, PetEmotion
+from nailong_agent.pet_state import (
+    PersonalityAbstraction,
+    PersonalityIntensity,
+    PetEmotion,
+)
 from refactor_agent.llm import DeepSeekClient
 
 
@@ -361,3 +369,76 @@ def test_deepseek_generic_provider_uses_caller_prompts_without_refactor_prompt(
         {"role": "system", "content": "pet system prompt"},
         {"role": "user", "content": "pet user data"},
     ]
+
+
+def test_poetic_abstraction_uses_poetic_copy() -> None:
+    for activity, expected in {
+        "idle": _ABSTRACT_MESSAGES[PersonalityAbstraction.POETIC][PersonalityScenario.IDLE],
+        "test_failed": _ABSTRACT_MESSAGES[PersonalityAbstraction.POETIC][PersonalityScenario.TEST_FAILED],
+    }.items():
+        state = PetPersonalityAgent(abstraction=PersonalityAbstraction.POETIC).run(
+            make_input(classified_activity=activity)
+        )
+        assert state["response"].message == expected
+
+
+def test_surreal_coding_uses_surreal_copy() -> None:
+    state = PetPersonalityAgent(abstraction=PersonalityAbstraction.SURREAL).run(
+        make_input(classified_activity="coding")
+    )
+    assert state["response"].message == _ABSTRACT_MESSAGES[PersonalityAbstraction.SURREAL][
+        PersonalityScenario.CODING
+    ]
+
+
+def test_surreal_idle_emits_fourth_wall_meta_message() -> None:
+    for activity in ("idle", "long_work"):
+        state = PetPersonalityAgent(abstraction=PersonalityAbstraction.SURREAL).run(
+            make_input(classified_activity=activity)
+        )
+        assert state["response"].message in _META_MESSAGES
+
+
+def test_literal_abstraction_is_default_and_unchanged() -> None:
+    default = PetPersonalityAgent().run(make_input(classified_activity="coding"))
+    literal = PetPersonalityAgent(abstraction=PersonalityAbstraction.LITERAL).run(
+        make_input(classified_activity="coding")
+    )
+    assert default["response"].message == literal["response"].message
+    assert "萤火虫" not in default["response"].message
+
+
+def test_persona_version_encodes_abstraction() -> None:
+    state = PetPersonalityAgent(abstraction=PersonalityAbstraction.SURREAL).run(
+        make_input(classified_activity="coding")
+    )
+    assert state["response"].persona_version.endswith("-surreal")
+
+
+def test_llm_prompt_carries_abstraction_level() -> None:
+    provider = FakeProvider()
+    state = PetPersonalityAgent(
+        provider=provider,
+        abstraction=PersonalityAbstraction.POETIC,
+        response_confidence_threshold=0.99,
+    ).run(
+        make_input(
+            classified_activity="coding",
+            classification_confidence=0.5,
+            source="user",
+        )
+    )
+
+    assert state["llm_used"] is True
+    prompt = provider.calls[0]["user_prompt"]
+    assert "abstraction_level" in prompt
+    assert "poetic" in prompt
+
+
+def test_abstraction_never_fabricates_status_or_confidence() -> None:
+    surreal_failed = PetPersonalityAgent(abstraction=PersonalityAbstraction.SURREAL).run(
+        make_input(classified_activity="test_failed")
+    )
+    assert surreal_failed["scenario"] is PersonalityScenario.TEST_FAILED
+    assert surreal_failed["emotion"] is PetEmotion.CONCERNED
+    assert surreal_failed["response"].intent == "remind"
