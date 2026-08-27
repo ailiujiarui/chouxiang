@@ -26,9 +26,6 @@ from refactor_agent.control_api_requests import (
     SnippetJobRequest,
 )
 from refactor_agent.control_api_jobs import (
-    build_dashboard_job_id,
-    normalize_git_ref,
-    normalize_repo_path,
     prepare_analysis_job,
     prepare_dashboard_url_job,
     prepare_snippet_job,

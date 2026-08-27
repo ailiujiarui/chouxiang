@@ -1,8 +1,7 @@
 """Desktop pet application boundary for Nailong Agent."""
 
-from nailong_agent.activity_collector import ForegroundWindow, WindowActivityCollector
-from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.activity_collector import ForegroundWindow, IdleState, WindowActivityCollector
+from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
 from nailong_agent.activity_aggregator import ActivityEventAggregator
 from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.activity_recognizer import ActivityRecognizer

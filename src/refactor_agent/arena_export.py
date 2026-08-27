@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from refactor_agent.dashboard import DashboardRun, build_agent_chat_messages, load_dashboard_runs
+from refactor_agent.dashboard import load_dashboard_runs
+from refactor_agent.dashboard_views import DashboardRun, build_agent_chat_messages
 
 
 def write_arena_report(

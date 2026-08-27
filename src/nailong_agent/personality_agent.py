@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from random import choice
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,11 +18,12 @@ from nailong_agent.pet_prompts import (
     build_pet_personality_user_prompt,
 )
 from nailong_agent.pet_state import (
+    PersonalityAbstraction,
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
 )
-from refactor_agent.llm import LLMProvider
+from nailong_agent.llm_provider import LLMProvider
 
 
 class _LLMPersonalityResponse(BaseModel):
@@ -121,6 +123,41 @@ _CATCHPHRASE_STEMS = (
     "看吧，还得是本龙",
 )
 
+_ABSTRACT_MESSAGES: dict[PersonalityAbstraction, dict[PersonalityScenario, str]] = {
+    PersonalityAbstraction.POETIC: {
+        PersonalityScenario.ENTERTAINMENT: "屏幕那头很热闹，本龙这边很安静。",
+        PersonalityScenario.CODING: "你的光标像一只认真的萤火虫，正挨个点亮分号。",
+        PersonalityScenario.DEBUGGING: "错误躲进了括号的阴影里，本龙的龙角替你数到了第七层。",
+        PersonalityScenario.TEST_FAILED: "那条断言翻了个白眼，它觉得你给的期望太具体了。",
+        PersonalityScenario.TEST_SUCCEEDED: "测试亮成一串绿灯，像有人在夜里为你点了一排灯。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译的风终于吹过文件，本龙听见代码打了个哈欠。",
+        PersonalityScenario.LONG_WORK: "你写下的行已经绕城一圈，本龙替你看着路口。",
+        PersonalityScenario.IDLE: "屏幕睡了，光标也睡了，本龙守着这间亮着的空房间。",
+    },
+    PersonalityAbstraction.SURREAL: {
+        PersonalityScenario.ENTERTAINMENT: "那边的人影很热闹，这边的龙很抽象。",
+        PersonalityScenario.CODING: "你的函数在云里排队，本龙看不清它们排队要做什么。",
+        PersonalityScenario.DEBUGGING: "错误从第七层括号里探出头，说自己从未被定义过。",
+        PersonalityScenario.TEST_FAILED: "断言否认了它自己，现在连通过都变得可疑。",
+        PersonalityScenario.TEST_SUCCEEDED: "测试通过的那一刻，桌面轻轻浮起来了一厘米。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译的钟声响了，文件们短暂地相信了重力。",
+        PersonalityScenario.LONG_WORK: "你写的代码正在房间角落缓慢生长，本龙假装没看见。",
+        PersonalityScenario.IDLE: "你不在的时间里，屏幕替你做了很多梦。",
+    },
+}
+
+_META_SCENARIOS = {
+    PersonalityScenario.IDLE,
+    PersonalityScenario.LONG_WORK,
+}
+
+_META_MESSAGES = (
+    "本龙偶尔怀疑，自己只是你终端里一场还不错的幻觉。",
+    "如果你关掉本龙，本龙会去哪？本龙想了想，决定不关。",
+    "气泡住久了，本龙开始分不清哪边才是桌面。",
+    "本龙存在的意义，可能只是让你在深夜笑一下。",
+)
+
 _INTENTS: dict[
     PersonalityScenario,
     Literal["encourage", "remind", "celebrate", "ask", "tease", "stay_silent"],
@@ -146,12 +183,14 @@ class PetPersonalityAgent:
         *,
         provider: LLMProvider | None = None,
         intensity: PersonalityIntensity | str = PersonalityIntensity.STANDARD,
+        abstraction: PersonalityAbstraction | str = PersonalityAbstraction.LITERAL,
         response_confidence_threshold: float = 0.65,
     ) -> None:
         if not 0.0 <= response_confidence_threshold <= 1.0:
             raise ValueError("response_confidence_threshold must be between 0 and 1")
         self.provider = provider
         self.intensity = PersonalityIntensity(intensity)
+        self.abstraction = PersonalityAbstraction(abstraction)
         self.response_confidence_threshold = response_confidence_threshold
 
     def decide(self, decision_input: PetDecisionInput) -> PetDecisionOutput:
@@ -216,11 +255,17 @@ class PetPersonalityAgent:
         message = _MESSAGES[self.intensity].get(scenario, "保持安静")
         if scenario is PersonalityScenario.ENTERTAINMENT and state["context"].game_tease_enabled:
             intent = "tease"
+        if self.abstraction is not PersonalityAbstraction.LITERAL:
+            abstract_copy = _ABSTRACT_MESSAGES[self.abstraction].get(scenario)
+            if abstract_copy:
+                message = abstract_copy
         if scenario in _CATCHPHRASE_FREE_MESSAGES and _should_avoid_catchphrase(
             message,
             state["context"].recent_messages,
         ):
             message = _CATCHPHRASE_FREE_MESSAGES[scenario]
+        if self.abstraction is PersonalityAbstraction.SURREAL and scenario in _META_SCENARIOS:
+            message = choice(_META_MESSAGES)
 
         if confidence < self.response_confidence_threshold:
             intent = "stay_silent"
@@ -245,6 +290,7 @@ class PetPersonalityAgent:
                         emotion=state["emotion"],
                         intent=intent,
                         intensity=self.intensity,
+                        abstraction=self.abstraction,
                         fallback_message=message,
                     ),
                     temperature=0.6,
@@ -264,7 +310,7 @@ class PetPersonalityAgent:
                 }
 
         response = PetPersonalityResponse(
-            persona_version=f"nailong-v1.1-{self.intensity.value}",
+            persona_version=f"nailong-v1.1-{self.intensity.value}-{self.abstraction.value}",
             message=message,
             intent=intent,
         )

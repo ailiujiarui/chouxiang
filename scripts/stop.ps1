@@ -55,11 +55,14 @@ function Stop-ProductProcess([string]$name, [string]$pidFileName, [string]$comma
 
 $escapedDataDirectory = [regex]::Escape($dataDirectory)
 $apiPattern = "-m\s+refactor_agent\.cli\s+serve(?:\s|$)"
-$dashboardPattern = "-m\s+streamlit\s+run.*refactor_agent[\\/]dashboard\.py.*--server\.port\s+8501"
+$dashboardPattern = "-m\s+streamlit\s+run.*refactor_agent[\\/]dashboard\.py.*--server\.port\s+\d+"
 $nailongPattern = "-m\s+nailong_agent(?:\s|$).*--data-dir\s+`"?" + $escapedDataDirectory
 
+Set-Content -LiteralPath (Join-Path $dataDirectory "watchdog.stop") -Value "stop" -Encoding ascii -ErrorAction SilentlyContinue
+Stop-ProductProcess "Watchdog" "watchdog.pid" "watchdog\.ps1"
 Stop-ProductProcess "Nailong Desktop" "nailong-desktop.pid" $nailongPattern
 Stop-ProductProcess "Dashboard" "dashboard.pid" $dashboardPattern
 Stop-ProductProcess "Local API" "api.pid" $apiPattern
+Remove-Item -LiteralPath (Join-Path $dataDirectory "watchdog.stop") -Force -ErrorAction SilentlyContinue
 
 Write-Host "Local databases, logs, and sandbox image were preserved."

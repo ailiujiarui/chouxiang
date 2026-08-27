@@ -2,7 +2,21 @@
 
 一个会观察、吐槽、提醒和陪你写代码的 Windows 桌宠。奶龙常驻桌面，
 用纯文字表情和上方气泡表达状态；它背后的代码审判与 DeepSeek 评测能力，
-负责把“看到了什么”和“该怎么提醒你”变成具体、带点傲娇的回应。
+负责把"看到了什么"和"该怎么提醒你"变成具体、带点傲娇的回应。
+
+## 仓库结构：引擎是主，桌宠是伴
+
+本仓库同时包含两个组件：
+
+- **`refactor-agent`（主产品）**：`src/refactor_agent/`。本地闭环代码重构与
+  静态审查引擎，提供 CLI、控制 API、Streamlit Dashboard 和 Benchmark；
+  统一分析流程见下文"执行链"。
+- **`nailong`（桌面伴生产品）**：`src/nailong_agent/`。Windows 桌面宠物，
+  通过 SSE 订阅 `refactor-agent` 的分析事件，消费引擎产出；两者以事件契约
+  （`AnalysisEvent`）和本地 API 解耦，奶龙不直接调用引擎内部实现。
+
+日常开发以引擎为主，奶龙是它的展示层。桌面端默认不采集活动、不上传源码，
+一切采集与评测均需用户显式授权。
 
 奶龙当前支持：
 
@@ -21,9 +35,18 @@
 - 语气是中度傲娇：先说具体观察到的代码或活动，再补一句“本龙只是顺便提醒”的态度，不攻击用户本人；
 - 它也会选择安静：遇到免打扰、暂停、全屏、会议、冷却或隐私未授权时，不会强行冒泡。
 
+抽象度（`abstraction_level` 偏好，默认 `LITERAL`，持久化于桌宠设置）：
+
+- `LITERAL`：直白提醒，现状不变；
+- `POETIC`：把状态写成一句隐喻，如“你的光标像一只认真的萤火虫，正挨个点亮分号”；
+- `SURREAL`：更荒诞的表达，并在安静状态下偶发打破第四面墙的元评论，如“本龙偶尔怀疑，自己只是你终端里一场还不错的幻觉”。
+
+抽象只改变措辞，绝不改变技术事实、优先级或打断策略；识别仍然以本地分类为准。
+
 奶龙不是 Dashboard 浮层，也不是普通通知器；它是一个有状态、有边界、偶尔嘴硬的桌面陪伴角色。
 
-项目不接收 GitHub Webhook，不创建分支、commit、push、Pull Request 或 Issue 评论。
+产品本身不接收 GitHub Webhook，不创建分支、commit、push、Pull Request 或
+Issue 评论；以上描述的是产品运行时的对外行为，与本仓库的开发协作流程无关。
 
 ## 执行链
 
@@ -48,7 +71,7 @@ Input Adapter
 
 ## 一键启动
 
-需要 Windows、Docker Desktop 和 Python 3.11 或更高版本。首次使用时：
+需要 Windows 和 Python 3.11 或更高版本；Docker Desktop 可选。首次使用时：
 
 ```text
 1. 将 .env.example 复制为 .env
@@ -60,6 +83,21 @@ Input Adapter
 后台启动这三个进程。Docker 只构建和运行用于执行不可信代码的安全 sandbox，
 不再构建应用镜像，也不通过 Compose 启动日常产品。启动完成后会自动打开
 Dashboard；后续仍然只需双击 `start.cmd`。
+
+**Docker 可选**：检测不到 Docker 或 daemon 未运行时，启动器降级为本地
+`subprocess` 沙箱并给出警告。降级模式只保留**审查模式**（`REVIEW`，不执行
+代码）：所有需要执行不可信生成代码的任务（`verified-refactor`、URL 仓库分析）
+会被 `/capabilities` 与 API 层双重禁用，产品不会在宿主机上直接运行 LLM 生成的代码。
+要启用完整执行能力，请安装并启动 Docker Desktop。
+
+启动弹性（全部可选，在 `.env` 中设置）：
+
+- `REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS=120`：API/Dashboard 健康等待上限（指数退避重试）。
+- `REFACTOR_AGENT_STARTUP_PORT_FALLBACK=1`：默认端口被占用时自动顺延寻找空闲端口；不设置时给出占用进程的 PID 与命令行并提示。
+- `REFACTOR_AGENT_MAX_RESTARTS=3`：服务启动初期退出时的自动重试次数。
+- `REFACTOR_AGENT_WATCHDOG=1`：后台 watchdog 每 10 秒检测三个服务进程，异常退出自动重启（`stop.cmd` 会先停掉 watchdog）。
+
+日志默认按时间戳滚动保留最近 5 份（`.runs\logs\*.log.<时间戳>`），启动前会清理残留 PID 文件；Dashboard 启动失败时降级为"API + 奶龙"，奶龙启动失败时不影响 API/Dashboard。
 
 默认地址：
 
@@ -149,7 +187,7 @@ Snippet 的任务构造、执行和报告定位由 `snippet_submission.py` 负�
 只读 GitHub URL 的 checkout、请求构造和本地执行由 `github_url_submission.py` 统一处理。
 Jobs 与 trajectory memory 的只读查询和文本格式由 `cli_queries.py` 统一提供。
 Streamlit 依赖检测、环境组装和子进程执行由 `dashboard_launcher.py` 负责。
-Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_artifacts.py` 独立负责，执行流程只保留兼容转发入口。
+Orchestrator 的源码、日志、变异结果和报告落盘由 `orchestrator_artifacts.py` 独立负责。
 运行轨迹与安全分析事件由 `orchestrator_observability.py` 统一记录，事件发布失败不会中断重构执行图。
 初始执行状态、节点跳转、重试终止判定和辩论轮次收束由 `orchestrator_state.py` 统一管理。
 最终 `RunRecord` 与成功/失败 trajectory memory 由 `orchestrator_persistence.py` 按稳定顺序持久化。
@@ -161,29 +199,31 @@ Adversary 执行节点由 `orchestrator_adversary.py` 负责规则批评、对�
 Mutation/性能节点由 `orchestrator_mutation.py` 负责组合测试、变异挑战、post 指标和性能证据。
 Judge 执行节点由 `orchestrator_judge.py` 负责评分、裁决、轮次收束和重试/终止路由。
 Finalize 执行节点由 `orchestrator_finalize.py` 负责持久化终态、装配结果和发布最终分析事件。
-报告渲染由 `orchestrator_report.py` 负责，编排门面保留原报告函数的兼容包装。
+报告渲染由 `orchestrator_report.py` 负责。
 
 安装开发依赖：
 
 ```powershell
 python -m pip install -e .[dev]
+# 或使用 uv（推荐，使用仓库内 uv.lock 做精确锁定）：
+uv sync --extra desktop --extra dashboard
 ```
 
-审查文件或 stdin，`REVIEW` 不执行用户代码：
+审查文件或 stdin，`REVIEW` 不执行用户代码，默认 `subprocess` 后端、无需 Docker：
 
 ```powershell
 refactor-agent snippet --source snippet.py --mode review --persona tsundere
 Get-Content snippet.py | refactor-agent snippet --source - --mode review
 ```
 
-提供 pytest 后执行验证精简：
+提供 pytest 后执行验证精简（Docker 可选；未配置 Docker 时用 `subprocess`，
+仅在执行不可信生成的代码时才需要 Docker sandbox）：
 
 ```powershell
 refactor-agent snippet `
   --source snippet.py `
   --tests test_snippet.py `
-  --mode verified-refactor `
-  --sandbox-backend docker
+  --mode verified-refactor
 ```
 
 只读 GitHub URL：
@@ -212,6 +252,7 @@ refactor-agent github-url `
 
 ```powershell
 pytest -q
+ruff check src tests
 python -m compileall -q src tests
 docker compose config --quiet
 git diff --check

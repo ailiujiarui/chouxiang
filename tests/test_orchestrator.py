@@ -261,6 +261,48 @@ def test_orchestrator_records_immediate_llm_failure_without_self_heal(tmp_path: 
     assert "provider unavailable" not in (result.record.error_message or "")
 
 
+def test_orchestrator_clean_success_path_runs_all_nodes_in_order(tmp_path: Path):
+    """First-attempt success runs every node exactly once, in order, no self-heal."""
+    project = _make_leap_project(tmp_path)
+    request = RefactorRequest(
+        target_file=project / "leap_year.py",
+        issue_text="1900 should not be a leap year",
+        tests_path=project / "tests",
+        repo_name="leap-clean",
+        max_retry=2,
+    )
+    orchestrator = RefactorOrchestrator(
+        llm_client=MockRefactorClient(),
+        run_root=tmp_path / ".runs",
+        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
+        sandbox_backend="subprocess",
+    )
+
+    result = orchestrator.run(request)
+
+    assert result.record.status == "SUCCESS"
+    assert result.record.self_heal_count == 0
+    assert result.graph_backend == "langgraph"
+    assert result.graph_node_trace == [
+        "PREPARE",
+        "MINIMIZER",
+        "AST_GUARD",
+        "PYTEST",
+        "ADVERSARY",
+        "MUTATION",
+        "JUDGE",
+        "FINALIZE",
+    ]
+    assert result.ast_validation is not None and result.ast_validation.ok is True
+    assert result.ast_rewrite is not None and result.ast_rewrite.ok is True
+    assert result.adversarial_result is not None and result.adversarial_result.passed is True
+    assert result.mutation_result is not None
+    assert result.performance_profile is not None and result.performance_profile.passed is True
+    assert len(result.debate_rounds) == 1
+    assert result.debate_rounds[-1].converged is True
+    assert result.record.evidence_level.value == "REPOSITORY_TESTS"
+
+
 def test_orchestrator_supports_loop_graph_backend(tmp_path: Path):
     project = _make_leap_project(tmp_path)
     request = RefactorRequest(

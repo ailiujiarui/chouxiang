@@ -13,7 +13,7 @@ from nailong_agent.events import (
     ActivityWindow,
 )
 from nailong_agent.privacy import PrivacyPolicy
-from refactor_agent.llm import LLMProvider
+from nailong_agent.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 

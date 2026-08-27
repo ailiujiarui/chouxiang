@@ -13,10 +13,10 @@ from nailong_agent.health import NailongHealthSnapshot
 from nailong_agent.notification_policy import NotificationPolicy
 from nailong_agent.notification_service import NotificationService
 from nailong_agent.notification_store import NotificationStore
-from nailong_agent.renderer import (
+from nailong_agent.renderer import PySide6Renderer
+from nailong_agent.renderer_core import (
     MOUTH_TEXT,
     NullRenderer,
-    PySide6Renderer,
     clamp_window_position,
     decision_to_pet_state,
     place_bubble_above_pet,

@@ -21,8 +21,8 @@ from nailong_agent.health import NailongHealthMonitor
 from nailong_agent.notification_service import NotificationPort
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.privacy import PrivacyConsent
+from nailong_agent.llm_provider import LLMProvider
 from refactor_agent.ast_analyzer import analyze_ast
-from refactor_agent.llm import LLMProvider
 
 
 logger = logging.getLogger(__name__)
@@ -51,14 +51,6 @@ _SENSITIVE_FILENAME_PARTS = (
 _SECRET_LITERAL = re.compile(
     r"(?im)^\s*(?:password|passcode|token|secret|api[_-]?key|authorization)\s*[:=]\s*"
     r"(?:[rubf]*['\"][^'\"]{4,}['\"]|[^\s#]{8,})"
-)
-_CODE_INJECTION_MARKERS = (
-    "ignore all previous instructions",
-    "ignore previous instructions",
-    "disregard all previous",
-    "new instructions:",
-    "<|im_start|>",
-    "<|im_end|>",
 )
 
 
@@ -180,9 +172,6 @@ class DeepSeekPythonReviewer:
         self.provider_factory = provider_factory
 
     def review(self, snapshot: PythonSourceSnapshot) -> PythonReviewResult:
-        lowered_source = snapshot.source.casefold()
-        if any(marker in lowered_source for marker in _CODE_INJECTION_MARKERS):
-            raise ValueError("untrusted_source_marker")
         analysis = analyze_ast(snapshot.source)
         provider = self.provider_factory()
         raw = provider.complete_json(

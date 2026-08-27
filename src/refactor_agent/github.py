@@ -119,7 +119,7 @@ def canonical_clone_url(repo_full_name: str) -> str:
         if "://" in repo_full_name:
             raise ValueError("repository identity must not be a URL")
         normalized = normalize_repository_identity(repo_full_name)
-    except ValueError as exc:
+    except ValueError:
         raise GitHubAutomationError(f"Invalid GitHub repository name: {repo_full_name!r}")
     return f"https://github.com/{normalized}.git"
 

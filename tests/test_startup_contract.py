@@ -38,12 +38,41 @@ def test_startup_bootstraps_the_full_product_without_global_python_changes() -> 
     assert "api.pid" in script
     assert "dashboard.pid" in script
     assert "nailong-desktop.pid" in script
-    assert "REFACTOR_AGENT_SANDBOX_BACKEND = \"docker\"" in script
+    assert "REFACTOR_AGENT_SANDBOX_BACKEND = $sandboxBackend" in script
+    assert "$sandboxBackend = \"subprocess\"" in script
     assert "REFACTOR_AGENT_SANDBOX_VOLUME" in script
     assert ".runs\\logs" in script
-    assert 'Start-Process "http://127.0.0.1:8501"' in script
+    assert 'Start-Process "http://127.0.0.1:$dashboardPort"' in script
     assert "/health" in script
     assert "_stcore/health" in script
+
+
+def test_startup_hardens_ports_pid_restart_and_logs() -> None:
+    script = (ROOT / "scripts" / "start.ps1").read_text(encoding="utf-8")
+
+    assert "Find-PortOwner" in script
+    assert "REFACTOR_AGENT_STARTUP_PORT_FALLBACK" in script
+    assert "Clear-StalePidFile" in script
+    assert "Wait-Healthy" in script
+    assert "REFACTOR_AGENT_STARTUP_TIMEOUT_SECONDS" in script
+    assert "Rotate-Log" in script
+    assert "Start-ManagedService" in script
+    assert "REFACTOR_AGENT_MAX_RESTARTS" in script
+    assert "watchdog.ps1" in script
+    assert "services.json" in script
+    assert "Watchdog:                 " in script
+
+
+def test_stop_stops_watchdog_first_and_preserves_data() -> None:
+    shutdown = (ROOT / "scripts" / "stop.ps1").read_text(encoding="utf-8")
+    watchdog = (ROOT / "scripts" / "watchdog.ps1").read_text(encoding="utf-8")
+
+    assert "watchdog.stop" in shutdown
+    assert 'Stop-ProductProcess "Watchdog"' in shutdown
+    assert r"--server\.port\s+\d+" in shutdown
+    assert "$PSScriptRoot" in watchdog
+    assert "services.json" in watchdog
+    assert "Restart" not in shutdown
 
 
 def test_startup_loads_only_allowlisted_local_environment_without_printing_secrets() -> None:

@@ -16,6 +16,7 @@ from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
 from nailong_agent.health import NailongHealthMonitor, NailongHealthSnapshot
+from nailong_agent.llm_provider import deepseek_provider_factory
 from nailong_agent.notification_service import NotificationPort, NotificationService
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.personality_agent import PetPersonalityAgent
@@ -27,9 +28,9 @@ from nailong_agent.python_review import (
     PythonReviewBubbleFormatter,
     RecentPythonSourceProvider,
 )
-from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
+from nailong_agent.renderer import PySide6Renderer
+from nailong_agent.renderer_core import NullRenderer, PopupRenderer
 from nailong_agent.windows_activity import create_foreground_source, create_idle_source
-from refactor_agent.llm import DeepSeekClient
 
 
 class SingleInstanceLock:
@@ -116,19 +117,7 @@ class DesktopProcess:
         self.activity_collector = activity_collector
         self.activity_orchestrator = activity_orchestrator
         self.python_review_service = python_review_service
-        component_health = next(
-            (
-                monitor
-                for monitor in (
-                    getattr(delivery_pump, "health_monitor", None),
-                    getattr(activity_collector, "health_monitor", None),
-                    getattr(activity_orchestrator, "health_monitor", None),
-                )
-                if monitor is not None
-            ),
-            None,
-        )
-        self.health_monitor = health_monitor or component_health or NailongHealthMonitor()
+        self.health_monitor = health_monitor or NailongHealthMonitor()
         self.delivery_pump = delivery_pump or (
             NotificationDeliveryPump(
                 notifications=notification_service,
@@ -138,13 +127,6 @@ class DesktopProcess:
             if notification_service is not None
             else None
         )
-        for component in (
-            self.delivery_pump,
-            self.activity_collector,
-            self.activity_orchestrator,
-        ):
-            if component is not None and hasattr(component, "health_monitor"):
-                component.health_monitor = self.health_monitor
         self.renderer: PopupRenderer | None = None
         self._renderer_reports_delivery = False
 
@@ -374,14 +356,14 @@ def main(argv: list[str] | None = None) -> int:
         ActivityPersonalityOrchestrator(
             personality_agent=PetPersonalityAgent(
                 intensity=notification_store.get_preferences().personality_intensity.lower(),
+                abstraction=notification_store.get_preferences().abstraction_level.lower(),
             ),
             notifications=notifications,
             recognizer=ActivityRecognizer(
                 privacy_policy=privacy_policy,
-                provider_factory=(
-                    lambda: DeepSeekClient(model=settings.deepseek_model)
-                    if os.getenv("DEEPSEEK_API_KEY")
-                    else None
+                provider_factory=deepseek_provider_factory(
+                    settings.deepseek_model,
+                    require_api_key=True,
                 ),
             ),
             health_monitor=health_monitor,
@@ -393,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         AutomaticPythonReviewService(
             source_provider=RecentPythonSourceProvider(settings.python_review_roots),
             reviewer=DeepSeekPythonReviewer(
-                provider_factory=lambda: DeepSeekClient(model=settings.deepseek_model)
+                provider_factory=deepseek_provider_factory(settings.deepseek_model),
             ),
             formatter=PythonReviewBubbleFormatter(),
             notifications=notifications,

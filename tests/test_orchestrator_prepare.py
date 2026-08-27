@@ -3,7 +3,6 @@ from pathlib import Path
 
 from refactor_agent.errors import ErrorCode, public_error_message
 from refactor_agent.models import RefactorRequest, TrajectoryMemoryRecord
-from refactor_agent.orchestrator import _request_with_memory
 from refactor_agent.orchestrator_prepare import prepare_execution_node, request_with_memory
 from refactor_agent.orchestrator_state import initial_execution_state
 from refactor_agent.sandbox import SandboxUnavailableError
@@ -61,19 +60,17 @@ def test_prepare_execution_node_builds_isolated_state_with_memory(tmp_path: Path
     assert store.calls == [("octo/demo", "module.py", 3)]
 
 
-def test_request_with_memory_preserves_request_and_compatibility_export(tmp_path: Path):
+def test_request_with_memory_preserves_request_fields(tmp_path: Path):
     request = _request(tmp_path)
 
     assert request_with_memory(request, None) is request
     updated = request_with_memory(request, "historical constraint")
-    compatibility_updated = _request_with_memory(request, "historical constraint")
 
     assert updated is not request
     assert updated.issue_text.startswith(request.issue_text)
     assert updated.issue_text.endswith("historical constraint")
     assert updated.target_file == request.target_file
     assert updated.tests_path == request.tests_path
-    assert compatibility_updated == updated
 
 
 def test_prepare_execution_node_routes_sandbox_unavailable_to_finalize(

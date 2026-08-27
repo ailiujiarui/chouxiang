@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 from refactor_agent.analysis_events import AnalysisEventType, SafeMetric
 from refactor_agent.execution_graph import ExecutionState
