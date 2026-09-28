@@ -5,7 +5,6 @@ from refactor_agent.analysis_events import AnalysisEventType
 from refactor_agent.models import (
     EvidenceLevel,
     MetricsSnapshot,
-    ReportPersona,
     RewardBreakdown,
 )
 from refactor_agent.orchestrator_finalize import run_finalize_execution_node
@@ -42,7 +41,6 @@ def test_finalize_node_persists_and_assembles_success_result(tmp_path: Path):
         repo_name="octo/demo",
         memory_key="module.py",
         evidence_level=EvidenceLevel.REPOSITORY_TESTS,
-        report_persona=ReportPersona.TSUNDERE,
         graph_backend="langgraph",
         build_report=lambda *args, **kwargs: reports.append((args, kwargs)) or "# report",
         write_artifacts=lambda *args: artifacts.append(args),
@@ -57,7 +55,6 @@ def test_finalize_node_persists_and_assembles_success_result(tmp_path: Path):
     assert state["result"].report_markdown == "# report"
     assert state["result"].workspace_path == workspace
     assert state["result"].graph_node_trace == ["PREPARE", "JUDGE", "FINALIZE"]
-    assert state["result"].report_persona == ReportPersona.TSUNDERE
     assert reports[0][0][2] == "looks good"
     assert reports[0][0][13] == ["PREPARE", "JUDGE", "FINALIZE"]
     assert artifacts == [(state, "# report")]
@@ -93,7 +90,6 @@ def test_finalize_node_records_failure_and_failed_event(tmp_path: Path):
         repo_name="octo/demo",
         memory_key="module.py",
         evidence_level=EvidenceLevel.STATIC,
-        report_persona=ReportPersona.STRICT,
         graph_backend="loop",
         build_report=lambda *args, **kwargs: "failed report",
         write_artifacts=lambda *args: None,

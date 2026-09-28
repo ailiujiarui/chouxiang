@@ -22,7 +22,6 @@ from refactor_agent.models import (
     RefactorRequest,
     RefactorRunResult,
     RewardBreakdown,
-    ReportPersona,
     RunRecord,
     SandboxResult,
 )
@@ -247,7 +246,6 @@ class _RefactorWorkflow:
             repo_name=self.repo_name,
             memory_key=self.memory_key,
             evidence_level=self.request.evidence_level,
-            report_persona=self.request.persona,
             graph_backend=self.orchestrator.graph_backend,
             build_report=_build_report,
             write_artifacts=self._write_artifacts,
@@ -382,7 +380,6 @@ def _build_report(
     graph_backend: str | None = None,
     graph_node_trace: list[str] | None = None,
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-    report_persona: ReportPersona = ReportPersona.STRICT,
     llm_usages: list[LLMUsage] | None = None,
 ) -> str:
     return render_report(
@@ -401,7 +398,6 @@ def _build_report(
         graph_backend,
         graph_node_trace,
         evidence_level,
-        report_persona,
         llm_usages,
     )
 
@@ -422,7 +418,6 @@ def _build_technical_report(
     graph_backend: str | None = None,
     graph_node_trace: list[str] | None = None,
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-    report_persona: ReportPersona = ReportPersona.STRICT,
 ) -> str:
     return render_technical_report(
         record,
@@ -440,5 +435,4 @@ def _build_technical_report(
         graph_backend,
         graph_node_trace,
         evidence_level,
-        report_persona,
     )

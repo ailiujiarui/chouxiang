@@ -56,7 +56,7 @@ services:
     volumes:
       - refactor-agent-memory:/data
       - .:/workspace/repo:ro
-    command: ["memories", "--limit", "20"]
+    command: ["jobs", "--limit", "20"]
 
   dashboard:
     image: refactor-agent:local

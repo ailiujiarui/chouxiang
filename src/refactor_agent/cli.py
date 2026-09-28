@@ -26,10 +26,8 @@ from refactor_agent.cli_config import (
     resolve_github_workspace_root as _resolve_github_workspace_root,
     resolve_run_root as _resolve_run_root,
 )
-from refactor_agent.cli_queries import query_job_lines, query_memory_lines
+from refactor_agent.cli_queries import query_job_lines
 from refactor_agent.config import AppSettings
-from refactor_agent.ast_analyzer import analyze_ast, ast_hotspot_prompt, ast_prompt_summary
-from refactor_agent.debate_state import render_mermaid_state_diagram
 from refactor_agent.demo_cases import DEMO_CASE_NAMES, DemoCase, get_demo_case, materialize_demo_case
 from refactor_agent.demo_suite import DemoSuiteRun, render_demo_suite_report
 from refactor_agent.demo_suite_service import (
@@ -38,7 +36,7 @@ from refactor_agent.demo_suite_service import (
     suite_mock_fail_times as _suite_mock_fail_times,
 )
 from refactor_agent.dashboard_launcher import DashboardDependencyError, launch_dashboard
-from refactor_agent.github_url import GitHubUrlError, checkout_github_url
+from refactor_agent.github_url import checkout_github_url
 from refactor_agent.github_url_submission import (
     GitHubUrlCheckoutError,
     execute_github_url_submission,
@@ -106,7 +104,6 @@ def snippet(
         help="Pytest source file for verified mode; import the target as snippet.",
     ),
     mode: str = typer.Option("review", "--mode", help="review or verified-refactor."),
-    persona: str = typer.Option("strict", "--persona", help="strict or tsundere."),
     run_root: Path = typer.Option(Path(".runs"), "--run-root"),
     database: Path | None = typer.Option(None, "--database"),
     sandbox_backend: str = typer.Option("subprocess", "--sandbox-backend"),
@@ -116,9 +113,6 @@ def snippet(
     normalized_mode = mode.strip().lower()
     if normalized_mode not in {"review", "verified-refactor"}:
         raise typer.BadParameter("--mode must be review or verified-refactor")
-    normalized_persona = persona.strip().lower()
-    if normalized_persona not in {"strict", "tsundere"}:
-        raise typer.BadParameter("--persona must be strict or tsundere")
     source_text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
     tests_text = tests.read_text(encoding="utf-8") if tests else None
     if normalized_mode == "verified-refactor" and not tests_text:
@@ -128,7 +122,6 @@ def snippet(
         request_text=request,
         tests_text=tests_text,
         mode=normalized_mode,
-        persona=normalized_persona,
         run_root=run_root,
         database_path=database,
         sandbox_backend=sandbox_backend,
@@ -264,14 +257,6 @@ def demo_suite(
     raise typer.Exit(code=1 if failed else 0)
 
 
-@app.command("demo-cases")
-def demo_cases() -> None:
-    """List the built-in live demo cases."""
-    for name in DEMO_CASE_NAMES:
-        case = get_demo_case(name)
-        console.print(f"{case.name}: {case.title}", markup=False)
-
-
 @app.command()
 def benchmark(
     output_dir: Path = typer.Option(Path("benchmark-results"), "--output-dir", help="Evidence output directory."),
@@ -309,34 +294,6 @@ def benchmark(
     if execution.mode == "MANIFEST":
         raise typer.Exit(code=execution.exit_code)
     _print_plain(f"\nJSON: {execution.json_path}\nMarkdown: {execution.markdown_path}")
-
-
-@app.command("state-machine")
-def state_machine() -> None:
-    """Print the multi-agent debate state machine as Mermaid."""
-    console.print(render_mermaid_state_diagram(), markup=False)
-
-
-@app.command("ast-hotspots")
-def ast_hotspots(
-    target: Path = typer.Option(..., "--target", "-t", help="Python file to analyze."),
-    max_regions: int = typer.Option(3, "--max-regions", min=1, max=10, help="Maximum hotspot subtrees to show."),
-) -> None:
-    """Print AST semantic summary and high-complexity subtree snippets."""
-    if not target.is_file():
-        console.print(f"[red]target file does not exist: {target}[/red]")
-        raise typer.Exit(code=2)
-    source = target.read_text(encoding="utf-8")
-    try:
-        analysis = analyze_ast(source)
-    except SyntaxError as exc:
-        console.print(f"[red]syntax error at line {exc.lineno}: {exc.msg}[/red]")
-        raise typer.Exit(code=2) from exc
-
-    _print_plain("### AST 语义摘要")
-    _print_plain(ast_prompt_summary(analysis))
-    _print_plain("\n### AST 热点子树")
-    _print_plain(ast_hotspot_prompt(source, max_regions=max_regions))
 
 
 @app.command("github-url")
@@ -447,30 +404,6 @@ def jobs(
         return
     for line in lines:
         console.print(line, markup=False)
-
-
-@app.command("memories")
-def memories(
-    repo_name: str | None = typer.Option(None, "--repo-name", help="Filter by stored repository name."),
-    target: str | None = typer.Option(None, "--target", help="Filter by target file memory key, usually the filename."),
-    limit: int = typer.Option(20, "--limit", min=1, max=100, help="Maximum number of memory records to show."),
-    database: Path | None = typer.Option(None, "--database", help="SQLite database path."),
-    run_root: Path = typer.Option(Path(".runs"), "--run-root", help="Run root used to infer the default database."),
-) -> None:
-    """List trajectory memory records learned from previous runs."""
-    run_root = _resolve_run_root(run_root)
-    lines = query_memory_lines(
-        _resolve_database(database, run_root),
-        repo_name=repo_name,
-        target_path=target,
-        limit=limit,
-        store_factory=SQLiteRunStore,
-    )
-    if not lines:
-        _print_plain("还没有轨迹记忆。先跑一次 refactor-agent demo 或 github-url。")
-        return
-    for line in lines:
-        _print_plain(line)
 
 
 @app.command()

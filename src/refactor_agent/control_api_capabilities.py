@@ -49,7 +49,6 @@ def build_capabilities_response(
         ),
         **runtime_capabilities(settings, environ),
         "snippet_modes": ["REVIEW", "VERIFIED_REFACTOR"],
-        "personas": ["STRICT", "TSUNDERE"],
         "admin_token_required": bool(settings.admin_token),
         "sqlite": sqlite_diagnostics.as_public_dict(),
     }

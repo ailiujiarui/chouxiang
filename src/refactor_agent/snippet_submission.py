@@ -37,7 +37,6 @@ def execute_snippet_submission(
     request_text: str,
     tests_text: str | None,
     mode: str,
-    persona: str,
     run_root: Path,
     database_path: Path | None,
     sandbox_backend: str,
@@ -50,8 +49,6 @@ def execute_snippet_submission(
 
     if mode not in {"review", "verified-refactor"}:
         raise ValueError("mode must be review or verified-refactor")
-    if persona not in {"strict", "tsundere"}:
-        raise ValueError("persona must be strict or tsundere")
     if mode == "verified-refactor" and not tests_text:
         raise ValueError("verified-refactor mode requires tests")
 
@@ -81,7 +78,6 @@ def execute_snippet_submission(
         snippet_source=source_text,
         snippet_tests=tests_text,
         snippet_mode="REVIEW" if mode == "review" else "VERIFIED_REFACTOR",
-        persona="STRICT" if persona == "strict" else "TSUNDERE",
     )
     automation_result = processor_factory(settings).process(job)
     if not automation_result.run_id:

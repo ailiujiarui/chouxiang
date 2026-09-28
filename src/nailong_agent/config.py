@@ -21,6 +21,9 @@ class NailongSettings(BaseModel):
     lock_path_override: Path | None = None
     privacy_database_override: Path | None = None
     notification_database_override: Path | None = None
+    auto_code_review_enabled: bool | None = None
+    code_review_workspace: Path | None = None
+    code_review_cooldown_seconds: int = Field(default=120, ge=0)
     sqlite_policy: SQLitePolicy = Field(default_factory=SQLitePolicy)
 
     @classmethod
@@ -35,6 +38,9 @@ class NailongSettings(BaseModel):
             maximum_popups_per_day=_optional_int("NAILONG_MAXIMUM_POPUPS_PER_DAY"),
             minimum_cooldown_seconds=_optional_int("NAILONG_MINIMUM_COOLDOWN_SECONDS"),
             maximum_cooldown_seconds=_optional_int("NAILONG_MAXIMUM_COOLDOWN_SECONDS"),
+            auto_code_review_enabled=_optional_bool_optional("NAILONG_AUTO_CODE_REVIEW"),
+            code_review_workspace=_optional_path("NAILONG_CODE_REVIEW_WORKSPACE"),
+            code_review_cooldown_seconds=int(os.getenv("NAILONG_CODE_REVIEW_COOLDOWN_SECONDS", "120")),
             sqlite_policy=SQLitePolicy.from_env(),
         )
 
@@ -51,6 +57,8 @@ class NailongSettings(BaseModel):
         lock_path: Path | None = None,
         privacy_database: Path | None = None,
         notification_database: Path | None = None,
+        auto_code_review_enabled: bool | None = None,
+        code_review_workspace: Path | None = None,
     ) -> "NailongSettings":
         updates = {
             "data_dir": data_dir,
@@ -63,6 +71,8 @@ class NailongSettings(BaseModel):
             "lock_path_override": lock_path,
             "privacy_database_override": privacy_database,
             "notification_database_override": notification_database,
+            "auto_code_review_enabled": auto_code_review_enabled,
+            "code_review_workspace": code_review_workspace,
         }
         return self.model_copy(update={name: value for name, value in updates.items() if value is not None})
 
@@ -91,6 +101,23 @@ class NailongSettings(BaseModel):
 def _optional_int(name: str) -> int | None:
     value = os.getenv(name)
     return int(value) if value else None
+
+
+def _optional_path(name: str) -> Path | None:
+    value = os.getenv(name)
+    return Path(value) if value else None
+
+
+def _optional_bool_optional(name: str) -> bool | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
 
 
 def _optional_bool(name: str, *, default: bool) -> bool:

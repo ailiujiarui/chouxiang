@@ -12,7 +12,6 @@ from refactor_agent.models import (
     LLMUsage,
     MutationTestResult,
     PerformanceProfile,
-    ReportPersona,
     RewardBreakdown,
     RunRecord,
     SandboxResult,
@@ -57,7 +56,6 @@ def build_report(
     graph_backend: str | None = None,
     graph_node_trace: list[str] | None = None,
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-    report_persona: ReportPersona = ReportPersona.STRICT,
     llm_usages: list[LLMUsage] | None = None,
 ) -> str:
     technical = build_technical_report(
@@ -76,7 +74,6 @@ def build_report(
         graph_backend,
         graph_node_trace,
         evidence_level,
-        report_persona,
     )
     decision, next_action = _report_decision(evidence_level, record.status)
     provider = _report_llm_usage(llm_usages or [])
@@ -85,7 +82,7 @@ def build_report(
     summary = [
         "# Code Judge Report",
         "",
-        f"> **Decision: {decision}** | Evidence: **{evidence_level.value}** | Persona: **{report_persona.value}**",
+        f"> **Decision: {decision}** | Evidence: **{evidence_level.value}**",
         "",
         "## Decision",
         "",
@@ -135,7 +132,6 @@ def build_technical_report(
     graph_backend: str | None = None,
     graph_node_trace: list[str] | None = None,
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-    report_persona: ReportPersona = ReportPersona.STRICT,
 ) -> str:
     loc_delta = _delta(record.pre_loc, record.post_loc)
     cc_delta = _delta(record.pre_cc, record.post_cc)
@@ -157,7 +153,6 @@ def build_technical_report(
         f"- 状态 (Status): **{_report_status_cn(record.status)}**",
         f"- 运行 ID (Run ID): `{record.run_id}`",
         f"- 证据等级 (Evidence Level): **{evidence_level.value}**",
-        f"- 报告人格 (Persona): **{report_persona.value}**",
         f"- 沙箱工作区 (Workspace): `{workspace}`",
         f"- 毒舌结论: {_report_verdict(record, mutation_result, reward)}",
         "",

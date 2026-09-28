@@ -104,12 +104,6 @@ def test_judge_node_routes_failed_candidate(
     assert "Surviving mutants: replace return value" in state["previous_error"]
 
 
-def test_judge_summary_keeps_compatibility_export():
-    reward = _reward()
-
-    assert summarize_judge(reward) == _summarize_judge(reward)
-    assert "裁判评分=3.50" in summarize_judge(reward)
-
 
 def _state(
     tmp_path: Path,

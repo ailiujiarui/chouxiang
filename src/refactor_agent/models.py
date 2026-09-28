@@ -19,7 +19,6 @@ class RefactorRequest(BaseModel):
     max_retry: int = Field(default=3, ge=1)
     allowed_import_roots: set[str] = Field(default_factory=set)
     evidence_level: "EvidenceLevel" = Field(default_factory=lambda: EvidenceLevel.REPOSITORY_TESTS)
-    persona: "ReportPersona" = Field(default_factory=lambda: ReportPersona.STRICT)
 
 
 class AnalysisInputKind(StrEnum):
@@ -34,47 +33,15 @@ class EvidenceLevel(StrEnum):
     REPOSITORY_TESTS = "REPOSITORY_TESTS"
 
 
-class ReportPersona(StrEnum):
-    STRICT = "STRICT"
-    TSUNDERE = "TSUNDERE"
-
-
 class AnalysisRequest(BaseModel):
     input_kind: AnalysisInputKind
     instruction: str = Field(min_length=1, max_length=32768)
-    persona: ReportPersona = ReportPersona.STRICT
     source: str | None = None
     tests: str | None = None
     repository_url: str | None = None
     ref: str | None = None
     target_path: str | None = None
     tests_path: str | None = None
-
-
-class AnalysisResult(BaseModel):
-    task_id: str
-    run_id: str | None = None
-    status: str
-    evidence_level: EvidenceLevel
-    report_persona: ReportPersona
-    product_mode: Literal["deepseek", "demo"]
-
-
-class PersonaReport(BaseModel):
-    persona: ReportPersona
-    opening_verdict: str
-    ast_assessment: str
-    debate_summary: list[str] = Field(default_factory=list)
-    metrics_assessment: str
-    evidence_warning: str
-    final_verdict: str
-    commentary: str | None = None
-
-
-class PersonaCopy(BaseModel):
-    opening_verdict: str = Field(min_length=1, max_length=240)
-    commentary: str = Field(min_length=1, max_length=1000)
-    closing_verdict: str = Field(min_length=1, max_length=240)
 
 
 class MetricsSnapshot(BaseModel):
@@ -179,26 +146,6 @@ class LLMRefactorResult(BaseModel):
     insult_review: str
     modified_regions: list[str] = Field(default_factory=list)
     usage: LLMUsage | None = None
-
-
-class LLMDefenderReviewResult(BaseModel):
-    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
-    boundary_risks: list[str] = Field(default_factory=list)
-    readability_risks: list[str] = Field(default_factory=list)
-    conservative_fix_suggestion: str
-
-
-class LLMAdversaryTestResult(BaseModel):
-    thought: str
-    pytest_code: str = ""
-    hypothesis_code: str = ""
-    attack_plan: list[str] = Field(default_factory=list)
-
-
-class LLMJudgeReviewResult(BaseModel):
-    verdict: Literal["APPROVE", "RETRY", "REJECT"]
-    rationale: str
-    review: str
 
 
 class SandboxResult(BaseModel):
@@ -313,7 +260,6 @@ class RunRecord(BaseModel):
     error_message: str | None = None
     error_summary: str | None = None
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS
-    report_persona: ReportPersona = ReportPersona.STRICT
     pytest_duration_seconds: float | None = None
     profiled_pytest_duration_seconds: float | None = None
     peak_memory_kib: float | None = None
@@ -351,7 +297,6 @@ class RefactorRunResult(BaseModel):
     graph_node_trace: list[str] = Field(default_factory=list)
     llm_usages: list[LLMUsage] = Field(default_factory=list)
     evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS
-    report_persona: ReportPersona = ReportPersona.STRICT
 
 
 class RepositoryJobKind(StrEnum):
@@ -377,7 +322,6 @@ class GitHubRefactorJob(BaseModel):
     snippet_source: str | None = None
     snippet_tests: str | None = None
     snippet_mode: Literal["REVIEW", "VERIFIED_REFACTOR"] | None = None
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 class GitHubAutomationResult(BaseModel):

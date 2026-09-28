@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from dataclasses import replace
 from pathlib import Path
 from threading import Lock
 from typing import Callable
@@ -10,6 +11,7 @@ from nailong_agent.activity_collector import WindowActivityCollector
 from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
+from nailong_agent.code_review import CodeReviewService
 from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
@@ -95,6 +97,7 @@ class DesktopProcess:
         delivery_pump: NotificationDeliveryPump | None = None,
         activity_collector: WindowActivityCollector | None = None,
         activity_orchestrator: ActivityPersonalityOrchestrator | None = None,
+        code_review_service: CodeReviewService | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
@@ -105,6 +108,7 @@ class DesktopProcess:
         self.analysis_subscriber = analysis_subscriber
         self.activity_collector = activity_collector
         self.activity_orchestrator = activity_orchestrator
+        self.code_review_service = code_review_service
         self.delivery_pump = delivery_pump or (
             NotificationDeliveryPump(notifications=notification_service, bus=self.bus)
             if notification_service is not None
@@ -138,6 +142,8 @@ class DesktopProcess:
             if self.activity_orchestrator is not None:
                 self.activity_orchestrator.subscribe(self.bus)
             self.bus.start()
+            if self.code_review_service is not None:
+                self.code_review_service.start()
             if self.activity_collector is not None:
                 self.activity_collector.start()
             self.renderer.start()
@@ -152,6 +158,8 @@ class DesktopProcess:
         finally:
             if self.activity_collector is not None:
                 self.activity_collector.stop()
+            if self.code_review_service is not None:
+                self.code_review_service.stop()
             self.bus.wait_idle(2.0)
             if self.delivery_pump is not None:
                 self.delivery_pump.stop()
@@ -207,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minimum-cooldown-seconds", type=int)
     parser.add_argument("--maximum-cooldown-seconds", type=int)
     parser.add_argument("--activity-listener", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--auto-code-review", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--code-review-workspace", type=Path)
     args = parser.parse_args(argv)
     settings = NailongSettings.from_env().with_overrides(
         data_dir=args.data_dir,
@@ -218,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
         minimum_cooldown_seconds=args.minimum_cooldown_seconds,
         maximum_cooldown_seconds=args.maximum_cooldown_seconds,
         activity_listener_enabled=args.activity_listener,
+        auto_code_review_enabled=args.auto_code_review,
+        code_review_workspace=args.code_review_workspace,
     )
     privacy_store = PrivacyStore(settings.privacy_database, policy=settings.sqlite_policy)
     notification_store = (
@@ -242,16 +254,42 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
     privacy_policy = PrivacyPolicy(privacy_store.load_consent())
+    if settings.auto_code_review_enabled is not None:
+        consent = replace(
+            privacy_policy.consent,
+            decision_recorded=True,
+            auto_code_review_enabled=settings.auto_code_review_enabled,
+        )
+        privacy_store.save_consent(consent)
+        privacy_policy.consent = consent
+    code_review_service = (
+        CodeReviewService(
+            notifications=notifications,
+            run_root=settings.data_dir / "code-review",
+            database_path=settings.data_dir / "code-review.sqlite",
+            workspace_root=settings.code_review_workspace,
+            sandbox_backend="subprocess",
+            mock=not (
+                bool(os.getenv("DEEPSEEK_API_KEY"))
+                and privacy_policy.consent.remote_inference_enabled
+            ),
+            cooldown_seconds=settings.code_review_cooldown_seconds,
+        )
+        if notifications is not None
+        else None
+    )
     bus = EventBus()
     collector = (
         WindowActivityCollector(
-            source=create_foreground_source(),
+            source=create_foreground_source(workspace_root=settings.code_review_workspace),
             idle_source=create_idle_source(),
             privacy_policy=privacy_policy,
             privacy_store=privacy_store,
             event_bus=bus,
             preferences=notification_store.get_preferences,
             application_rules=notification_store.list_application_rules,
+            on_python_file=(code_review_service.enqueue if code_review_service is not None else None),
+            code_review_enabled=lambda: privacy_policy.consent.permits("auto_code_review"),
         )
         if settings.activity_listener_enabled and notification_store is not None
         else None
@@ -284,5 +322,6 @@ def main(argv: list[str] | None = None) -> int:
         analysis_subscriber=subscriber,
         activity_collector=collector,
         activity_orchestrator=activity_orchestrator,
+        code_review_service=code_review_service,
     )
     return process.run()

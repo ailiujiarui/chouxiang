@@ -21,6 +21,7 @@ class ForegroundWindow:
     is_meeting_likely: bool = False
     window_title_hint: str | None = None
     ide_activity_hint: str | None = None
+    python_file_path: str | None = None
 
 
 class ForegroundActivitySource(Protocol):
@@ -53,6 +54,8 @@ class WindowActivityCollector:
         application_rules: Callable[[], list[PetApplicationRule]],
         clock: Callable[[], float] = monotonic,
         on_error: Callable[[Exception], None] | None = None,
+        on_python_file: Callable[[str], None] | None = None,
+        code_review_enabled: Callable[[], bool] | None = None,
     ) -> None:
         self.source = source
         self.idle_source = idle_source
@@ -63,6 +66,8 @@ class WindowActivityCollector:
         self.application_rules = application_rules
         self.clock = clock
         self.on_error = on_error
+        self.on_python_file = on_python_file
+        self.code_review_enabled = code_review_enabled
         self._started = False
         self._last_seen: dict[str, float] = {}
 
@@ -116,6 +121,7 @@ class WindowActivityCollector:
             return
         if "allow" in rules.values() and rules.get(application_id) != "allow":
             return
+        self._maybe_trigger_code_review(window)
         now = self.clock()
         if now - self._last_seen.get(application_id, float("-inf")) < 5:
             return
@@ -134,6 +140,17 @@ class WindowActivityCollector:
         )
         if self._persist_and_publish(signal):
             self._last_seen[application_id] = now
+
+    def _maybe_trigger_code_review(self, window: ForegroundWindow) -> None:
+        if not window.python_file_path or self.on_python_file is None:
+            return
+        if self.code_review_enabled is not None and not self.code_review_enabled():
+            return
+        try:
+            self.on_python_file(window.python_file_path)
+        except Exception:
+            # A review failure must never take down activity collection.
+            return
 
     def _persist_and_publish(self, signal: RawActivitySignal) -> bool:
         decision = self.privacy_policy.admit_activity(signal)

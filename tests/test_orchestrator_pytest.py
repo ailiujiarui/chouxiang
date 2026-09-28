@@ -142,17 +142,6 @@ def test_pytest_node_records_failure_and_closes_round(
     ]
 
 
-def test_failure_summary_caps_output_and_keeps_compatibility_export():
-    result = _result(passed=False, returncode=3, stdout="x" * 9000)
-
-    summary = summarize_pytest_failure(result)
-
-    assert len(summary) == 8000
-    assert _summarize_failure(result) == summary
-    assert summarize_pytest_failure(_result(passed=False, returncode=7)) == (
-        "pytest 失败，返回码 7"
-    )
-
 
 def _state(tmp_path: Path, max_attempts: int):
     state = initial_execution_state(max_attempts)

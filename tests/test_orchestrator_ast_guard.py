@@ -128,12 +128,6 @@ def test_ast_guard_rejection_closes_round_and_routes_retry_or_finalize(
     )
 
 
-def test_code_change_percent_keeps_orchestrator_compatibility_export():
-    expected = code_change_percent("value = 1\n", "value = 2\n")
-
-    assert expected > 0
-    assert _code_change_percent("value = 1\n", "value = 2\n") == expected
-
 
 def _state(max_attempts: int):
     state = initial_execution_state(max_attempts)

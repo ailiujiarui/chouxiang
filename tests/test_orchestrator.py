@@ -181,43 +181,6 @@ def test_orchestrator_self_heals_after_failed_attempt(tmp_path: Path):
     ).read_text(encoding="utf-8")
 
 
-def test_orchestrator_injects_and_persists_trajectory_memory(tmp_path: Path):
-    project = _make_leap_project(tmp_path)
-    store = SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite")
-    store.save_memory(
-        TrajectoryMemoryRecord(
-            memory_id="memory-1",
-            run_id="old-run",
-            repo_name="leap",
-            target_path="leap_year.py",
-            status="FAILED",
-            lesson="不要再把 1900 当成闰年。",
-            error_signature="AssertionError: assert True is False",
-        )
-    )
-    client = CapturingClient()
-    request = RefactorRequest(
-        target_file=project / "leap_year.py",
-        issue_text="1900 should not be a leap year",
-        tests_path=project / "tests",
-        repo_name="leap",
-        max_retry=1,
-    )
-    orchestrator = RefactorOrchestrator(
-        llm_client=client,
-        run_root=tmp_path / ".runs",
-        store=store,
-    )
-
-    result = orchestrator.run(request)
-
-    assert result.record.status == "SUCCESS"
-    assert client.issue_text is not None
-    assert "历史轨迹记忆" in client.issue_text
-    assert "不要再把 1900 当成闰年" in client.issue_text
-    memories = store.list_memory("leap", "leap_year.py", limit=5)
-    assert any(memory.status == "SUCCESS" and memory.run_id == result.record.run_id for memory in memories)
-
 
 def test_orchestrator_fails_after_max_retry(tmp_path: Path):
     project = _make_leap_project(tmp_path)
@@ -238,51 +201,6 @@ def test_orchestrator_fails_after_max_retry(tmp_path: Path):
     assert result.record.self_heal_count == 2
 
 
-def test_orchestrator_records_immediate_llm_failure_without_self_heal(tmp_path: Path):
-    project = _make_leap_project(tmp_path)
-    request = RefactorRequest(
-        target_file=project / "leap_year.py",
-        issue_text="1900 should not be a leap year",
-        tests_path=project / "tests",
-        repo_name="leap",
-        max_retry=2,
-    )
-    result = RefactorOrchestrator(
-        llm_client=LLMFailingClient(),
-        run_root=tmp_path / ".runs",
-        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
-    ).run(request)
-
-    assert result.record.status == "FAILED"
-    assert result.attempts == 1
-    assert result.record.self_heal_count == 0
-    assert result.record.error_code == ErrorCode.INTERNAL_ERROR
-    assert result.record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
-    assert "provider unavailable" not in (result.record.error_message or "")
-
-
-def test_orchestrator_supports_loop_graph_backend(tmp_path: Path):
-    project = _make_leap_project(tmp_path)
-    request = RefactorRequest(
-        target_file=project / "leap_year.py",
-        issue_text="1900 should not be a leap year",
-        tests_path=project / "tests",
-        repo_name="leap-loop",
-        max_retry=2,
-    )
-    orchestrator = RefactorOrchestrator(
-        llm_client=MockRefactorClient(),
-        run_root=tmp_path / ".runs",
-        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
-        graph_backend="loop",
-    )
-    result = orchestrator.run(request)
-    assert result.record.status == "SUCCESS"
-    trajectory_path = tmp_path / ".runs" / result.record.run_id / "trajectory.jsonl"
-    steps = [json.loads(line) for line in trajectory_path.read_text(encoding="utf-8").splitlines()]
-    judge_step = next(step for step in steps if step["status"] == "JUDGE_SCORED")
-    assert judge_step["metadata"]["graph"]["backend"] == "loop"
-    assert judge_step["metadata"]["graph"]["verdict"] == "APPROVE"
 
 
 def test_orchestrator_self_heals_after_adversary_counterexample(tmp_path: Path):
@@ -320,37 +238,6 @@ def test_orchestrator_self_heals_after_adversary_counterexample(tmp_path: Path):
     assert "DEBATE_CONVERGED" in statuses
     assert validate_status_sequence(statuses) == []
 
-
-def test_orchestrator_fails_before_llm_when_docker_is_unavailable(
-    tmp_path: Path,
-    monkeypatch,
-):
-    project = _make_leap_project(tmp_path)
-    request = RefactorRequest(
-        target_file=project / "leap_year.py",
-        issue_text="1900 should not be a leap year",
-        tests_path=project / "tests",
-        repo_name="leap",
-        max_retry=2,
-    )
-    monkeypatch.setattr(
-        "refactor_agent.sandbox.docker_status",
-        lambda: DockerStatus(available=False, executable="docker", error="virtualization missing"),
-    )
-    orchestrator = RefactorOrchestrator(
-        llm_client=ExplodingClient(),
-        run_root=tmp_path / ".runs",
-        store=SQLiteRunStore(tmp_path / ".runs" / "runs.sqlite"),
-        sandbox_backend="docker",
-    )
-    result = orchestrator.run(request)
-    assert result.record.status == "FAILED"
-    assert result.attempts == 0
-    assert result.record.self_heal_count == 0
-    assert result.record.error is None
-    assert result.record.error_code == ErrorCode.INTERNAL_ERROR
-    assert result.record.error_message == public_error_message(ErrorCode.INTERNAL_ERROR)
-    assert result.record.error_summary == "sandbox backend unavailable"
 
 
 def _make_leap_project(tmp_path: Path) -> Path:

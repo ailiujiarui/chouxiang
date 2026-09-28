@@ -155,22 +155,6 @@ def test_adversary_node_records_failure_and_closes_round(
     ]
 
 
-def test_adversary_summaries_keep_compatibility_exports():
-    critique = AdversarialCritique(
-        risk_level="LOW",
-        attack_plan=[],
-        rationale="none",
-    )
-    empty = _result(passed=True, generated=0, returncode=0)
-    failed = _result(passed=False, generated=1, returncode=7)
-
-    assert "暂无命中规则" in summarize_critique(critique)
-    assert _summarize_critique(critique) == summarize_critique(critique)
-    assert "没找到" in summarize_adversary_pass(empty)
-    assert _summarize_adversary_pass(empty) == summarize_adversary_pass(empty)
-    assert "返回码 7" in summarize_adversarial_failure(failed)
-    assert _summarize_adversarial_failure(failed) == summarize_adversarial_failure(failed)
-
 
 def _state(tmp_path: Path, max_attempts: int):
     state = initial_execution_state(max_attempts)

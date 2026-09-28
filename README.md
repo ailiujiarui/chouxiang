@@ -27,7 +27,6 @@ Input Adapter
 - API/Worker 使用无网络、非 root、只读根文件系统和资源受限的 Docker sandbox。
 - 用户测试、系统生成测试、对抗测试、变异测试和 Judge 共同形成可追溯证据。
 - 报告明确标记 `STATIC`、`GENERATED_TESTS`、`USER_TESTS` 或 `REPOSITORY_TESTS` 证据等级。
-- 人格只影响报告措辞，不参与技术裁决和安全判断。
 
 ## 一键启动
 
@@ -77,7 +76,11 @@ python -m pip install -e ".[desktop]"
 
 活动监听默认由 `NAILONG_ACTIVITY_LISTENER_ENABLED=true` 创建；可设置为 `false`，或在本次启动使用 `--no-activity-listener` 关闭。该开关只控制是否创建监听器，已持久化的 `activity_listener_enabled`、手动暂停和应用白名单/黑名单仍在每次事件处理时生效。
 
-首次启动必须由用户明确授权活动采集。Windows 实现响应前台窗口变化，并每 15 秒采样系统空闲秒数：连续空闲达到 5 分钟时只发布一次 idle 事件，恢复活动后才允许下一次发布；同时读取进程可执行文件名和窗口是否覆盖当前显示器。为完成本地敏感/会议拦截和有限的 IDE 状态识别，窗口标题可能只在采集线程内短暂读取；原始标题会在隐私边界后丢弃，不会进入统一事件、EventBus、SQLite、日志或远程推理。编辑器/终端正文、代码、剪贴板、截图和 OCR 默认不会采集。会议应用和敏感应用会在入库前被隐私策略阻止。非 Windows 平台使用空实现，不采集任何活动。
+首次启动必须由用户明确授权活动采集。Windows 实现响应前台窗口变化，并每 15 秒采样系统空闲秒数：连续空闲达到 5 分钟时只发布一次 idle 事件，恢复活动后才允许下一次发布；同时读取进程可执行文件名和窗口是否覆盖当前显示器。为完成本地敏感/会议拦截和有限的 IDE 状态识别，窗口标题可能只在采集线程内短暂读取；原始标题会在隐私边界后丢弃，不会进入统一事件、EventBus、SQLite、日志或远程推理。编辑器/终端正文、剪贴板、截图和 OCR 默认不会采集。会议应用和敏感应用会在入库前被隐私策略阻止。
+
+### Nailong 自动代码锐评
+
+在用户明确授权 `auto_code_review` 后（首次授权活动陪伴时一并确认，或用 `--auto-code-review`/`NAILONG_AUTO_CODE_REVIEW` 覆盖），奶龙会在检测到你在 IDE 里编辑 Python 代码时读取当前 `.py` 文件，调用本地分析管线（`subprocess` 沙箱，不走 Docker）并给出傲娇风格的短锐评。文件路径从窗口标题解析：仅接受 IDE 进程（Code/Cursor/PyCharm/IDEA）标题中的绝对路径；只有文件名时用 `--code-review-workspace`/`NAILONG_CODE_REVIEW_WORKSPACE` 指定的工作目录补全。同一文件在内容未变或有冷却（默认 120 秒，`NAILONG_CODE_REVIEW_COOLDOWN_SECONDS`）时不会重复锐评。未配置 `DEEPSEEK_API_KEY` 时使用确定性 mock 分析。该能力只用于本地减少重复劳动，读取的源码和生成的报告会写入本地运行目录 `code-review/`，不要把端口或数据目录暴露到不可信环境。非 Windows 平台使用空实现，不采集任何活动。
 
 只允许通过隐私策略后的统一最小化事件写入 `nailong_privacy.sqlite`，其中只包含归一化应用类别、活动类型、置信度和固定格式摘要。空闲、全屏、会议等原始采集信号只在本地隐私边界内用于分类和拦截，不会写入统一事件。可在桌宠隐私控制中使用“删除本地活动记录”清除活动事件和聚合记录，首次授权选择不会被删除。
 
@@ -144,7 +147,7 @@ python -m pip install -e .[dev]
 审查文件或 stdin，`REVIEW` 不执行用户代码：
 
 ```powershell
-refactor-agent snippet --source snippet.py --mode review --persona tsundere
+refactor-agent snippet --source snippet.py --mode review
 Get-Content snippet.py | refactor-agent snippet --source - --mode review
 ```
 

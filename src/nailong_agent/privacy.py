@@ -15,7 +15,7 @@ from nailong_agent.events import ActivityEvent, ActivityType, RawActivitySignal
 from refactor_agent.artifacts import sanitize_text
 
 
-ConsentScope = Literal["activity_collection", "remote_inference"]
+ConsentScope = Literal["activity_collection", "remote_inference", "auto_code_review"]
 
 _SENSITIVE_MARKERS = (
     "password",
@@ -69,13 +69,18 @@ class PrivacyConsent:
     activity_collection_enabled: bool = False
     remote_inference_enabled: bool = False
     decision_recorded: bool = True
+    auto_code_review_enabled: bool = False
 
     @classmethod
     def unanswered(cls) -> "PrivacyConsent":
         return cls(decision_recorded=False)
 
     def permits(self, scope: ConsentScope) -> bool:
-        return self.activity_collection_enabled if scope == "activity_collection" else self.remote_inference_enabled
+        if scope == "activity_collection":
+            return self.activity_collection_enabled
+        if scope == "remote_inference":
+            return self.remote_inference_enabled
+        return self.auto_code_review_enabled
 
 
 @dataclass(frozen=True)
