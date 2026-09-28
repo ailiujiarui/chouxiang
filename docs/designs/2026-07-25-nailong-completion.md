@@ -3,6 +3,10 @@
 Date: 2026-07-25  
 Status: implemented; review passed
 
+> A runtime gap discovered on 2026-08-08 is specified in
+> `2026-08-08-nailong-proactive-speech-reliability.md`: activity windows are
+> collected but are not flushed without a later boundary-crossing event.
+
 ## Scope
 
 Complete the non-animation gaps in the desktop-pet task list. Existing PNG,

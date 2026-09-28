@@ -79,6 +79,7 @@ class PetDecisionContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     recent_messages: list[RecentMessage] = Field(default_factory=list, max_length=20)
+    game_tease_enabled: bool = False
 
 
 class PetDecisionInput(BaseModel):
@@ -98,7 +99,7 @@ class PetPersonalityResponse(BaseModel):
 
     persona_version: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=500)
-    intent: Literal["encourage", "remind", "celebrate", "ask", "stay_silent"]
+    intent: Literal["encourage", "remind", "celebrate", "ask", "tease", "stay_silent"]
 
 
 PetDecisionOutput: TypeAlias = PetPersonalityResponse | None

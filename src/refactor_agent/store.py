@@ -6,7 +6,7 @@ from pathlib import Path
 
 from refactor_agent.analysis_event_store import SQLiteAnalysisEventStore
 from refactor_agent.analysis_events import AnalysisEvent, PublishReceipt
-from refactor_agent.github_job_store import JobTransitionError, SQLiteGitHubJobStore
+from refactor_agent.github_job_store import JobTransitionError, SQLiteGitHubJobStore  # noqa: F401  # deliberate re-export
 from refactor_agent.models import (
     BenchmarkCaseRecord,
     BenchmarkRunRecord,

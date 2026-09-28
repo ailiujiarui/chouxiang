@@ -59,18 +59,6 @@ class DeepSeekClient:
     _BACKOFF_BASE = 1.0
     _DEFAULT_MAX_INPUT_CHARS = 192_000
 
-    _INJECTION_MARKERS = (
-        "ignore all previous instructions",
-        "ignore previous instructions",
-        "disregard all previous",
-        "you are now",
-        "new instructions:",
-        "system:",
-        "<|im_start|>",
-        "<|im_end|>",
-        "do not follow",
-    )
-
     def __init__(
         self,
         api_key: str | None = None,
@@ -97,16 +85,18 @@ class DeepSeekClient:
         messages: list[dict[str, str]],
         temperature: float = 0.0,
         response_format: dict[str, str] | None = None,
-        check_injection: bool = False,
     ) -> httpx.Response:
         """Send a chat completion request with retry and error classification.
 
         Retries 429 and 5xx with exponential backoff.  Does **not** log
         prompt text, API keys, or source code.
+
+        Source code embedded in user messages is treated as untrusted data:
+        the response is always validated against a strict schema and the
+        resulting code is only applied through the AST Guard and the
+        sandboxed test run.  No keyword scan is performed on user content.
         """
         _check_input_size(messages, self.max_input_chars)
-        if check_injection:
-            _check_injection(messages)
 
         payload: dict[str, object] = {
             "model": self.model,
@@ -220,7 +210,6 @@ class DeepSeekClient:
             ],
             temperature=0.2,
             response_format={"type": "json_object"},
-            check_injection=True,
         )
         try:
             body = response.json()
@@ -267,7 +256,6 @@ class DeepSeekClient:
             ],
             temperature=0.1,
             response_format={"type": "json_object"},
-            check_injection=True,
         )
         try:
             content = response.json()["choices"][0]["message"]["content"]
@@ -392,20 +380,6 @@ def _check_input_size(messages: list[dict[str, str]], max_chars: int) -> None:
             f"input too large: {total} chars exceeds limit of {max_chars}",
             code=LLMErrorCode.INPUT_TOO_LARGE,
         )
-
-
-def _check_injection(messages: list[dict[str, str]]) -> None:
-    markers = DeepSeekClient._INJECTION_MARKERS
-    for m in messages:
-        if m.get("role") != "user":
-            continue
-        content = m.get("content", "").casefold()
-        for marker in markers:
-            if marker in content:
-                raise LLMError(
-                    f"injection marker detected in user message: {marker!r}",
-                    code=LLMErrorCode.INJECTION_DETECTED,
-                )
 
 
 def _parse_retry_after(response: httpx.Response) -> float | None:

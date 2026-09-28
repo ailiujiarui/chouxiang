@@ -2,44 +2,12 @@ from __future__ import annotations
 
 import os
 import ctypes
-import re
 from ctypes import wintypes
 from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Thread, current_thread
 
 from nailong_agent.activity_collector import ForegroundActivitySource, ForegroundWindow, IdleState, IdleStateSource
-
-_IDE_EXECUTABLES = {"code.exe", "cursor.exe", "pycharm64.exe", "idea64.exe"}
-_ABSOLUTE_PYTHON_PATH = re.compile(r"(?i)([a-z]:\\[^:*?\"<>|\r\n]+?\.py)\b")
-_RELATIVE_PYTHON_FILE = re.compile(r"(?i)(?<![\w.\\/-])([A-Za-z0-9_][\w.-]*\.py)\b")
-
-
-def python_file_path_from_title(
-    title: str | None,
-    executable_name: str | None,
-    workspace_root: str | os.PathLike[str] | None = None,
-) -> str | None:
-    """Extract an editable Python file path from an IDE window title.
-
-    Only absolute paths are trusted. A bare file name is resolved against the
-    caller-provided ``workspace_root`` when available; otherwise the path is
-    discarded rather than guessed.
-    """
-
-    if not title or not executable_name:
-        return None
-    if Path(executable_name).name.casefold() not in _IDE_EXECUTABLES:
-        return None
-    match = _ABSOLUTE_PYTHON_PATH.search(title)
-    if match is not None:
-        return match.group(1).strip()
-    if workspace_root is None:
-        return None
-    relative = _RELATIVE_PYTHON_FILE.search(title)
-    if relative is None:
-        return None
-    return str(Path(workspace_root) / relative.group(1))
 
 
 class _LastInputInfo(ctypes.Structure):
@@ -84,6 +52,18 @@ def read_fullscreen_state(user32, hwnd) -> bool:
     return is_fullscreen_rectangle(_rectangle_values(window), _rectangle_values(monitor.rcMonitor))
 
 
+def foreground_window_is_fullscreen() -> bool:
+    """Check foreground geometry without reading title or process data."""
+    if os.name != "nt":
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        return bool(hwnd and read_fullscreen_state(user32, hwnd))
+    except (AttributeError, OSError):
+        return False
+
+
 def _rectangle_values(rectangle: wintypes.RECT) -> tuple[int, int, int, int]:
     return rectangle.left, rectangle.top, rectangle.right, rectangle.bottom
 
@@ -97,6 +77,9 @@ class NullForegroundActivitySource:
     def stop(self) -> None:
         return None
 
+    def sample_current(self) -> ForegroundWindow | None:
+        return None
+
 
 class NullIdleStateSource:
     """Portable source used when Win32 idle APIs are unavailable."""
@@ -108,13 +91,10 @@ class NullIdleStateSource:
         return None
 
 
-def create_foreground_source(
-    *,
-    workspace_root: str | os.PathLike[str] | None = None,
-) -> ForegroundActivitySource:
+def create_foreground_source() -> ForegroundActivitySource:
     if os.name != "nt":
         return NullForegroundActivitySource()
-    return WindowsForegroundActivitySource(workspace_root=workspace_root)
+    return WindowsForegroundActivitySource()
 
 
 def create_idle_source() -> IdleStateSource:
@@ -131,14 +111,8 @@ class WindowsForegroundActivitySource:
     _WM_QUIT = 0x0012
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-    def __init__(
-        self,
-        *,
-        on_error: Callable[[Exception], None] | None = None,
-        workspace_root: str | os.PathLike[str] | None = None,
-    ) -> None:
+    def __init__(self, *, on_error: Callable[[Exception], None] | None = None) -> None:
         self.on_error = on_error
-        self.workspace_root = workspace_root
         self._callback: Callable[[ForegroundWindow], None] | None = None
         self._thread: Thread | None = None
         self._thread_id: int | None = None
@@ -148,6 +122,24 @@ class WindowsForegroundActivitySource:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    def set_error_handler(self, on_error: Callable[[Exception], None]) -> None:
+        self.on_error = on_error
+
+    def sample_current(self) -> ForegroundWindow | None:
+        if os.name != "nt":
+            return None
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        return _foreground_window(
+            user32,
+            kernel32,
+            hwnd,
+            self._PROCESS_QUERY_LIMITED_INFORMATION,
+        )
 
     def start(self, on_change: Callable[[ForegroundWindow], None]) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -177,13 +169,7 @@ class WindowsForegroundActivitySource:
             if event != self._EVENT_SYSTEM_FOREGROUND or self._stopped.is_set():
                 return
             try:
-                window = _foreground_window(
-                    user32,
-                    kernel32,
-                    hwnd,
-                    self._PROCESS_QUERY_LIMITED_INFORMATION,
-                    workspace_root=self.workspace_root,
-                )
+                window = _foreground_window(user32, kernel32, hwnd, self._PROCESS_QUERY_LIMITED_INFORMATION)
                 if window is not None and self._callback is not None:
                     self._callback(window)
             except Exception as exc:
@@ -280,13 +266,7 @@ def _read_windows_idle_seconds() -> float | None:
     return read_idle_seconds(ctypes.windll.user32, ctypes.windll.kernel32)
 
 
-def _foreground_window(
-    user32,
-    kernel32,
-    hwnd,
-    access: int,
-    workspace_root: str | os.PathLike[str] | None = None,
-) -> ForegroundWindow | None:
+def _foreground_window(user32, kernel32, hwnd, access: int) -> ForegroundWindow | None:
     process_id = ctypes.c_ulong()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
     if not process_id.value:
@@ -302,21 +282,14 @@ def _foreground_window(
         title_buffer = ctypes.create_unicode_buffer(1024)
         user32.GetWindowTextW(hwnd, title_buffer, len(title_buffer))
         title_hint = title_buffer.value or None
-        executable_name = Path(buffer.value).name
-        ide_hint = _ide_activity_hint(title_hint, executable_name)
-        python_file_path = (
-            python_file_path_from_title(title_hint, executable_name, workspace_root)
-            if ide_hint == "coding"
-            else None
-        )
+        ide_hint = _ide_activity_hint(title_hint, Path(buffer.value).name)
         return ForegroundWindow(
             process_id=process_id.value,
-            executable_name=executable_name,
+            executable_name=Path(buffer.value).name,
             idle_seconds=read_idle_seconds(user32, kernel32),
             is_fullscreen=read_fullscreen_state(user32, hwnd),
             window_title_hint=title_hint,
             ide_activity_hint=ide_hint,
-            python_file_path=python_file_path,
         )
     finally:
         kernel32.CloseHandle(process)
@@ -324,7 +297,16 @@ def _foreground_window(
 
 def _ide_activity_hint(title: str | None, executable_name: str) -> str | None:
     """Return a bounded local hint; the raw title is discarded by the privacy gate."""
-    if executable_name.casefold() not in {"code.exe", "cursor.exe", "pycharm64.exe", "idea64.exe"}:
+    if executable_name.casefold() not in {
+        "code.exe",
+        "codex.exe",
+        "cursor.exe",
+        "windsurf.exe",
+        "zed.exe",
+        "pycharm64.exe",
+        "idea64.exe",
+        "devenv.exe",
+    }:
         return None
     value = (title or "").casefold()
     if any(marker in value for marker in ("debug", "调试", "breakpoint", "断点")):

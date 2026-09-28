@@ -33,6 +33,19 @@ class PersonalityIntensity(StrEnum):
     HIGH = "high"
 
 
+class PersonalityAbstraction(StrEnum):
+    """How surreal the pet's copy becomes.
+
+    - LITERAL: 直白提醒（现状）
+    - POETIC:  隐喻化、诗化表达
+    - SURREAL: 荒诞化表达，并偶发打破第四面墙的元评论
+    """
+
+    LITERAL = "literal"
+    POETIC = "poetic"
+    SURREAL = "surreal"
+
+
 class PetPersonalityState(BaseModel):
     """Durable, non-content state for restoring the pet after a restart."""
 

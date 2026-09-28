@@ -21,6 +21,8 @@ services:
       REFACTOR_AGENT_SANDBOX_DATA_ROOT: /data
       REFACTOR_AGENT_MOCK_LLM: ${REFACTOR_AGENT_MOCK_LLM:-false}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
       REFACTOR_AGENT_ADMIN_TOKEN: ${REFACTOR_AGENT_ADMIN_TOKEN:-}
       REFACTOR_AGENT_ALLOWED_REPOSITORIES: ${REFACTOR_AGENT_ALLOWED_REPOSITORIES:-owner/repository}
     volumes:
@@ -28,7 +30,7 @@ services:
       - .:/workspace/repo:ro
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "127.0.0.1:${REFACTOR_AGENT_API_PORT:-8000}:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 5s
@@ -81,7 +83,7 @@ services:
       - refactor-agent-memory:/data
       - .:/workspace/repo:ro
     ports:
-      - "127.0.0.1:${REFACTOR_AGENT_DASHBOARD_PORT:-8501}:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
       api:
         condition: service_healthy

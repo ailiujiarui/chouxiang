@@ -42,7 +42,7 @@ class PrivacyStore:
             row = connection.execute(
                 """
                 SELECT activity_collection_enabled, remote_inference_enabled, decision_recorded,
-                       auto_code_review_enabled
+                       python_review_enabled
                 FROM pet_privacy_consent WHERE id = 1
                 """
             ).fetchone()
@@ -52,7 +52,7 @@ class PrivacyStore:
             activity_collection_enabled=bool(row[0]),
             remote_inference_enabled=bool(row[1]),
             decision_recorded=bool(row[2]),
-            auto_code_review_enabled=bool(row[3]),
+            python_review_enabled=bool(row[3]),
         )
 
     def save_consent(self, consent: PrivacyConsent) -> None:
@@ -61,19 +61,19 @@ class PrivacyStore:
                 """
                 INSERT INTO pet_privacy_consent
                     (id, activity_collection_enabled, remote_inference_enabled, decision_recorded,
-                     auto_code_review_enabled)
+                     python_review_enabled)
                 VALUES (1, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     activity_collection_enabled = excluded.activity_collection_enabled,
                     remote_inference_enabled = excluded.remote_inference_enabled,
                     decision_recorded = excluded.decision_recorded,
-                    auto_code_review_enabled = excluded.auto_code_review_enabled
+                    python_review_enabled = excluded.python_review_enabled
                 """,
                 (
                     int(consent.activity_collection_enabled),
                     int(consent.remote_inference_enabled),
                     int(consent.decision_recorded),
-                    int(consent.auto_code_review_enabled),
+                    int(consent.python_review_enabled),
                 ),
             )
 
@@ -178,7 +178,8 @@ class PrivacyStore:
                     activity_collection_enabled INTEGER NOT NULL CHECK (activity_collection_enabled IN (0, 1)),
                     remote_inference_enabled INTEGER NOT NULL CHECK (remote_inference_enabled IN (0, 1)),
                     decision_recorded INTEGER NOT NULL CHECK (decision_recorded IN (0, 1)),
-                    auto_code_review_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auto_code_review_enabled IN (0, 1))
+                    python_review_enabled INTEGER NOT NULL DEFAULT 0
+                        CHECK (python_review_enabled IN (0, 1))
                 );
                 CREATE TABLE IF NOT EXISTS pet_activity_events (
                     event_id TEXT PRIMARY KEY,
@@ -202,10 +203,10 @@ class PrivacyStore:
                     "ALTER TABLE pet_privacy_consent ADD COLUMN decision_recorded INTEGER NOT NULL DEFAULT 1 "
                     "CHECK (decision_recorded IN (0, 1))"
                 )
-            if "auto_code_review_enabled" not in consent_columns:
+            if "python_review_enabled" not in consent_columns:
                 connection.execute(
-                    "ALTER TABLE pet_privacy_consent ADD COLUMN auto_code_review_enabled INTEGER NOT NULL "
-                    "DEFAULT 0 CHECK (auto_code_review_enabled IN (0, 1))"
+                    "ALTER TABLE pet_privacy_consent ADD COLUMN python_review_enabled "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (python_review_enabled IN (0, 1))"
                 )
             event_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(pet_activity_events)")

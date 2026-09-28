@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from refactor_agent.models import RunRecord
 
 
 STATUS_LABELS = {
@@ -258,3 +262,267 @@ def _remaining_seconds(deadline_at: str | None, now: datetime) -> int | None:
     if deadline.tzinfo is None:
         return None
     return max(int((deadline - now).total_seconds()), 0)
+
+
+@dataclass(frozen=True)
+class DashboardRun:
+    record: RunRecord
+    workspace_path: Path
+    loc_delta: int | None
+    cc_delta: int | None
+    loc_reduction_percent: float | None
+    cc_reduction_percent: float | None
+    reward: float | None
+    trajectory: list[dict[str, Any]]
+    candidate_files: list[Path]
+
+
+@dataclass(frozen=True)
+class DashboardChatMessage:
+    attempt: int | None
+    agent: str
+    agent_label: str
+    phase: str
+    message: str
+    side: str
+    tone: str
+    reward: float | None = None
+
+
+def load_trajectory(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    steps: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            steps.append(json.loads(line))
+        except json.JSONDecodeError:
+            steps.append({"attempt": None, "status": "CORRUPT", "message": line})
+    return steps
+
+
+def build_agent_chat_messages(
+    trajectory: list[dict[str, Any]],
+    limit: int = 40,
+) -> list[DashboardChatMessage]:
+    messages: list[DashboardChatMessage] = []
+    for step in trajectory:
+        message = str(step.get("message") or "").strip()
+        if not message:
+            continue
+        agent = str(step.get("agent") or "SYSTEM")
+        status = str(step.get("status") or "-")
+        messages.append(
+            DashboardChatMessage(
+                attempt=_optional_int(step.get("attempt")),
+                agent=agent,
+                agent_label=_agent_label(agent),
+                phase=_phase_label(status),
+                message=_compact_text(message, 560),
+                side=_agent_side(agent),
+                tone=_agent_tone(agent, status),
+                reward=_step_reward(step),
+            )
+        )
+    if limit <= 0:
+        return messages
+    return messages[-limit:]
+
+
+def build_overview_chart_rows(runs: list[DashboardRun]) -> list[dict[str, Any]]:
+    return [
+        {
+            "运行": item.record.run_id[-8:],
+            "LOC 变化": item.loc_delta or 0,
+            "CC 变化": item.cc_delta or 0,
+            "奖励分": item.reward or 0,
+        }
+        for item in reversed(runs)
+    ]
+
+
+def build_before_after_rows(item: DashboardRun) -> list[dict[str, Any]]:
+    return [
+        {"指标": "LOC", "重构前": item.record.pre_loc or 0, "重构后": item.record.post_loc or 0},
+        {"指标": "CC", "重构前": item.record.pre_cc or 0, "重构后": item.record.post_cc or 0},
+    ]
+
+
+def _delta(before: int | None, after: int | None) -> int | None:
+    if before is None or after is None:
+        return None
+    return after - before
+
+
+def _reduction_percent(before: int | None, after: int | None) -> float | None:
+    if before in (None, 0) or after is None:
+        return None
+    return (before - after) / before * 100
+
+
+def _last_reward(trajectory: list[dict[str, Any]]) -> float | None:
+    for step in reversed(trajectory):
+        reward = step.get("reward")
+        if isinstance(reward, dict) and isinstance(reward.get("reward"), int | float):
+            return float(reward["reward"])
+    return None
+
+
+def _candidate_files(workspace: Path) -> list[Path]:
+    if not workspace.is_dir():
+        return []
+    ignored_parts = {"__pycache__", ".adversary_tests"}
+    files = [
+        path
+        for path in workspace.rglob("*.py")
+        if not any(part in ignored_parts for part in path.parts)
+    ]
+    return sorted(files)[:10]
+
+
+def _average(values: list[int]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _average_float(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _format_delta(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:+.1f}"
+
+
+def _format_float(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}"
+
+
+def _format_percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f}%"
+
+
+def _status_label(status: str) -> str:
+    return localize_status(status)
+
+
+def _phase_label(status: str | None) -> str:
+    labels = {
+        "MINIMIZER_PROPOSED": "Minimizer 提案",
+        "DEFENDER_REVIEWED": "Defender 审查",
+        "AST_REJECTED": "AST 守卫拦截",
+        "PYTEST_FAILED": "Pytest 失败",
+        "ADVERSARY_CRITIQUED": "Adversary 红队审查",
+        "ADVERSARY_CHALLENGED": "Adversary 攻击",
+        "ADVERSARY_FAILED": "对抗测试击穿",
+        "JUDGE_SCORED": "Judge 评分",
+        "DEBATE_CONVERGED": "对抗收敛",
+        "SUCCESS": "裁决通过",
+        "FAILED": "运行失败",
+        "CORRUPT": "轨迹损坏",
+    }
+    return labels.get(status or "", status or "-")
+
+
+def _compact_text(value: str, limit: int) -> str:
+    normalized = " ".join(value.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _step_reward(step: dict[str, Any]) -> float | None:
+    reward = step.get("reward")
+    if not isinstance(reward, dict):
+        return None
+    value = reward.get("reward")
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _agent_side(agent: str) -> str:
+    return {
+        "MINIMIZER": "left",
+        "DEFENDER": "right",
+        "ADVERSARY": "right",
+        "JUDGE": "center",
+    }.get(agent, "center")
+
+
+def _agent_tone(agent: str, status: str) -> str:
+    if status in {"FAILED", "PYTEST_FAILED", "AST_REJECTED", "ADVERSARY_FAILED"}:
+        return "adversary"
+    return {
+        "MINIMIZER": "minimizer",
+        "DEFENDER": "defender",
+        "ADVERSARY": "adversary",
+        "JUDGE": "judge",
+    }.get(agent, "system")
+
+
+def _agent_label(agent: str | None) -> str:
+    labels = {
+        "MINIMIZER": "精简狂魔",
+        "DEFENDER": "防御大师",
+        "ADVERSARY": "测试刺客",
+        "JUDGE": "董事会法官",
+        "SYSTEM": "系统",
+    }
+    return labels.get(agent or "", agent or "-")
+
+
+def _metadata_summary(metadata: Any) -> str:
+    if not isinstance(metadata, dict) or not metadata:
+        return "-"
+    parts = []
+    for key, value in metadata.items():
+        if isinstance(value, float):
+            parts.append(f"{key}={value:.2f}")
+        elif isinstance(value, (str, int, bool)):
+            parts.append(f"{key}={value}")
+    return ", ".join(parts[:4]) if parts else "-"
+
+
+def _table_row(item: DashboardRun) -> dict[str, Any]:
+    return {
+        "运行 ID": item.record.run_id,
+        "仓库/案例": item.record.repo_name,
+        "状态": _status_label(item.record.status),
+        "自愈轮次": item.record.self_heal_count,
+        "LOC": f"{item.record.pre_loc} -> {item.record.post_loc}",
+        "LOC 变化": item.loc_delta,
+        "LOC 压缩率": _format_percent(item.loc_reduction_percent),
+        "CC": f"{item.record.pre_cc} -> {item.record.post_cc}",
+        "CC 变化": item.cc_delta,
+        "CC 压缩率": _format_percent(item.cc_reduction_percent),
+        "奖励分": item.reward,
+        "候选文件数": len(item.candidate_files),
+    }
+
+
+def _record_summary(item: DashboardRun) -> str:
+    return "\n".join(
+        [
+            f"状态: {_status_label(item.record.status)}",
+            f"运行 ID: {item.record.run_id}",
+            f"仓库/案例: {item.record.repo_name}",
+            f"自愈轮次: {item.record.self_heal_count}",
+            f"LOC: {item.record.pre_loc} -> {item.record.post_loc} ({_format_delta(item.loc_delta)})",
+            f"LOC 压缩率: {_format_percent(item.loc_reduction_percent)}",
+            f"圈复杂度: {item.record.pre_cc} -> {item.record.post_cc} ({_format_delta(item.cc_delta)})",
+            f"CC 压缩率: {_format_percent(item.cc_reduction_percent)}",
+            f"奖励分: {_format_float(item.reward)}",
+            f"错误: {item.record.error_message or '-'}",
+        ]
+    )

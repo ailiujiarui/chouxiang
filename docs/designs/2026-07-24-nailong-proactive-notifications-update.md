@@ -1,7 +1,11 @@
 # Nailong 主动通知更新
 
 日期：2026-07-24  
-状态：已实现，待 Pull Request review
+状态：已实现并完成 code review（2026-08-14 同步）
+
+> 2026-08-08 proposed reliability update: the running activity orchestrator
+> needs a due-window scheduler and less silent coding/idle personality policy.
+> See `2026-08-08-nailong-proactive-speech-reliability.md`.
 
 ## 更新目标
 
@@ -55,11 +59,10 @@ NotificationService.get_status()
 
 ## 启动与验证
 
-首次安装桌面端依赖并启动：
+启动完整产品（首次运行会自动安装桌面端依赖）：
 
-```powershell
-python -m pip install -e ".[desktop]"
-.\scripts\start.ps1 -Build -Desktop
+```text
+双击 start.cmd
 ```
 
 默认通知数据库为 `.runs\\nailong_notifications.sqlite`。可用以下脚本验证完整链路：

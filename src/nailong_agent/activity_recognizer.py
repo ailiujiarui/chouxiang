@@ -13,7 +13,7 @@ from nailong_agent.events import (
     ActivityWindow,
 )
 from nailong_agent.privacy import PrivacyPolicy
-from refactor_agent.llm import LLMProvider
+from nailong_agent.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ class ActivityRecognizer:
             "code": (ActivityType.CODING, 0.72),
             "ide": (ActivityType.CODING, 0.72),
             "terminal": (ActivityType.CODING, 0.68),
+            "game": (ActivityType.GAMING, 0.72),
         }
         activity, confidence = application_scores.get(
             window.dominant_application,

@@ -11,63 +11,22 @@ from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.llm import RefactorClient
 from refactor_agent.memory import target_memory_key
 from refactor_agent.models import (
-    AdversarialCritique,
-    AdversarialTestResult,
-    AstRewriteResult,
-    CandidateValidationResult,
-    EvidenceLevel,
-    LLMUsage,
-    MutationTestResult,
-    PerformanceProfile,
     RefactorRequest,
     RefactorRunResult,
     RewardBreakdown,
-    RunRecord,
-    SandboxResult,
 )
 from refactor_agent.orchestrator_artifacts import write_run_artifacts
-from refactor_agent.orchestrator_adversary import (
-    run_adversary_execution_node,
-    summarize_adversarial_failure,
-    summarize_adversary_pass,
-    summarize_critique,
-)
-from refactor_agent.orchestrator_ast_guard import (
-    code_change_percent,
-    guard_ast_execution_node,
-    rewrite_metadata,
-)
+from refactor_agent.orchestrator_adversary import run_adversary_execution_node
+from refactor_agent.orchestrator_ast_guard import guard_ast_execution_node
 from refactor_agent.orchestrator_observability import OrchestratorObservability
 from refactor_agent.orchestrator_finalize import run_finalize_execution_node
-from refactor_agent.orchestrator_report import (
-    build_report as render_report,
-    build_technical_report as render_technical_report,
-)
+from refactor_agent.orchestrator_report import build_report as render_report
 from refactor_agent.orchestrator_minimizer import minimize_execution_node
-from refactor_agent.orchestrator_judge import (
-    run_judge_execution_node,
-    summarize_judge,
-)
-from refactor_agent.orchestrator_mutation import (
-    combined_mutation_tests_path,
-    run_mutation_execution_node,
-    summarize_mutation,
-)
-from refactor_agent.orchestrator_prepare import (
-    prepare_execution_node,
-    request_with_memory as prepare_request_with_memory,
-)
-from refactor_agent.orchestrator_pytest import (
-    run_pytest_execution_node,
-    summarize_pytest_failure,
-)
-from refactor_agent.orchestrator_state import (
-    WorkflowNode,
-    close_debate_round,
-    initial_execution_state,
-    retry_or_finalize,
-    transition_to,
-)
+from refactor_agent.orchestrator_judge import run_judge_execution_node
+from refactor_agent.orchestrator_mutation import run_mutation_execution_node
+from refactor_agent.orchestrator_prepare import prepare_execution_node
+from refactor_agent.orchestrator_pytest import run_pytest_execution_node
+from refactor_agent.orchestrator_state import initial_execution_state
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -247,7 +206,7 @@ class _RefactorWorkflow:
             memory_key=self.memory_key,
             evidence_level=self.request.evidence_level,
             graph_backend=self.orchestrator.graph_backend,
-            build_report=_build_report,
+            build_report=render_report,
             write_artifacts=self._write_artifacts,
             record_trajectory=self._trajectory,
             emit_analysis_event=self._emit_analysis_event,
@@ -255,16 +214,6 @@ class _RefactorWorkflow:
 
     def _write_artifacts(self, state: ExecutionState, report: str) -> None:
         write_run_artifacts(self.orchestrator.run_root, self.run_id, state, report)
-
-    def _retry_or_finalize(self, state: ExecutionState) -> ExecutionState:
-        return retry_or_finalize(state)
-
-    def _close_round(self, state: ExecutionState, **updates) -> None:
-        close_debate_round(state, **updates)
-
-    @staticmethod
-    def _transition_to(state: ExecutionState, target: WorkflowNode) -> ExecutionState:
-        return transition_to(state, target)
 
     def _trajectory(
         self,
@@ -310,129 +259,7 @@ class _RefactorWorkflow:
             phase=phase,
         )
 
-    @staticmethod
-    def _rewrite_metadata(rewrite: AstRewriteResult) -> dict[str, object]:
-        return rewrite_metadata(rewrite)
-
 
 def _new_run_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     return f"{stamp}-{uuid4().hex[:8]}"
-
-
-def _request_with_memory(request: RefactorRequest, memory_context: str | None) -> RefactorRequest:
-    return prepare_request_with_memory(request, memory_context)
-
-
-def _summarize_failure(result: SandboxResult) -> str:
-    return summarize_pytest_failure(result)
-
-
-def _summarize_adversarial_failure(result: AdversarialTestResult) -> str:
-    return summarize_adversarial_failure(result)
-
-
-def _summarize_adversary_pass(result: AdversarialTestResult) -> str:
-    return summarize_adversary_pass(result)
-
-
-def _summarize_critique(critique: AdversarialCritique) -> str:
-    return summarize_critique(critique)
-
-
-def _summarize_mutation(result: MutationTestResult) -> str:
-    return summarize_mutation(result)
-
-
-def _summarize_judge(reward: RewardBreakdown) -> str:
-    return summarize_judge(reward)
-
-
-def _code_change_percent(before: str, after: str) -> float:
-    return code_change_percent(before, after)
-
-
-def _combined_mutation_tests_path(
-    workspace: Path,
-    baseline_tests: Path,
-    adversarial_test_file: Path | None,
-) -> Path:
-    return combined_mutation_tests_path(
-        workspace,
-        baseline_tests,
-        adversarial_test_file,
-    )
-
-
-def _build_report(
-    record: RunRecord,
-    workspace: Path,
-    review: str | None,
-    sandbox_result: SandboxResult | None,
-    error: str | None,
-    ast_validation: CandidateValidationResult | None = None,
-    adversarial_result: AdversarialTestResult | None = None,
-    mutation_result: MutationTestResult | None = None,
-    reward: RewardBreakdown | None = None,
-    performance_profile: PerformanceProfile | None = None,
-    debate_rounds: list[DebateRound] | None = None,
-    ast_rewrite: AstRewriteResult | None = None,
-    graph_backend: str | None = None,
-    graph_node_trace: list[str] | None = None,
-    evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-    llm_usages: list[LLMUsage] | None = None,
-) -> str:
-    return render_report(
-        record,
-        workspace,
-        review,
-        sandbox_result,
-        error,
-        ast_validation,
-        adversarial_result,
-        mutation_result,
-        reward,
-        performance_profile,
-        debate_rounds,
-        ast_rewrite,
-        graph_backend,
-        graph_node_trace,
-        evidence_level,
-        llm_usages,
-    )
-
-
-def _build_technical_report(
-    record: RunRecord,
-    workspace: Path,
-    review: str | None,
-    sandbox_result: SandboxResult | None,
-    error: str | None,
-    ast_validation: CandidateValidationResult | None = None,
-    adversarial_result: AdversarialTestResult | None = None,
-    mutation_result: MutationTestResult | None = None,
-    reward: RewardBreakdown | None = None,
-    performance_profile: PerformanceProfile | None = None,
-    debate_rounds: list[DebateRound] | None = None,
-    ast_rewrite: AstRewriteResult | None = None,
-    graph_backend: str | None = None,
-    graph_node_trace: list[str] | None = None,
-    evidence_level: EvidenceLevel = EvidenceLevel.REPOSITORY_TESTS,
-) -> str:
-    return render_technical_report(
-        record,
-        workspace,
-        review,
-        sandbox_result,
-        error,
-        ast_validation,
-        adversarial_result,
-        mutation_result,
-        reward,
-        performance_profile,
-        debate_rounds,
-        ast_rewrite,
-        graph_backend,
-        graph_node_trace,
-        evidence_level,
-    )

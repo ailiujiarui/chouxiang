@@ -5,7 +5,6 @@ from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEA
 from nailong_agent.activity_aggregator import ActivityEventAggregator
 from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.activity_recognizer import ActivityRecognizer
-from nailong_agent.code_review import CodeReview, CodeReviewService
 from nailong_agent.config import NailongSettings
 from nailong_agent.contracts import (
     PetClassificationHint,
@@ -51,8 +50,6 @@ __all__ = [
     "ActivityEventAggregator",
     "ActivityPersonalityOrchestrator",
     "ActivityRecognizer",
-    "CodeReview",
-    "CodeReviewService",
     "ForegroundWindow",
     "IdleState",
     "ActivityClassification",

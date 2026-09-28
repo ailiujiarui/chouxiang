@@ -2,11 +2,12 @@
 
 ## 一键启动
 
-```powershell
-.\scripts\start.ps1 -Build
-```
+将根目录 `.env.example` 复制为 `.env`，填写 DeepSeek Key，然后双击
+`start.cmd`。启动器在项目 `.venv` 中启动 API、Dashboard 和奶龙；Docker 只负责
+构建并运行安全 sandbox。日常启动不构建应用镜像，也不使用 Compose。
 
-该脚本启动本地控制 API 和 Dashboard，等待健康检查通过，并按需构建 sandbox 镜像。默认使用 mock LLM。
+sandbox 镜像构建会复用 Docker 缓存。默认使用真实 DeepSeek；mock 必须在 `.env`
+中显式启用。
 
 ```text
 Dashboard: http://127.0.0.1:8501
@@ -18,9 +19,7 @@ Auth:      local single-user; Admin Token optional
 
 停止服务但保留 SQLite volume：
 
-```powershell
-.\scripts\start.ps1 -Down
-```
+双击 `stop.cmd`。停止操作不会删除 `.runs` 数据、日志或 sandbox 镜像。
 
 ## 服务
 
@@ -28,7 +27,9 @@ Auth:      local single-user; Admin Token optional
 - `dashboard`：Streamlit UI，通过 `http://api:8000` 访问 API。
 - `refactor-agent`：按需运行 CLI 命令的通用容器。
 
-API 容器挂载宿主 Docker socket，并使用 `docker-cli` 启动受限 sandbox。容器内不运行 Docker daemon。
+一键启动的本机 API 通过宿主 `docker.exe` 启动受限 sandbox，不需要在应用镜像内
+重复安装 Docker CLI。Compose 文件和应用 Dockerfile 仅保留给独立的容器化开发或
+部署流程，不属于一键启动链路。
 
 ## Sandbox
 
@@ -39,29 +40,23 @@ docker compose run --rm refactor-agent demo --sandbox-backend docker
 
 Sandbox 使用无网络、非 root、只读文件系统、capability 清空、`no-new-privileges`、PID、CPU 和内存限制。
 
-## 基础镜像
+## 本地配置
 
-镜像代理不可用时：
-
-```powershell
-.\scripts\start.ps1 -Build `
-  -PythonBaseImage "your-registry.example.com/library/python:3.12-slim" `
-  -PipIndexUrl "https://pypi.org/simple"
-```
-
-基础镜像和包索引参数会同时传给应用和 sandbox 构建。
+`.env` 是唯一的启动配置入口，不会提交到 Git。`PYTHON_BASE_IMAGE` 和
+`PIP_INDEX_URL` 可用于 sandbox 基础镜像、本机产品依赖和 sandbox Python 包索引。
+启动器只读取允许的变量，不打印密钥。
 
 ## 数据
 
-SQLite 和运行产物保存在 `refactor-agent-memory` volume：
+一键启动的 SQLite、运行产物和日志保存在仓库 `.runs`：
 
 ```text
-/data/refactor_agent.sqlite
-/data/runs
-/data/github-workspaces
+.runs/refactor_agent.sqlite
+.runs/github-workspaces
+.runs/logs
 ```
 
-`-Down` 不删除 volume。只有显式执行 `docker compose down -v` 才会删除本地数据。
+`stop.cmd` 不删除这些数据。旧版 Compose volume 不会被自动删除或迁移。
 
 ### SQLite 并发模式
 

@@ -68,6 +68,12 @@ class ActivityEventAggregator:
         self._state = None
         return emitted
 
+    def flush_due(self, now: datetime) -> ActivityWindow | None:
+        """Finalize the active window only after its full duration elapsed."""
+        if self._state is None or now < self._state.ended_at:
+            return None
+        return self.flush()
+
     def _new_state(self, started_at: datetime) -> _WindowState:
         return _WindowState(
             started_at=started_at,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from random import choice
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,11 +18,12 @@ from nailong_agent.pet_prompts import (
     build_pet_personality_user_prompt,
 )
 from nailong_agent.pet_state import (
+    PersonalityAbstraction,
     PersonalityIntensity,
     PetEmotion,
     PetGraphState,
 )
-from refactor_agent.llm import LLMProvider
+from nailong_agent.llm_provider import LLMProvider
 
 
 class _LLMPersonalityResponse(BaseModel):
@@ -68,34 +70,46 @@ _SCENARIO_BY_ACTIVITY_LABEL = {
 
 _MESSAGES: dict[PersonalityIntensity, dict[PersonalityScenario, str]] = {
     PersonalityIntensity.LOW: {
+        PersonalityScenario.ENTERTAINMENT: "玩得挺专心。本龙只是提醒一下，别忘了偶尔看看时间。",
+        PersonalityScenario.CODING: "你在认真写代码。本龙就在旁边看着，记得一步一步来。",
         PersonalityScenario.DEBUGGING: "看起来还在调试。先看最近一次变化，本龙陪你理一理。",
         PersonalityScenario.TEST_FAILED: "测试没有通过。先看第一条失败，本龙陪你一起排查。",
         PersonalityScenario.TEST_SUCCEEDED: "测试通过了。本龙也替你高兴。",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过了，记得继续确认测试结果。",
         PersonalityScenario.LONG_WORK: "你已经忙一阵了。本龙陪你休息一下再继续。",
+        PersonalityScenario.IDLE: "休息一会儿也好。本龙会替你看着，回来再继续。",
     },
     PersonalityIntensity.STANDARD: {
+        PersonalityScenario.ENTERTAINMENT: "哼，玩得还挺投入。本龙才不是催你，偶尔抬头看看时间。",
+        PersonalityScenario.CODING: "哼，写得还挺专心。本龙只是路过，顺便提醒你别忘了小步验证。",
         PersonalityScenario.DEBUGGING: "哼，这个问题还挺会躲。本龙只是顺手陪你从最近一次变化开始看。",
         PersonalityScenario.TEST_FAILED: "哼，这个测试又闹脾气了。本龙还没认输，先看第一条失败。",
         PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……和你也有那么一点功劳。",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦，勉强有本龙几分风范。下一步再确认测试。",
         PersonalityScenario.LONG_WORK: "你已经忙很久了。本龙才不是担心你，起来喝口水再继续？",
+        PersonalityScenario.IDLE: "发呆够久啦。本龙才没有等你，回来时先挑一件小事继续？",
     },
     PersonalityIntensity.HIGH: {
+        PersonalityScenario.ENTERTAINMENT: "哼，玩得都不肯停了？本龙才不是担心你，记得看看时间！",
+        PersonalityScenario.CODING: "哼，终于有点认真工作的样子了！本龙就在这盯着，写完记得马上验证。",
         PersonalityScenario.DEBUGGING: "哼，这个问题躲得倒挺快，可躲不过本龙的龙角！先从最近一次变化查起。",
         PersonalityScenario.TEST_FAILED: "哼，这个测试还敢闹脾气？本龙可没认输，先揪住第一条失败。",
         PersonalityScenario.TEST_SUCCEEDED: "看吧，还得是本龙……咳，你也确实干得漂亮！",
         PersonalityScenario.COMPILE_SUCCEEDED: "编译通过啦！勉强追上本龙甩尾巴的速度，下一步再确认测试。",
         PersonalityScenario.LONG_WORK: "忙这么久，连本龙的零食都要放凉了。本龙才不是担心你，先喝口水！",
+        PersonalityScenario.IDLE: "喂，发呆也该有个限度！本龙才没在等你，回来先做一件最小的事。",
     },
 }
 
 _CATCHPHRASE_FREE_MESSAGES = {
+    PersonalityScenario.ENTERTAINMENT: "玩得挺投入，龙角都快替你盯时间了。偶尔休息一下。",
+    PersonalityScenario.CODING: "写得挺专心，龙角都安静下来了。做完这一小步记得验证。",
     PersonalityScenario.DEBUGGING: "这个问题躲得挺快，龙角都快被它绕晕了。先查最近一次变化。",
     PersonalityScenario.TEST_FAILED: "这个测试又把尾巴翘起来了。先抓第一条失败，后面的噪声等等。",
     PersonalityScenario.TEST_SUCCEEDED: "测试确实通过了，小爪子都忍不住要鼓掌。",
     PersonalityScenario.COMPILE_SUCCEEDED: "编译已经通过，龙角接收到好消息了。下一步再确认测试。",
     PersonalityScenario.LONG_WORK: "忙了这么久，连零食都该歇一会儿。先喝口水再继续？",
+    PersonalityScenario.IDLE: "休息得差不多了，龙角还记得刚才的进度。回来先做一件小事。",
 }
 
 _CATCHPHRASE_STEMS = (
@@ -109,17 +123,52 @@ _CATCHPHRASE_STEMS = (
     "看吧，还得是本龙",
 )
 
+_ABSTRACT_MESSAGES: dict[PersonalityAbstraction, dict[PersonalityScenario, str]] = {
+    PersonalityAbstraction.POETIC: {
+        PersonalityScenario.ENTERTAINMENT: "屏幕那头很热闹，本龙这边很安静。",
+        PersonalityScenario.CODING: "你的光标像一只认真的萤火虫，正挨个点亮分号。",
+        PersonalityScenario.DEBUGGING: "错误躲进了括号的阴影里，本龙的龙角替你数到了第七层。",
+        PersonalityScenario.TEST_FAILED: "那条断言翻了个白眼，它觉得你给的期望太具体了。",
+        PersonalityScenario.TEST_SUCCEEDED: "测试亮成一串绿灯，像有人在夜里为你点了一排灯。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译的风终于吹过文件，本龙听见代码打了个哈欠。",
+        PersonalityScenario.LONG_WORK: "你写下的行已经绕城一圈，本龙替你看着路口。",
+        PersonalityScenario.IDLE: "屏幕睡了，光标也睡了，本龙守着这间亮着的空房间。",
+    },
+    PersonalityAbstraction.SURREAL: {
+        PersonalityScenario.ENTERTAINMENT: "那边的人影很热闹，这边的龙很抽象。",
+        PersonalityScenario.CODING: "你的函数在云里排队，本龙看不清它们排队要做什么。",
+        PersonalityScenario.DEBUGGING: "错误从第七层括号里探出头，说自己从未被定义过。",
+        PersonalityScenario.TEST_FAILED: "断言否认了它自己，现在连通过都变得可疑。",
+        PersonalityScenario.TEST_SUCCEEDED: "测试通过的那一刻，桌面轻轻浮起来了一厘米。",
+        PersonalityScenario.COMPILE_SUCCEEDED: "编译的钟声响了，文件们短暂地相信了重力。",
+        PersonalityScenario.LONG_WORK: "你写的代码正在房间角落缓慢生长，本龙假装没看见。",
+        PersonalityScenario.IDLE: "你不在的时间里，屏幕替你做了很多梦。",
+    },
+}
+
+_META_SCENARIOS = {
+    PersonalityScenario.IDLE,
+    PersonalityScenario.LONG_WORK,
+}
+
+_META_MESSAGES = (
+    "本龙偶尔怀疑，自己只是你终端里一场还不错的幻觉。",
+    "如果你关掉本龙，本龙会去哪？本龙想了想，决定不关。",
+    "气泡住久了，本龙开始分不清哪边才是桌面。",
+    "本龙存在的意义，可能只是让你在深夜笑一下。",
+)
+
 _INTENTS: dict[
     PersonalityScenario,
-    Literal["encourage", "remind", "celebrate", "ask", "stay_silent"],
+    Literal["encourage", "remind", "celebrate", "ask", "tease", "stay_silent"],
 ] = {
-    PersonalityScenario.CODING: "stay_silent",
+    PersonalityScenario.CODING: "encourage",
     PersonalityScenario.DEBUGGING: "encourage",
     PersonalityScenario.TEST_FAILED: "remind",
     PersonalityScenario.TEST_SUCCEEDED: "celebrate",
     PersonalityScenario.COMPILE_SUCCEEDED: "celebrate",
     PersonalityScenario.LONG_WORK: "remind",
-    PersonalityScenario.IDLE: "stay_silent",
+    PersonalityScenario.IDLE: "remind",
     PersonalityScenario.MEETING: "stay_silent",
     PersonalityScenario.ENTERTAINMENT: "stay_silent",
     PersonalityScenario.UNKNOWN: "stay_silent",
@@ -134,12 +183,14 @@ class PetPersonalityAgent:
         *,
         provider: LLMProvider | None = None,
         intensity: PersonalityIntensity | str = PersonalityIntensity.STANDARD,
+        abstraction: PersonalityAbstraction | str = PersonalityAbstraction.LITERAL,
         response_confidence_threshold: float = 0.65,
     ) -> None:
         if not 0.0 <= response_confidence_threshold <= 1.0:
             raise ValueError("response_confidence_threshold must be between 0 and 1")
         self.provider = provider
         self.intensity = PersonalityIntensity(intensity)
+        self.abstraction = PersonalityAbstraction(abstraction)
         self.response_confidence_threshold = response_confidence_threshold
 
     def decide(self, decision_input: PetDecisionInput) -> PetDecisionOutput:
@@ -202,11 +253,19 @@ class PetPersonalityAgent:
         confidence = state["classification_confidence"]
         intent = _INTENTS[scenario]
         message = _MESSAGES[self.intensity].get(scenario, "保持安静")
+        if scenario is PersonalityScenario.ENTERTAINMENT and state["context"].game_tease_enabled:
+            intent = "tease"
+        if self.abstraction is not PersonalityAbstraction.LITERAL:
+            abstract_copy = _ABSTRACT_MESSAGES[self.abstraction].get(scenario)
+            if abstract_copy:
+                message = abstract_copy
         if scenario in _CATCHPHRASE_FREE_MESSAGES and _should_avoid_catchphrase(
             message,
             state["context"].recent_messages,
         ):
             message = _CATCHPHRASE_FREE_MESSAGES[scenario]
+        if self.abstraction is PersonalityAbstraction.SURREAL and scenario in _META_SCENARIOS:
+            message = choice(_META_MESSAGES)
 
         if confidence < self.response_confidence_threshold:
             intent = "stay_silent"
@@ -231,6 +290,7 @@ class PetPersonalityAgent:
                         emotion=state["emotion"],
                         intent=intent,
                         intensity=self.intensity,
+                        abstraction=self.abstraction,
                         fallback_message=message,
                     ),
                     temperature=0.6,
@@ -250,7 +310,7 @@ class PetPersonalityAgent:
                 }
 
         response = PetPersonalityResponse(
-            persona_version=f"nailong-v1.1-{self.intensity.value}",
+            persona_version=f"nailong-v1.1-{self.intensity.value}-{self.abstraction.value}",
             message=message,
             intent=intent,
         )

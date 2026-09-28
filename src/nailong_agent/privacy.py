@@ -15,7 +15,7 @@ from nailong_agent.events import ActivityEvent, ActivityType, RawActivitySignal
 from refactor_agent.artifacts import sanitize_text
 
 
-ConsentScope = Literal["activity_collection", "remote_inference", "auto_code_review"]
+ConsentScope = Literal["activity_collection", "remote_inference", "python_review"]
 
 _SENSITIVE_MARKERS = (
     "password",
@@ -47,6 +47,10 @@ _APPLICATION_CATEGORIES = {
     "code": "code",
     "visual studio code": "code",
     "vscode": "code",
+    "codex": "code",
+    "cursor": "code",
+    "windsurf": "code",
+    "zed": "code",
     "chrome": "browser",
     "firefox": "browser",
     "msedge": "browser",
@@ -58,7 +62,14 @@ _APPLICATION_CATEGORIES = {
     "windows terminal": "terminal",
     "idea64": "ide",
     "pycharm64": "ide",
+    "devenv": "ide",
     "explorer": "explorer",
+    "game": "game",
+    "leagueclient": "game",
+    "league of legends": "game",
+    "leagueoflegends": "game",
+    "deltaforceclient-win64-shipping": "game",
+    "deltaforce": "game",
 }
 
 
@@ -69,7 +80,7 @@ class PrivacyConsent:
     activity_collection_enabled: bool = False
     remote_inference_enabled: bool = False
     decision_recorded: bool = True
-    auto_code_review_enabled: bool = False
+    python_review_enabled: bool = False
 
     @classmethod
     def unanswered(cls) -> "PrivacyConsent":
@@ -80,7 +91,7 @@ class PrivacyConsent:
             return self.activity_collection_enabled
         if scope == "remote_inference":
             return self.remote_inference_enabled
-        return self.auto_code_review_enabled
+        return self.python_review_enabled
 
 
 @dataclass(frozen=True)

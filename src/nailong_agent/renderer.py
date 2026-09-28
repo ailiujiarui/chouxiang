@@ -1,187 +1,24 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Protocol
 
-from nailong_agent.events import PetExpression, PetState, PopupDecision
-from nailong_agent.pet_state import PetEmotion, PetPersonalityState
+from nailong_agent.events import PetExpression, PopupDecision
+from nailong_agent.health import NailongHealthSnapshot
+from nailong_agent.pet_state import PetPersonalityState
 from nailong_agent.privacy import PrivacyConsent
+from nailong_agent.renderer_core import (
+    MOUTH_TEXT,
+    PopupDeliveryResult,
+    clamp_window_position,
+    decision_to_pet_state,
+    personality_state_to_pet_state,
+    place_bubble_above_pet,
+)
+from nailong_agent.windows_activity import foreground_window_is_fullscreen
 
 
-@dataclass(frozen=True)
-class BubblePlacement:
-    x: int
-    y: int
-    tail_x: int
-
-
-def place_bubble_above_pet(
-    *,
-    available: tuple[int, int, int, int],
-    pet: tuple[int, int, int, int],
-    bubble_size: tuple[int, int],
-    screen_margin: int = 12,
-    pet_gap: int = 6,
-    tail_margin: int = 28,
-) -> BubblePlacement:
-    """Place a bubble above the pet and clamp it to the usable screen."""
-
-    available_x, available_y, available_width, _ = available
-    pet_x, pet_y, pet_width, _ = pet
-    bubble_width, bubble_height = bubble_size
-    minimum_x = available_x + screen_margin
-    maximum_x = max(minimum_x, available_x + available_width - screen_margin - bubble_width)
-    pet_center_x = pet_x + pet_width // 2
-    x = min(max(pet_center_x - bubble_width // 2, minimum_x), maximum_x)
-    minimum_y = available_y + screen_margin
-    y = max(minimum_y, pet_y - bubble_height - pet_gap)
-    tail_x = min(max(pet_center_x - x, tail_margin), max(tail_margin, bubble_width - tail_margin))
-    return BubblePlacement(x=x, y=y, tail_x=tail_x)
-
-
-MOUTH_TEXT = {
-    PetExpression.NEUTRAL: "（嘴巴）",
-    PetExpression.HAPPY: "（微笑）",
-    PetExpression.LAUGH: "（大笑）",
-    PetExpression.CONCERNED: "（担忧）",
-    PetExpression.SLEEPY: "（困倦）",
-}
-
-
-def decision_to_pet_state(decision: PopupDecision) -> PetState:
-    reason = decision.reason.casefold()
-    message = (decision.message or "").casefold()
-    context = f"{reason} {message}"
-    if any(word in context for word in ("success", "complete", "passed", "完成", "通过", "成功")):
-        expression = PetExpression.LAUGH
-    elif any(word in context for word in ("fail", "error", "broken", "失败", "错误")):
-        expression = PetExpression.CONCERNED
-    elif any(word in context for word in ("sleep", "idle", "defer", "待机", "困")):
-        expression = PetExpression.SLEEPY
-    elif decision.action == "show":
-        expression = PetExpression.HAPPY
-    else:
-        expression = PetExpression.NEUTRAL
-    return PetState(
-        expression=expression,
-        bubble_text=decision.message,
-        bubble_visible=decision.action == "show" and bool(decision.message),
-        bubble_seconds=decision.display_seconds,
-    )
-
-
-def personality_state_to_pet_state(state: PetPersonalityState) -> PetState:
-    expressions = {
-        PetEmotion.CHEERFUL: PetExpression.HAPPY,
-        PetEmotion.CURIOUS: PetExpression.HAPPY,
-        PetEmotion.CONCERNED: PetExpression.CONCERNED,
-        PetEmotion.SLEEPY: PetExpression.SLEEPY,
-        PetEmotion.CELEBRATING: PetExpression.LAUGH,
-        PetEmotion.NEUTRAL: PetExpression.NEUTRAL,
-    }
-    return PetState(
-        expression=expressions[state.emotion],
-        bubble_visible=False,
-        bubble_seconds=0,
-    )
-
-
-class PopupRenderer(Protocol):
-    def start(self) -> None: ...
-
-    def show(self, decision: PopupDecision) -> bool | None: ...
-
-    def stop(self) -> None: ...
-
-    def exec(self) -> int: ...
-
-
-class PrivacyControlsRenderer(Protocol):
-    """Optional renderer extension; legacy renderers remain compatible."""
-
-    def request_privacy_consent(self) -> PrivacyConsent | None: ...
-
-    def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None: ...
-
-
-class NotificationControlsRenderer(Protocol):
-    """Optional all-day do-not-disturb control exposed by desktop renderers."""
-
-    def configure_notification_controls(
-        self,
-        *,
-        on_set_do_not_disturb: Callable[[bool], None],
-        get_do_not_disturb: Callable[[], bool],
-        on_set_manual_pause: Callable[[bool], None] | None = None,
-        get_manual_pause: Callable[[], bool] | None = None,
-    ) -> None: ...
-
-
-class NullRenderer:
-    """Headless renderer used by tests and command-line smoke runs."""
-
-    def __init__(self) -> None:
-        self.decisions: list[PopupDecision] = []
-        self.states: list[PetState] = []
-        self.started = False
-        self.consent_response: PrivacyConsent | None = None
-        self.consent_requested = False
-        self._on_clear_activity_history: Callable[[], int] | None = None
-        self._on_set_do_not_disturb: Callable[[bool], None] | None = None
-        self._on_set_manual_pause: Callable[[bool], None] | None = None
-        self._get_manual_pause: Callable[[], bool] | None = None
-        self._get_do_not_disturb: Callable[[], bool] | None = None
-
-    def start(self) -> None:
-        self.started = True
-
-    def show(self, decision: PopupDecision) -> bool:
-        state = decision_to_pet_state(decision)
-        self.states.append(state)
-        if decision.action == "show":
-            self.decisions.append(decision)
-            return True
-        return False
-
-    def apply_personality_state(self, state: PetPersonalityState) -> None:
-        self.states.append(personality_state_to_pet_state(state))
-
-    def stop(self) -> None:
-        self.started = False
-
-    def exec(self) -> int:
-        return 0
-
-    def request_privacy_consent(self) -> PrivacyConsent | None:
-        self.consent_requested = True
-        return self.consent_response
-
-    def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None:
-        self._on_clear_activity_history = on_clear_activity_history
-
-    def configure_notification_controls(
-        self,
-        *,
-        on_set_do_not_disturb: Callable[[bool], None],
-        get_do_not_disturb: Callable[[], bool],
-        on_set_manual_pause: Callable[[bool], None] | None = None,
-        get_manual_pause: Callable[[], bool] | None = None,
-    ) -> None:
-        self._on_set_do_not_disturb = on_set_do_not_disturb
-        self._on_set_manual_pause = on_set_manual_pause
-        self._get_manual_pause = get_manual_pause
-        self._get_do_not_disturb = get_do_not_disturb
-
-    def set_do_not_disturb(self, enabled: bool) -> None:
-        if self._on_set_do_not_disturb is None:
-            raise RuntimeError("notification controls are not configured")
-        self._on_set_do_not_disturb(enabled)
-
-    def set_manual_pause(self, enabled: bool) -> None:
-        if self._on_set_manual_pause is None:
-            raise RuntimeError("manual pause controls are not configured")
-        self._on_set_manual_pause(enabled)
+logger = logging.getLogger(__name__)
 
 
 class PySide6Renderer:
@@ -192,9 +29,10 @@ class PySide6Renderer:
         *,
         on_quit: Callable[[], None] | None = None,
         on_click: Callable[[], None] | None = None,
+        fullscreen_probe: Callable[[], bool] = foreground_window_is_fullscreen,
     ) -> None:
         try:
-            from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
+            from PySide6.QtCore import QObject, QPoint, QRectF, Qt, QTimer, Signal
             from PySide6.QtGui import (
                 QAction,
                 QColor,
@@ -207,7 +45,16 @@ class PySide6Renderer:
                 QTextDocument,
                 QTextOption,
             )
-            from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QMessageBox, QMenu, QSystemTrayIcon, QWidget
+            from PySide6.QtWidgets import (
+                QApplication,
+                QCheckBox,
+                QLabel,
+                QMessageBox,
+                QMenu,
+                QPushButton,
+                QSystemTrayIcon,
+                QWidget,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "PySide6 is required for the desktop renderer; install refactor-agent[desktop]."
@@ -218,11 +65,14 @@ class PySide6Renderer:
         self._QLabel = QLabel
         self._QMessageBox = QMessageBox
         self._QMenu = QMenu
+        self._QPoint = QPoint
         self._QSystemTrayIcon = QSystemTrayIcon
         self._QWidget = QWidget
         self._QTimer = QTimer
         self._Qt = Qt
         self._app = QApplication.instance() or QApplication([])
+        self._fullscreen_probe = fullscreen_probe
+        self._on_popup_delivery: PopupDeliveryResult | None = None
 
         class SpeechBubble(QWidget):
             _horizontal_padding = 18
@@ -239,6 +89,7 @@ class PySide6Renderer:
                 maximum_width: int,
                 maximum_height: int,
                 parent: QWidget | None = None,
+                on_first_paint: Callable[[], None] | None = None,
             ) -> None:
                 super().__init__(parent)
                 bubble_self.setWindowFlags(
@@ -247,6 +98,8 @@ class PySide6Renderer:
                 bubble_self.setAttribute(Qt.WA_TranslucentBackground)
                 bubble_self.setAttribute(Qt.WA_ShowWithoutActivating)
                 bubble_self._tail_x = 60
+                bubble_self._on_first_paint = on_first_paint
+                bubble_self._first_paint_reported = False
                 bubble_self._document = QTextDocument(bubble_self)
                 bubble_self._document.setDocumentMargin(0)
                 font = QFont(QApplication.font())
@@ -326,20 +179,52 @@ class PySide6Renderer:
                 painter.setClipRect(QRectF(0, 0, text_width, text_height))
                 bubble_self._document.drawContents(painter, QRectF(0, 0, text_width, text_height))
                 painter.restore()
+                if not bubble_self._first_paint_reported:
+                    bubble_self._first_paint_reported = True
+                    if bubble_self._on_first_paint is not None:
+                        QTimer.singleShot(0, bubble_self._on_first_paint)
 
         self._SpeechBubble = SpeechBubble
         self._pet_window = QWidget()
         self._pet_window.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self._pet_window.setAttribute(Qt.WA_TranslucentBackground)
-        self._pet_window.setFixedSize(240, 150)
+        self._pet_window.setFixedSize(240, 190)
         self._on_click = on_click
+        self._drag_origin = None
+        self._drag_window_origin = None
+        self._dragging = False
+        self._drag_threshold = QApplication.startDragDistance()
 
-        body = QLabel(self._pet_window)
-        body.setGeometry(0, 0, 240, 150)
-        body.setStyleSheet(
+        renderer = self
+
+        class PetBody(QLabel):
+            def mousePressEvent(body_self, event: object) -> None:
+                if event.button() == Qt.LeftButton:
+                    renderer._begin_drag(event.globalPosition().toPoint())
+                    event.accept()
+                    return
+                super().mousePressEvent(event)
+
+            def mouseMoveEvent(body_self, event: object) -> None:
+                if event.buttons() & Qt.LeftButton:
+                    renderer._update_drag(event.globalPosition().toPoint())
+                    event.accept()
+                    return
+                super().mouseMoveEvent(event)
+
+            def mouseReleaseEvent(body_self, event: object) -> None:
+                if event.button() == Qt.LeftButton:
+                    renderer._end_drag()
+                    event.accept()
+                    return
+                super().mouseReleaseEvent(event)
+
+        self._body = PetBody(self._pet_window)
+        self._body.setGeometry(0, 0, 240, 150)
+        self._body.setCursor(Qt.OpenHandCursor)
+        self._body.setStyleSheet(
             "background:#FDE68A; border:2px solid #F59E0B; border-radius:28px;"
         )
-        body.mousePressEvent = lambda event: self._handle_pet_click()
         face_font = QFont("Microsoft YaHei UI", 13)
         self._left_eye = QLabel("（眼睛）", self._pet_window)
         self._right_eye = QLabel("（眼睛）", self._pet_window)
@@ -347,19 +232,80 @@ class PySide6Renderer:
         for label in (self._left_eye, self._right_eye, self._mouth):
             label.setFont(face_font)
             label.setAlignment(Qt.AlignCenter)
+            label.setAttribute(Qt.WA_TransparentForMouseEvents)
             label.setStyleSheet("color:#713F12; background:transparent; border:none;")
         self._left_eye.setGeometry(24, 36, 88, 34)
         self._right_eye.setGeometry(128, 36, 88, 34)
         self._mouth.setGeometry(62, 88, 116, 36)
+        self._settings_button = QPushButton("设置", self._pet_window)
+        self._settings_button.setGeometry(72, 156, 96, 28)
+        self._settings_button.setCursor(Qt.PointingHandCursor)
+        self._settings_button.setStyleSheet(
+            "QPushButton { background:#FFFFFF; color:#713F12; border:1px solid #D97706; "
+            "border-radius:6px; font:12px 'Microsoft YaHei UI'; }"
+            "QPushButton:hover { background:#FFFBEB; }"
+            "QPushButton:pressed { background:#FEF3C7; }"
+        )
         self._popups: list[QLabel] = []
         self._popup_timers: list[QTimer] = []
         self._on_quit = on_quit
         self._on_clear_activity_history: Callable[[], int] | None = None
+        self._get_privacy_consent: Callable[[], PrivacyConsent] | None = None
+        self._on_save_privacy_consent: Callable[[PrivacyConsent], None] | None = None
         self._on_set_do_not_disturb: Callable[[bool], None] | None = None
         self._on_set_manual_pause: Callable[[bool], None] | None = None
         self._get_manual_pause: Callable[[], bool] | None = None
+        self._get_do_not_disturb: Callable[[], bool] | None = None
+        self._on_set_game_tease: Callable[[bool], None] | None = None
+        self._get_game_tease: Callable[[], bool] | None = None
+        self._on_set_python_review: Callable[[bool], None] | None = None
+        self._get_python_review: Callable[[], bool] | None = None
+        self._get_health_snapshot: Callable[[], NailongHealthSnapshot] | None = None
         self._tray = None
-        self._dnd_action = None
+
+        self._settings_menu = QMenu(self._pet_window)
+        self._privacy_action = QAction("活动陪伴授权...", self._pet_window)
+        self._privacy_action.setEnabled(False)
+        self._privacy_action.triggered.connect(self._edit_privacy_consent)
+        self._dnd_action = QAction("全天免打扰", self._pet_window)
+        self._dnd_action.setCheckable(True)
+        self._dnd_action.setEnabled(False)
+        self._dnd_action.triggered.connect(self._set_do_not_disturb)
+        self._pause_action = QAction("暂停监听", self._pet_window)
+        self._pause_action.setCheckable(True)
+        self._pause_action.setEnabled(False)
+        self._pause_action.triggered.connect(self._set_manual_pause)
+        self._game_tease_action = QAction("游戏中允许轻微吐槽", self._pet_window)
+        self._game_tease_action.setCheckable(True)
+        self._game_tease_action.setEnabled(False)
+        self._game_tease_action.triggered.connect(self._set_game_tease)
+        self._python_review_action = QAction("自动评测已保存的 Python 代码", self._pet_window)
+        self._python_review_action.setCheckable(True)
+        self._python_review_action.setEnabled(False)
+        self._python_review_action.triggered.connect(self._set_python_review)
+        self._test_bubble_action = QAction("立即测试气泡", self._pet_window)
+        self._test_bubble_action.triggered.connect(self._show_test_bubble)
+        self._health_action = QAction("当前状态...", self._pet_window)
+        self._health_action.setEnabled(False)
+        self._health_action.triggered.connect(self._show_health_status)
+        self._clear_history_action = QAction("删除本地活动记录", self._pet_window)
+        self._clear_history_action.setEnabled(False)
+        self._clear_history_action.triggered.connect(self._clear_activity_history)
+        self._quit_action = QAction("退出奶龙", self._pet_window)
+        self._quit_action.triggered.connect(self._quit)
+        self._settings_menu.addAction(self._privacy_action)
+        self._settings_menu.addSeparator()
+        self._settings_menu.addAction(self._pause_action)
+        self._settings_menu.addAction(self._dnd_action)
+        self._settings_menu.addAction(self._game_tease_action)
+        self._settings_menu.addAction(self._python_review_action)
+        self._settings_menu.addAction(self._health_action)
+        self._settings_menu.addAction(self._test_bubble_action)
+        self._settings_menu.addSeparator()
+        self._settings_menu.addAction(self._clear_history_action)
+        self._settings_menu.addAction(self._quit_action)
+        self._settings_menu.aboutToShow.connect(self._sync_settings_actions)
+        self._settings_button.clicked.connect(self._show_settings_menu)
 
         class Bridge(QObject):
             decision = Signal(object)
@@ -370,21 +316,17 @@ class PySide6Renderer:
             self._tray = QSystemTrayIcon(self._pet_window)
             self._tray.setIcon(self._app.style().standardIcon(self._app.style().StandardPixmap.SP_ComputerIcon))  # 占位图标
             menu = QMenu()
-            self._dnd_action = QAction("全天免打扰", menu)
-            self._dnd_action.setCheckable(True)
-            self._dnd_action.setEnabled(False)
-            self._dnd_action.triggered.connect(self._set_do_not_disturb)
-            menu.addAction(self._dnd_action)
-            self._pause_action = QAction("暂停监听", menu)
-            self._pause_action.setCheckable(True)
-            self._pause_action.triggered.connect(self._set_manual_pause)
+            menu.addAction(self._privacy_action)
+            menu.addSeparator()
             menu.addAction(self._pause_action)
-            clear_history_action = QAction("删除本地活动记录", menu)
-            clear_history_action.triggered.connect(self._clear_activity_history)
-            menu.addAction(clear_history_action)
-            quit_action = QAction("退出", menu)
-            quit_action.triggered.connect(self._quit)
-            menu.addAction(quit_action)
+            menu.addAction(self._dnd_action)
+            menu.addAction(self._game_tease_action)
+            menu.addAction(self._python_review_action)
+            menu.addAction(self._health_action)
+            menu.addAction(self._test_bubble_action)
+            menu.addSeparator()
+            menu.addAction(self._clear_history_action)
+            menu.addAction(self._quit_action)
             self._tray.setContextMenu(menu)
 
     def start(self) -> None:
@@ -413,6 +355,12 @@ class PySide6Renderer:
             return True
         return False
 
+    def can_present_popup(self) -> bool:
+        return not self._fullscreen_probe()
+
+    def configure_popup_delivery(self, on_result: PopupDeliveryResult) -> None:
+        self._on_popup_delivery = on_result
+
     def _handle_pet_click(self) -> None:
         if self._on_click is not None:
             self._on_click()
@@ -425,6 +373,43 @@ class PySide6Renderer:
                 display_seconds=5,
             )
         )
+
+    def _begin_drag(self, global_position: object) -> None:
+        self._drag_origin = global_position
+        self._drag_window_origin = self._pet_window.pos()
+        self._dragging = False
+        self._body.setCursor(self._Qt.ClosedHandCursor)
+
+    def _update_drag(self, global_position: object) -> bool:
+        if self._drag_origin is None or self._drag_window_origin is None:
+            return False
+        delta = global_position - self._drag_origin
+        if not self._dragging and delta.manhattanLength() < self._drag_threshold:
+            return False
+        self._dragging = True
+        desired = self._drag_window_origin + delta
+        screen = self._QApplication.screenAt(global_position) or self._app.primaryScreen()
+        if screen is None:
+            return False
+        area = screen.availableGeometry()
+        x, y = clamp_window_position(
+            available=(area.x(), area.y(), area.width(), area.height()),
+            window_size=(self._pet_window.width(), self._pet_window.height()),
+            desired=(desired.x(), desired.y()),
+        )
+        self._pet_window.move(x, y)
+        self._reposition_popups()
+        return True
+
+    def _end_drag(self) -> bool:
+        was_dragging = self._dragging
+        self._drag_origin = None
+        self._drag_window_origin = None
+        self._dragging = False
+        self._body.setCursor(self._Qt.OpenHandCursor)
+        if not was_dragging:
+            self._handle_pet_click()
+        return was_dragging
 
     def apply_personality_state(self, state: PetPersonalityState) -> None:
         self._mouth.setText(MOUTH_TEXT[personality_state_to_pet_state(state).expression])
@@ -439,6 +424,10 @@ class PySide6Renderer:
         return self._app.exec()
 
     def request_privacy_consent(self) -> PrivacyConsent | None:
+        current = self._get_privacy_consent() if self._get_privacy_consent is not None else None
+        return self._request_privacy_consent(current)
+
+    def _request_privacy_consent(self, current: PrivacyConsent | None) -> PrivacyConsent:
         dialog = self._QMessageBox(self._pet_window)
         dialog.setIcon(self._QMessageBox.Information)
         dialog.setWindowTitle("奶龙活动陪伴授权")
@@ -448,19 +437,35 @@ class PySide6Renderer:
             "密码、Token、SSH/Auth 文件和会议窗口会被禁止采集。"
         )
         dialog.setStandardButtons(self._QMessageBox.Yes | self._QMessageBox.No)
-        dialog.setDefaultButton(self._QMessageBox.No)
+        dialog.setDefaultButton(
+            self._QMessageBox.Yes
+            if current is not None and current.activity_collection_enabled
+            else self._QMessageBox.No
+        )
         remote = self._QCheckBox("同时允许将脱敏摘要发送给 DeepSeek（默认关闭）")
-        remote.setChecked(False)
+        remote.setChecked(bool(current and current.remote_inference_enabled))
         dialog.setCheckBox(remote)
         accepted = dialog.exec() == self._QMessageBox.Yes
         return PrivacyConsent(
             activity_collection_enabled=accepted,
             remote_inference_enabled=accepted and remote.isChecked(),
-            auto_code_review_enabled=accepted,
+            python_review_enabled=bool(current and current.python_review_enabled),
         )
 
-    def configure_privacy_controls(self, *, on_clear_activity_history: Callable[[], int]) -> None:
+    def configure_privacy_controls(
+        self,
+        *,
+        on_clear_activity_history: Callable[[], int],
+        get_privacy_consent: Callable[[], PrivacyConsent] | None = None,
+        on_save_privacy_consent: Callable[[PrivacyConsent], None] | None = None,
+    ) -> None:
         self._on_clear_activity_history = on_clear_activity_history
+        self._get_privacy_consent = get_privacy_consent
+        self._on_save_privacy_consent = on_save_privacy_consent
+        self._privacy_action.setEnabled(
+            self._get_privacy_consent is not None and self._on_save_privacy_consent is not None
+        )
+        self._clear_history_action.setEnabled(True)
 
     def configure_notification_controls(
         self,
@@ -469,21 +474,148 @@ class PySide6Renderer:
         get_do_not_disturb: Callable[[], bool],
         on_set_manual_pause: Callable[[bool], None] | None = None,
         get_manual_pause: Callable[[], bool] | None = None,
+        on_set_game_tease: Callable[[bool], None] | None = None,
+        get_game_tease: Callable[[], bool] | None = None,
+        on_set_python_review: Callable[[bool], None] | None = None,
+        get_python_review: Callable[[], bool] | None = None,
     ) -> None:
         self._on_set_do_not_disturb = on_set_do_not_disturb
         self._on_set_manual_pause = on_set_manual_pause
         self._get_manual_pause = get_manual_pause
-        if self._dnd_action is not None:
-            self._dnd_action.setChecked(get_do_not_disturb())
-            self._dnd_action.setEnabled(True)
-        if hasattr(self, "_pause_action") and self._pause_action is not None:
-            self._pause_action.setChecked(get_manual_pause() if get_manual_pause else False)
+        self._get_do_not_disturb = get_do_not_disturb
+        self._on_set_game_tease = on_set_game_tease
+        self._get_game_tease = get_game_tease
+        self._on_set_python_review = on_set_python_review
+        self._get_python_review = get_python_review
+        self._dnd_action.setChecked(get_do_not_disturb())
+        self._dnd_action.setEnabled(True)
+        self._pause_action.setChecked(get_manual_pause() if get_manual_pause else False)
+        self._pause_action.setEnabled(on_set_manual_pause is not None)
+        self._game_tease_action.setChecked(get_game_tease() if get_game_tease else False)
+        self._game_tease_action.setEnabled(on_set_game_tease is not None)
+        self._python_review_action.setChecked(get_python_review() if get_python_review else False)
+        self._python_review_action.setEnabled(on_set_python_review is not None)
+
+    def configure_health_controls(
+        self,
+        *,
+        get_health_snapshot: Callable[[], NailongHealthSnapshot],
+    ) -> None:
+        self._get_health_snapshot = get_health_snapshot
+        self._health_action.setEnabled(True)
+
+    def _show_health_status(self) -> None:
+        if self._get_health_snapshot is None:
+            return
+        summary = self._get_health_snapshot().redacted_summary()
+        dialog = self._QMessageBox(self._pet_window)
+        dialog.setIcon(self._QMessageBox.Information)
+        dialog.setWindowTitle("奶龙当前状态")
+        dialog.setText("本地运行诊断")
+        dialog.setInformativeText(summary)
+        dialog.setStandardButtons(self._QMessageBox.Close)
+        copy_button = dialog.addButton("复制脱敏摘要", self._QMessageBox.ActionRole)
+        dialog.exec()
+        if dialog.clickedButton() is copy_button:
+            self._app.clipboard().setText(summary)
+
+    def _show_settings_menu(self) -> None:
+        self._sync_settings_actions()
+        self._settings_menu.ensurePolished()
+        hint = self._settings_menu.sizeHint()
+        anchor = self._settings_button.mapToGlobal(self._settings_button.rect().topLeft())
+        screen = self._QApplication.screenAt(anchor) or self._app.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = min(max(anchor.x(), area.left()), max(area.left(), area.right() - hint.width() + 1))
+            above_y = anchor.y() - hint.height() - 6
+            y = above_y if above_y >= area.top() else min(area.bottom() - hint.height() + 1, anchor.y() + 34)
+            anchor = self._QPoint(x, y)
+        self._settings_menu.popup(anchor)
+
+    def _sync_settings_actions(self) -> None:
+        if self._get_do_not_disturb is not None:
+            self._dnd_action.setChecked(self._get_do_not_disturb())
+        if self._get_manual_pause is not None:
+            self._pause_action.setChecked(self._get_manual_pause())
+        if self._get_game_tease is not None:
+            self._game_tease_action.setChecked(self._get_game_tease())
+        if self._get_python_review is not None:
+            self._python_review_action.setChecked(self._get_python_review())
+        if self._get_privacy_consent is not None:
+            consent = self._get_privacy_consent()
+            state = "已开启" if consent.activity_collection_enabled else "已关闭"
+            self._privacy_action.setText(f"活动陪伴授权（{state}）...")
+
+    def _edit_privacy_consent(self) -> None:
+        if self._get_privacy_consent is None or self._on_save_privacy_consent is None:
+            return
+        consent = self._request_privacy_consent(self._get_privacy_consent())
+        self._on_save_privacy_consent(consent)
+        self._sync_settings_actions()
+        if self._tray is not None:
+            state = "已开启" if consent.activity_collection_enabled else "已关闭"
+            self._tray.showMessage("奶龙", f"活动陪伴授权{state}。")
 
     def _set_manual_pause(self, enabled: bool) -> None:
         if self._on_set_manual_pause is not None:
             self._on_set_manual_pause(enabled)
 
+    def _set_game_tease(self, enabled: bool) -> None:
+        if self._on_set_game_tease is not None:
+            self._on_set_game_tease(enabled)
+
+    def _set_python_review(self, enabled: bool) -> None:
+        if enabled and not self._confirm_python_review():
+            self._python_review_action.blockSignals(True)
+            self._python_review_action.setChecked(False)
+            self._python_review_action.blockSignals(False)
+            return
+        if self._on_set_python_review is not None:
+            self._on_set_python_review(enabled)
+
+    def _confirm_python_review(self) -> bool:
+        dialog = self._QMessageBox(self._pet_window)
+        dialog.setIcon(self._QMessageBox.Warning)
+        dialog.setWindowTitle("自动 Python 评测授权")
+        dialog.setText("允许奶龙把刚保存的 Python 源码发送给 DeepSeek 做静态评测吗？")
+        dialog.setInformativeText(
+            "只读取启动目录或 NAILONG_PYTHON_REVIEW_ROOTS 下的 .py 文件；源码不会写入活动数据库。"
+        )
+        dialog.setStandardButtons(self._QMessageBox.Yes | self._QMessageBox.No)
+        dialog.setDefaultButton(self._QMessageBox.No)
+        return dialog.exec() == self._QMessageBox.Yes
+
+    def _show_test_bubble(self) -> None:
+        if not self.can_present_popup():
+            reason = (
+                self._get_health_snapshot().silence_reason
+                if self._get_health_snapshot is not None
+                else "fullscreen_blocked"
+            )
+            if self._tray is not None:
+                self._tray.showMessage(
+                    "奶龙",
+                    f"测试气泡未显示：{reason}。退出全屏后可再次测试。",
+                )
+            return
+        self.show(
+            PopupDecision(
+                action="show",
+                reason="local_test_bubble",
+                message="哼，本龙在说话。现在总该看见了吧。",
+                display_seconds=12,
+            )
+        )
+
     def _show_on_ui_thread(self, decision: PopupDecision) -> None:
+        try:
+            self._create_popup_on_ui_thread(decision)
+        except Exception:
+            logger.exception("popup rendering failed")
+            self._report_popup_delivery(decision, "failed")
+
+    def _create_popup_on_ui_thread(self, decision: PopupDecision) -> None:
         # Close all existing popups and cancel their timers so at most one bubble is visible.
         self._dismiss_all_popups()
         state = decision_to_pet_state(decision)
@@ -491,6 +623,7 @@ class PySide6Renderer:
         pet_geometry = self._pet_window.frameGeometry()
         screen = self._QApplication.screenAt(pet_geometry.center()) or self._app.primaryScreen()
         if screen is None:
+            self._report_popup_delivery(decision, "failed")
             return
         area = screen.availableGeometry()
         screen_margin = 12
@@ -502,7 +635,28 @@ class PySide6Renderer:
             maximum_width=maximum_width,
             maximum_height=maximum_height,
             parent=self._pet_window,
+            on_first_paint=lambda: self._report_popup_delivery(decision, "shown"),
         )
+        self._position_popup(popup, screen_margin=screen_margin, pet_gap=pet_gap)
+        popup.show()
+        popup.raise_()
+        self._popups.append(popup)
+        timer = self._QTimer(self._pet_window)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._close_popup(popup))
+        timer.start(decision.display_seconds * 1000)
+        self._popup_timers.append(timer)
+
+    def _report_popup_delivery(self, decision: PopupDecision, outcome: str) -> None:
+        if decision.dedupe_key and self._on_popup_delivery is not None:
+            self._on_popup_delivery(decision.dedupe_key, outcome)
+
+    def _position_popup(self, popup: object, *, screen_margin: int = 12, pet_gap: int = 6) -> None:
+        pet_geometry = self._pet_window.frameGeometry()
+        screen = self._QApplication.screenAt(pet_geometry.center()) or self._app.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
         placement = place_bubble_above_pet(
             available=(area.x(), area.y(), area.width(), area.height()),
             pet=(pet_geometry.x(), pet_geometry.y(), pet_geometry.width(), pet_geometry.height()),
@@ -512,13 +666,10 @@ class PySide6Renderer:
         )
         popup.set_tail_x(placement.tail_x)
         popup.move(placement.x, placement.y)
-        popup.show()
-        self._popups.append(popup)
-        timer = self._QTimer(self._pet_window)
-        timer.setSingleShot(True)
-        timer.timeout.connect(lambda: self._close_popup(popup))
-        timer.start(decision.display_seconds * 1000)
-        self._popup_timers.append(timer)
+
+    def _reposition_popups(self) -> None:
+        for popup in self._popups:
+            self._position_popup(popup)
 
     def _dismiss_all_popups(self) -> None:
         """Close every visible popup and cancel their auto-close timers."""
@@ -540,8 +691,17 @@ class PySide6Renderer:
 
     def _clear_activity_history(self) -> None:
         deleted = self._on_clear_activity_history() if self._on_clear_activity_history is not None else 0
+        message = f"已删除 {deleted} 条本地活动记录。"
+        self.show(
+            PopupDecision(
+                action="show",
+                reason="activity_history_cleared",
+                message=message,
+                display_seconds=5,
+            )
+        )
         if self._tray is not None:
-            self._tray.showMessage("奶龙", f"已删除 {deleted} 条本地活动记录。")
+            self._tray.showMessage("奶龙", message)
 
     def _quit(self) -> None:
         if self._on_quit is not None:

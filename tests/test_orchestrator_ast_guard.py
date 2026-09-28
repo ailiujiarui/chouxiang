@@ -9,7 +9,6 @@ from refactor_agent.models import (
     SafetyFinding,
     TargetRegion,
 )
-from refactor_agent.orchestrator import _code_change_percent
 from refactor_agent.orchestrator_ast_guard import (
     code_change_percent,
     guard_ast_execution_node,

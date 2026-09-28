@@ -222,6 +222,8 @@ class PetPreferences(BaseModel):
     maximum_cooldown_seconds: int = Field(default=15 * 60, ge=0)
     maximum_popups_per_day: int = Field(default=12, ge=0)
     personality_intensity: Literal["LOW", "STANDARD", "HIGH"] = "STANDARD"
+    abstraction_level: Literal["LITERAL", "POETIC", "SURREAL"] = "LITERAL"
+    game_tease_enabled: bool = False
 
 
 class PetApplicationRule(BaseModel):
@@ -235,6 +237,7 @@ class NotificationStatus(BaseModel):
     next_regular_at: datetime | None = None
     last_popup_started_at: datetime | None = None
     pending_count: int = Field(ge=0)
+    displaying_count: int = Field(default=0, ge=0)
     suppressed_terminal_count: int = Field(ge=0)
     manual_pause_enabled: bool = False
     scheduled_do_not_disturb: bool = False

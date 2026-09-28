@@ -11,19 +11,26 @@ from nailong_agent.activity_collector import WindowActivityCollector
 from nailong_agent.activity_personality_orchestrator import ActivityPersonalityOrchestrator
 from nailong_agent.activity_recognizer import ActivityRecognizer
 from nailong_agent.analysis_subscriber import AnalysisEventSubscriber, HttpxSSEAnalysisEventSource
-from nailong_agent.code_review import CodeReviewService
 from nailong_agent.config import NailongSettings
 from nailong_agent.delivery import NotificationDeliveryPump
 from nailong_agent.event_bus import EventBus
 from nailong_agent.events import EventEnvelope, PopupDecision
+from nailong_agent.health import NailongHealthMonitor, NailongHealthSnapshot
+from nailong_agent.llm_provider import deepseek_provider_factory
 from nailong_agent.notification_service import NotificationPort, NotificationService
 from nailong_agent.notification_store import NotificationStore
 from nailong_agent.personality_agent import PetPersonalityAgent
 from nailong_agent.privacy import PrivacyConsent, PrivacyPolicy
 from nailong_agent.privacy_store import PrivacyStore
-from nailong_agent.renderer import NullRenderer, PopupRenderer, PySide6Renderer
+from nailong_agent.python_review import (
+    AutomaticPythonReviewService,
+    DeepSeekPythonReviewer,
+    PythonReviewBubbleFormatter,
+    RecentPythonSourceProvider,
+)
+from nailong_agent.renderer import PySide6Renderer
+from nailong_agent.renderer_core import NullRenderer, PopupRenderer
 from nailong_agent.windows_activity import create_foreground_source, create_idle_source
-from refactor_agent.llm import DeepSeekClient
 
 
 class SingleInstanceLock:
@@ -97,7 +104,8 @@ class DesktopProcess:
         delivery_pump: NotificationDeliveryPump | None = None,
         activity_collector: WindowActivityCollector | None = None,
         activity_orchestrator: ActivityPersonalityOrchestrator | None = None,
-        code_review_service: CodeReviewService | None = None,
+        python_review_service: AutomaticPythonReviewService | None = None,
+        health_monitor: NailongHealthMonitor | None = None,
     ) -> None:
         self.bus = bus or EventBus()
         self.lock = SingleInstanceLock(lock_path)
@@ -108,22 +116,42 @@ class DesktopProcess:
         self.analysis_subscriber = analysis_subscriber
         self.activity_collector = activity_collector
         self.activity_orchestrator = activity_orchestrator
-        self.code_review_service = code_review_service
+        self.python_review_service = python_review_service
+        self.health_monitor = health_monitor or NailongHealthMonitor()
         self.delivery_pump = delivery_pump or (
-            NotificationDeliveryPump(notifications=notification_service, bus=self.bus)
+            NotificationDeliveryPump(
+                notifications=notification_service,
+                bus=self.bus,
+                health_monitor=self.health_monitor,
+            )
             if notification_service is not None
             else None
         )
         self.renderer: PopupRenderer | None = None
+        self._renderer_reports_delivery = False
 
     def run(self) -> int:
         if not self.lock.acquire():
             return 2
         try:
             self.renderer = self.renderer_factory()
+            configure_popup_delivery = getattr(self.renderer, "configure_popup_delivery", None)
+            self._renderer_reports_delivery = (
+                callable(configure_popup_delivery) and self.notification_service is not None
+            )
+            if self._renderer_reports_delivery:
+                configure_popup_delivery(self._acknowledge_popup_delivery)
+            if self.delivery_pump is not None:
+                can_present_popup = getattr(self.renderer, "can_present_popup", None)
+                if callable(can_present_popup):
+                    self.delivery_pump.presentation_gate = can_present_popup
             configure_privacy_controls = getattr(self.renderer, "configure_privacy_controls", None)
             if callable(configure_privacy_controls):
-                configure_privacy_controls(on_clear_activity_history=self.privacy_store.clear_activity_history)
+                configure_privacy_controls(
+                    on_clear_activity_history=self.privacy_store.clear_activity_history,
+                    get_privacy_consent=lambda: self.privacy_policy.consent,
+                    on_save_privacy_consent=self._save_privacy_consent,
+                )
             configure_notification_controls = getattr(self.renderer, "configure_notification_controls", None)
             if callable(configure_notification_controls) and self.notification_service is not None:
                 configure_notification_controls(
@@ -131,21 +159,33 @@ class DesktopProcess:
                     get_do_not_disturb=lambda: self.notification_service.get_status().do_not_disturb,
                     on_set_manual_pause=self.notification_service.set_manual_pause,
                     get_manual_pause=lambda: self.notification_service.get_status().manual_pause_enabled,
+                    on_set_game_tease=self.notification_service.set_game_tease_enabled,
+                    get_game_tease=lambda: self.notification_service.get_preferences().game_tease_enabled,
+                    on_set_python_review=self._set_python_review_consent,
+                    get_python_review=lambda: self.privacy_policy.consent.python_review_enabled,
                 )
+            configure_health_controls = getattr(self.renderer, "configure_health_controls", None)
+            if callable(configure_health_controls):
+                configure_health_controls(get_health_snapshot=self.get_health_snapshot)
             if self.privacy_policy.needs_initial_consent:
                 request_privacy_consent = getattr(self.renderer, "request_privacy_consent", None)
                 consent = request_privacy_consent() if callable(request_privacy_consent) else None
                 consent = consent or PrivacyConsent()
-                self.privacy_store.save_consent(consent)
-                self.privacy_policy.consent = consent
+                self._save_privacy_consent(consent)
             self.bus.subscribe("PopupDecision", self._render_popup)
             if self.activity_orchestrator is not None:
                 self.activity_orchestrator.subscribe(self.bus)
+            if self.python_review_service is not None:
+                self.python_review_service.subscribe(self.bus)
             self.bus.start()
-            if self.code_review_service is not None:
-                self.code_review_service.start()
+            if self.activity_orchestrator is not None:
+                start_orchestrator = getattr(self.activity_orchestrator, "start", None)
+                if callable(start_orchestrator):
+                    start_orchestrator()
             if self.activity_collector is not None:
                 self.activity_collector.start()
+            if self.python_review_service is not None:
+                self.python_review_service.start()
             self.renderer.start()
             restore_personality_state = getattr(self.renderer, "apply_personality_state", None)
             if callable(restore_personality_state) and self.notification_service is not None:
@@ -158,9 +198,13 @@ class DesktopProcess:
         finally:
             if self.activity_collector is not None:
                 self.activity_collector.stop()
-            if self.code_review_service is not None:
-                self.code_review_service.stop()
             self.bus.wait_idle(2.0)
+            if self.python_review_service is not None:
+                self.python_review_service.stop()
+            if self.activity_orchestrator is not None:
+                stop_orchestrator = getattr(self.activity_orchestrator, "stop", None)
+                if callable(stop_orchestrator):
+                    stop_orchestrator()
             if self.delivery_pump is not None:
                 self.delivery_pump.stop()
             if self.analysis_subscriber is not None:
@@ -169,6 +213,34 @@ class DesktopProcess:
             if self.renderer is not None:
                 self.renderer.stop()
             self.lock.release()
+
+    def _save_privacy_consent(self, consent: PrivacyConsent) -> None:
+        self.privacy_store.save_consent(consent)
+        self.privacy_policy.consent = consent
+
+    def _set_python_review_consent(self, enabled: bool) -> None:
+        consent = replace(self.privacy_policy.consent, python_review_enabled=enabled)
+        self._save_privacy_consent(consent)
+
+    def get_health_snapshot(self) -> NailongHealthSnapshot:
+        preferences = (
+            self.notification_service.get_preferences()
+            if self.notification_service is not None
+            else None
+        )
+        status = (
+            self.notification_service.get_status()
+            if self.notification_service is not None
+            else None
+        )
+        can_present_popup = getattr(self.renderer, "can_present_popup", None)
+        fullscreen_blocked = bool(callable(can_present_popup) and not can_present_popup())
+        return self.health_monitor.snapshot(
+            preferences=preferences,
+            status=status,
+            consent=self.privacy_policy.consent,
+            fullscreen_blocked=fullscreen_blocked,
+        )
 
     def _render_popup(self, envelope: EventEnvelope) -> None:
         if self.renderer is None:
@@ -185,14 +257,28 @@ class DesktopProcess:
         try:
             accepted = self.renderer.show(decision)
         except Exception:
+            self.health_monitor.record_delivery(
+                outcome="failed",
+                error_code="renderer_error",
+            )
             if self.notification_service is not None and notification_id:
                 self.notification_service.acknowledge(notification_id, "failed")
             raise
+        if self._renderer_reports_delivery and accepted is not False:
+            return
         if self.notification_service is not None and notification_id:
             self.notification_service.acknowledge(
                 notification_id,
                 "dismissed" if accepted is False else "shown",
             )
+
+    def _acknowledge_popup_delivery(self, notification_id: str, outcome: str) -> None:
+        self.health_monitor.record_delivery(
+            outcome=outcome,
+            error_code="renderer_error" if outcome == "failed" else None,
+        )
+        if self.notification_service is not None:
+            self.notification_service.acknowledge(notification_id, outcome)
 
 
 def create_renderer(*, headless: bool = False) -> PopupRenderer:
@@ -215,8 +301,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minimum-cooldown-seconds", type=int)
     parser.add_argument("--maximum-cooldown-seconds", type=int)
     parser.add_argument("--activity-listener", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--auto-code-review", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--code-review-workspace", type=Path)
     args = parser.parse_args(argv)
     settings = NailongSettings.from_env().with_overrides(
         data_dir=args.data_dir,
@@ -228,8 +312,6 @@ def main(argv: list[str] | None = None) -> int:
         minimum_cooldown_seconds=args.minimum_cooldown_seconds,
         maximum_cooldown_seconds=args.maximum_cooldown_seconds,
         activity_listener_enabled=args.activity_listener,
-        auto_code_review_enabled=args.auto_code_review,
-        code_review_workspace=args.code_review_workspace,
     )
     privacy_store = PrivacyStore(settings.privacy_database, policy=settings.sqlite_policy)
     notification_store = (
@@ -254,42 +336,18 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
     privacy_policy = PrivacyPolicy(privacy_store.load_consent())
-    if settings.auto_code_review_enabled is not None:
-        consent = replace(
-            privacy_policy.consent,
-            decision_recorded=True,
-            auto_code_review_enabled=settings.auto_code_review_enabled,
-        )
-        privacy_store.save_consent(consent)
-        privacy_policy.consent = consent
-    code_review_service = (
-        CodeReviewService(
-            notifications=notifications,
-            run_root=settings.data_dir / "code-review",
-            database_path=settings.data_dir / "code-review.sqlite",
-            workspace_root=settings.code_review_workspace,
-            sandbox_backend="subprocess",
-            mock=not (
-                bool(os.getenv("DEEPSEEK_API_KEY"))
-                and privacy_policy.consent.remote_inference_enabled
-            ),
-            cooldown_seconds=settings.code_review_cooldown_seconds,
-        )
-        if notifications is not None
-        else None
-    )
+    health_monitor = NailongHealthMonitor()
     bus = EventBus()
     collector = (
         WindowActivityCollector(
-            source=create_foreground_source(workspace_root=settings.code_review_workspace),
+            source=create_foreground_source(),
             idle_source=create_idle_source(),
             privacy_policy=privacy_policy,
             privacy_store=privacy_store,
             event_bus=bus,
             preferences=notification_store.get_preferences,
             application_rules=notification_store.list_application_rules,
-            on_python_file=(code_review_service.enqueue if code_review_service is not None else None),
-            code_review_enabled=lambda: privacy_policy.consent.permits("auto_code_review"),
+            health_monitor=health_monitor,
         )
         if settings.activity_listener_enabled and notification_store is not None
         else None
@@ -298,18 +356,37 @@ def main(argv: list[str] | None = None) -> int:
         ActivityPersonalityOrchestrator(
             personality_agent=PetPersonalityAgent(
                 intensity=notification_store.get_preferences().personality_intensity.lower(),
+                abstraction=notification_store.get_preferences().abstraction_level.lower(),
             ),
             notifications=notifications,
             recognizer=ActivityRecognizer(
                 privacy_policy=privacy_policy,
-                provider_factory=(
-                    lambda: DeepSeekClient(model=settings.deepseek_model)
-                    if os.getenv("DEEPSEEK_API_KEY")
-                    else None
+                provider_factory=deepseek_provider_factory(
+                    settings.deepseek_model,
+                    require_api_key=True,
                 ),
             ),
+            health_monitor=health_monitor,
         )
         if settings.activity_listener_enabled and notifications is not None and notification_store is not None
+        else None
+    )
+    python_review_service = (
+        AutomaticPythonReviewService(
+            source_provider=RecentPythonSourceProvider(settings.python_review_roots),
+            reviewer=DeepSeekPythonReviewer(
+                provider_factory=deepseek_provider_factory(settings.deepseek_model),
+            ),
+            formatter=PythonReviewBubbleFormatter(),
+            notifications=notifications,
+            store=notification_store,
+            consent=lambda: privacy_policy.consent,
+            preferences=notification_store.get_preferences,
+            health_monitor=health_monitor,
+        )
+        if settings.activity_listener_enabled
+        and notifications is not None
+        and notification_store is not None
         else None
     )
     process = DesktopProcess(
@@ -322,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
         analysis_subscriber=subscriber,
         activity_collector=collector,
         activity_orchestrator=activity_orchestrator,
-        code_review_service=code_review_service,
+        python_review_service=python_review_service,
+        health_monitor=health_monitor,
     )
     return process.run()
