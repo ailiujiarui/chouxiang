@@ -61,7 +61,6 @@ def prepare_dashboard_url_job(
         tests_path=tests_path,
         event_name="dashboard_url",
         action="submitted",
-        persona=payload.persona,
     )
 
 
@@ -77,7 +76,6 @@ def prepare_snippet_job(payload: SnippetJobRequest) -> GitHubRefactorJob:
         tests=tests,
         instruction=instruction,
         snippet_mode=payload.mode,
-        persona=payload.persona,
         issue_title="Snippet code review",
         event_name="snippet",
     )
@@ -98,7 +96,6 @@ def prepare_analysis_job(
                 tests=tests,
                 instruction=instruction,
                 snippet_mode="VERIFIED_REFACTOR" if tests else "REVIEW",
-                persona=payload.persona.value,
                 issue_title="Snippet code analysis",
                 event_name="analysis",
             ),
@@ -127,7 +124,6 @@ def prepare_analysis_job(
             tests_path=tests_path,
             event_name="analysis",
             action="submitted",
-            persona=payload.persona,
         ),
         evidence_level=EvidenceLevel.REPOSITORY_TESTS,
     )
@@ -169,7 +165,6 @@ def _snippet_job(
     tests: str | None,
     instruction: str,
     snippet_mode: str,
-    persona: str,
     issue_title: str,
     event_name: str,
 ) -> GitHubRefactorJob:
@@ -189,7 +184,6 @@ def _snippet_job(
         snippet_source=source + ("\n" if not source.endswith("\n") else ""),
         snippet_tests=(tests + ("\n" if not tests.endswith("\n") else "")) if tests else None,
         snippet_mode=snippet_mode,
-        persona=persona,
     )
 
 

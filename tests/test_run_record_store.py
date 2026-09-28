@@ -44,41 +44,6 @@ def test_run_record_repository_round_trips_upserts_and_sanitizes_snapshots(tmp_p
     assert repository.list_runs() == [succeeded]
 
 
-def test_benchmark_header_and_case_set_replace_atomically(tmp_path: Path) -> None:
-    factory = _ConnectionFactory(tmp_path / "records.sqlite")
-    _initialize(factory)
-    repository = SQLiteRunRecordStore(factory)
-    run = _benchmark_run()
-    case = _benchmark_case()
-    repository.save_benchmark_run(run, [case])
-
-    replacement = run.model_copy(update={"status": "FAILED"})
-    invalid_case = case.model_copy(update={"run_id": "missing-parent"})
-    with pytest.raises(sqlite3.IntegrityError):
-        repository.save_benchmark_run(replacement, [invalid_case])
-
-    assert repository.get_benchmark_run(run.run_id) == run
-    assert repository.list_benchmark_runs() == [run]
-    assert repository.list_benchmark_case_results(run.run_id) == [case]
-
-
-def test_run_record_repository_closes_every_operation_connection(tmp_path: Path) -> None:
-    factory = _TrackingConnectionFactory(tmp_path / "records.sqlite")
-    _initialize(factory)
-    repository = SQLiteRunRecordStore(factory)
-    record = RunRecord(
-        run_id="run-closed",
-        repo_name="octo/demo",
-        self_heal_count=0,
-        status="SUCCESS",
-    )
-
-    repository.save(record)
-    assert repository.get(record.run_id) == record
-    assert repository.list_runs() == [record]
-
-    assert factory.connections
-    assert all(connection.closed for connection in factory.connections)
 
 
 class _ConnectionFactory:

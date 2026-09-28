@@ -13,12 +13,9 @@ from refactor_agent.models import (
     GitHubRefactorJob,
     EvidenceLevel,
     RefactorRequest,
-    RefactorRunResult,
-    ReportPersona,
     RepositoryJobKind,
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
-from refactor_agent.persona import inject_persona_report
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -122,22 +119,15 @@ class SnippetRefactorService:
             result = orchestrator.run(
                 RefactorRequest(
                     target_file=target,
-                    issue_text=_persona_request(job.issue_text, job.persona),
+                    issue_text=job.issue_text,
                     tests_path=tests,
                     repo_name="local/snippet",
                     issue_id=job.job_id,
                     max_retry=self.settings.max_retry,
                     allowed_import_roots=self.settings.allowed_import_roots,
                     evidence_level=evidence_level,
-                    persona=ReportPersona(job.persona),
                 ),
                 execution_control=control,
-            )
-            _append_persona_commentary(
-                self.settings.run_root / result.record.run_id / "artifacts" / "report.md",
-                result,
-                ReportPersona(job.persona),
-                llm_client,
             )
         return GitHubAutomationResult(
             job_id=job.job_id,
@@ -152,22 +142,3 @@ class SnippetRefactorService:
 
     def _default_llm_client(self) -> RefactorClient:
         return MockRefactorClient() if self.settings.mock_llm else DeepSeekClient()
-
-
-def _persona_request(request: str, persona: str) -> str:
-    if persona != "TSUNDERE":
-        return request
-    return (
-        request
-        + "\n\n报告人格使用克制的傲娇语气和轻度挑衅，只批评代码结构；"
-        "禁止针对作者身份、外貌、能力进行羞辱。"
-    )
-
-
-def _append_persona_commentary(
-    report_path: Path,
-    result: RefactorRunResult,
-    persona: ReportPersona,
-    persona_client: RefactorClient | None = None,
-) -> None:
-    inject_persona_report(report_path, result, persona, persona_client=persona_client)

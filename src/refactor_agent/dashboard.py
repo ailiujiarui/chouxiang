@@ -38,7 +38,6 @@ from refactor_agent.dashboard_views import (
     load_trajectory,
     localize_job_status,
 )
-from refactor_agent.persona import extract_persona_markdown
 from refactor_agent.store import SQLiteRunStore
 
 
@@ -278,12 +277,6 @@ def _render_url_submission_form(
             branch = st.text_input("分支或标签（可选）", placeholder="留空时使用默认分支")
             target_path = st.text_input("目标文件（可选）", placeholder="留空时自动定位")
             tests_path = st.text_input("测试路径", value="tests")
-            persona_label = st.segmented_control(
-                "报告人格",
-                ["严格评审", "傲娇审判"],
-                default="严格评审",
-                key="url_persona",
-            )
             refactor_request = st.text_area("简化要求", height=150)
             submitted = st.form_submit_button(
                 "创建本地简化任务",
@@ -301,7 +294,6 @@ def _render_url_submission_form(
                     branch=branch.strip() or None,
                     target_path=target_path.strip() or None,
                     tests_path=tests_path.strip(),
-                    persona="TSUNDERE" if persona_label == "傲娇审判" else "STRICT",
                 )
             except DashboardApiError as exc:
                 _show_dashboard_error(st, exc)
@@ -338,11 +330,6 @@ def _render_snippet_submission_form(
                 ["自动生成测试", "使用我的测试"],
                 default="自动生成测试",
             )
-            persona_label = st.segmented_control(
-                "报告人格",
-                ["严格评审", "傲娇审判"],
-                default="严格评审",
-            )
             source = st.text_area("Python 源码", height=260, placeholder="def example():\n    pass")
             requirement = st.text_area("审查或精简要求", height=100)
             tests = st.text_area(
@@ -357,7 +344,6 @@ def _render_snippet_submission_form(
             )
         if submitted:
             mode = "VERIFIED_REFACTOR" if mode_label == "使用我的测试" else "REVIEW"
-            persona = "TSUNDERE" if persona_label == "傲娇审判" else "STRICT"
             if not source.strip() or not requirement.strip():
                 st.error("请填写 Python 源码和审查要求。")
                 return
@@ -370,7 +356,6 @@ def _render_snippet_submission_form(
                     refactor_request=requirement.strip(),
                     tests=tests or None,
                     mode=mode,
-                    persona=persona,
                 )
             except DashboardApiError as exc:
                 _show_dashboard_error(st, exc)
@@ -395,15 +380,12 @@ def _render_execution_tab(
     try:
         selected_run = next((run for run in runs if run.get("run_id") == run_id), {})
         evidence = str(selected_run.get("evidence_level") or "-")
-        persona = str(selected_run.get("report_persona") or "-")
-        st.caption(f"证据等级：{evidence} | 报告人格：{persona}")
+        st.caption(f"证据等级：{evidence}")
         trajectory = client.get_trajectory(run_id)
         st.dataframe(build_execution_rows(trajectory), width="stretch", hide_index=True)
         left, right = st.columns(2)
         left.text_area("Pytest 日志", client.get_artifact(run_id, "pytest.log"), height=260, disabled=True)
         right.text_area("对抗测试日志", client.get_artifact(run_id, "adversary.log"), height=260, disabled=True)
-        st.subheader("人格化审判")
-        st.markdown(extract_persona_markdown(client.get_artifact(run_id, "report.md")))
     except DashboardApiError as exc:
         _show_dashboard_error(st, exc)
 

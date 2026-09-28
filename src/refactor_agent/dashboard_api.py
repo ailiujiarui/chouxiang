@@ -81,7 +81,6 @@ class DashboardApiClient:
         branch: str | None,
         target_path: str | None,
         tests_path: str,
-        persona: str = "STRICT",
     ) -> dict[str, Any]:
         return self._control(
             "POST",
@@ -92,7 +91,6 @@ class DashboardApiClient:
                 "branch": branch,
                 "target_path": target_path,
                 "tests_path": tests_path,
-                "persona": persona,
             },
         )
 
@@ -103,7 +101,6 @@ class DashboardApiClient:
         refactor_request: str,
         tests: str | None,
         mode: str,
-        persona: str,
     ) -> dict[str, Any]:
         return self._control(
             "POST",
@@ -113,7 +110,6 @@ class DashboardApiClient:
                 "refactor_request": refactor_request,
                 "tests": tests,
                 "mode": mode,
-                "persona": persona,
             },
         )
 

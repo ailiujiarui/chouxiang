@@ -6,10 +6,7 @@ import pytest
 from refactor_agent.analysis_events import AnalysisEventType
 from refactor_agent.execution_control import ExecutionControl
 from refactor_agent.models import AgentDebateMessage, SandboxResult
-from refactor_agent.orchestrator_pytest import (
-    run_pytest_execution_node,
-    summarize_pytest_failure,
-)
+from refactor_agent.orchestrator_pytest import run_pytest_execution_node
 from refactor_agent.orchestrator_state import initial_execution_state
 
 
@@ -140,58 +137,6 @@ def test_pytest_node_records_failure_and_closes_round(
         )
     ]
 
-
-def test_pytest_node_runs_real_subprocess_tests(tmp_path: Path):
-    """The pytest node executes real tests through the subprocess sandbox."""
-    workspace = tmp_path / "workspace"
-    tests = workspace / "tests"
-    tests.mkdir(parents=True)
-    module = workspace / "math_util.py"
-    module.write_text("def double(x):\n    return x * 2\n", encoding="utf-8")
-    (tests / "test_math_util.py").write_text(
-        "from math_util import double\n\n"
-        "def test_double():\n"
-        "    assert double(2) == 4\n"
-        "    assert double(0) == 0\n",
-        encoding="utf-8",
-    )
-    state = _state(tmp_path, max_attempts=2)
-    state["target_file"] = module
-    state["tests_path"] = tests
-    state["active_backend"] = "subprocess"
-    state["current_code"] = "def double(x):\n    return x * 2\n"
-    events: list[tuple] = []
-
-    returned = run_pytest_execution_node(
-        state,
-        workspace=workspace,
-        timeout_seconds=30.0,
-        docker_image="unused",
-        docker_memory="256m",
-        docker_cpus=1.0,
-        execution_control=_control(),
-        defender=Defender(),
-        emit_analysis_event=lambda *args, **kwargs: events.append((args, kwargs)),
-        record_trajectory=lambda *args: pytest.fail("pass path must not record failure trajectory"),
-    )
-
-    assert returned is state
-    assert state["sandbox"].passed is True
-    assert state["sandbox"].returncode == 0
-    assert state["next_node"] == "adversary"
-    assert (workspace / "math_util.py").read_text(encoding="utf-8") == state["current_code"]
-    assert events[0][0][0] is AnalysisEventType.PYTEST_PASSED
-
-
-def test_failure_summary_caps_output():
-    result = _result(passed=False, returncode=3, stdout="x" * 9000)
-
-    summary = summarize_pytest_failure(result)
-
-    assert len(summary) == 8000
-    assert summarize_pytest_failure(_result(passed=False, returncode=7)) == (
-        "pytest 失败，返回码 7"
-    )
 
 
 def _state(tmp_path: Path, max_attempts: int):

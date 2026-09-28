@@ -13,7 +13,6 @@ class DashboardUrlJobRequest(BaseModel):
     branch: str | None = None
     target_path: str | None = None
     tests_path: str = "tests"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 class RepositoryAllowlistRequest(BaseModel):
@@ -25,7 +24,6 @@ class SnippetJobRequest(BaseModel):
     refactor_request: str
     tests: str | None = None
     mode: Literal["REVIEW", "VERIFIED_REFACTOR"] = "REVIEW"
-    persona: Literal["STRICT", "TSUNDERE"] = "STRICT"
 
 
 __all__ = [

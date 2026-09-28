@@ -6,7 +6,6 @@ from typing import Any, Mapping, Protocol
 from refactor_agent.memory import failure_memory, success_memory
 from refactor_agent.models import (
     EvidenceLevel,
-    ReportPersona,
     RunRecord,
     TrajectoryMemoryRecord,
 )
@@ -35,7 +34,6 @@ def persist_run_outcome(
     repo_name: str,
     memory_key: str,
     evidence_level: EvidenceLevel,
-    report_persona: ReportPersona,
 ) -> PersistedRunOutcome:
     """Persist the final run record and its success/failure trajectory memory."""
     baseline = state.get("baseline")
@@ -68,7 +66,6 @@ def persist_run_outcome(
         error_message=error_message,
         error_summary=error_summary,
         evidence_level=evidence_level,
-        report_persona=report_persona,
     )
     store.save(record)
 

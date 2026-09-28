@@ -28,9 +28,9 @@ class SQLiteRunRecordStore:
                 INSERT INTO runs (
                     run_id, issue_id, repo_name, pre_loc, post_loc, pre_cc, post_cc,
                     self_heal_count, status, error, error_code, error_message, error_summary,
-                    evidence_level, report_persona
+                    evidence_level
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO UPDATE SET
                     issue_id = excluded.issue_id,
                     repo_name = excluded.repo_name,
@@ -44,8 +44,7 @@ class SQLiteRunRecordStore:
                     error_code = excluded.error_code,
                     error_message = excluded.error_message,
                     error_summary = excluded.error_summary,
-                    evidence_level = excluded.evidence_level,
-                    report_persona = excluded.report_persona
+                    evidence_level = excluded.evidence_level
                 """,
                 (
                     record.run_id,
@@ -62,7 +61,6 @@ class SQLiteRunRecordStore:
                     record.error_message,
                     sanitize_text(record.error_summary) if record.error_summary else None,
                     record.evidence_level.value,
-                    record.report_persona.value,
                 ),
             )
 

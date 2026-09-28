@@ -433,7 +433,7 @@ class PySide6Renderer:
         dialog.setWindowTitle("奶龙活动陪伴授权")
         dialog.setText("是否允许奶龙仅在本机识别有限的桌面活动信号？")
         dialog.setInformativeText(
-            "默认不会采集截图、OCR、剪贴板、完整窗口标题、终端正文或源代码。"
+            "授权后，奶龙会在检测到你在写 Python 代码时读取当前 .py 文件并做本地锐评。"
             "密码、Token、SSH/Auth 文件和会议窗口会被禁止采集。"
         )
         dialog.setStandardButtons(self._QMessageBox.Yes | self._QMessageBox.No)

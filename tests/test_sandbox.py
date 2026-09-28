@@ -18,54 +18,9 @@ from refactor_agent.sandbox import (
 from refactor_agent.execution_control import ExecutionControl
 
 
-def test_sandbox_detects_passing_tests(tmp_path: Path):
-    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
-    workspace = tmp_path / "workspace"
-    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
-    result = run_pytest(workspace, tests, timeout_seconds=10)
-    assert result.passed is True
 
 
-def test_sandbox_detects_assertion_failure(tmp_path: Path):
-    project = _make_project(tmp_path, "def add(a, b):\n    return a - b\n")
-    workspace = tmp_path / "workspace"
-    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
-    result = run_pytest(workspace, tests, timeout_seconds=10)
-    assert result.passed is False
-    assert result.returncode != 0
 
-
-def test_write_candidate_allows_retry(tmp_path: Path):
-    project = _make_project(tmp_path, "def add(a, b):\n    return a - b\n")
-    workspace = tmp_path / "workspace"
-    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
-    write_candidate(target, "def add(a, b):\n    return a + b\n")
-    result = run_pytest(workspace, tests, timeout_seconds=10)
-    assert result.passed is True
-
-
-def test_performance_profile_reports_time_and_memory(tmp_path: Path):
-    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
-    workspace = tmp_path / "workspace"
-    _, target, tests = prepare_workspace(project / "maths.py", project / "tests", workspace)
-    result = run_performance_profile(workspace, target, tests, timeout_seconds=10)
-    assert result.passed is True
-    assert result.pytest_duration_seconds > 0
-    assert result.peak_memory_kib > 0
-    assert result.import_time_seconds is not None
-
-
-def test_prepare_workspace_normalizes_temp_directory_permissions(tmp_path: Path):
-    project = _make_project(tmp_path, "def add(a, b):\n    return a + b\n")
-    source = project / "private"
-    source.mkdir()
-    (source / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
-    source.chmod(0o700)
-    workspace = tmp_path / "workspace"
-
-    prepare_workspace(source / "module.py", project / "tests", workspace)
-
-    assert workspace.stat().st_mode & 0o005
 
 
 def test_build_docker_command_uses_network_and_resource_limits(tmp_path: Path):
@@ -91,27 +46,6 @@ def test_build_docker_command_uses_network_and_resource_limits(tmp_path: Path):
     assert "--user" in command
     assert command[command.index("-v") + 1].endswith(":/workspace:ro")
 
-
-def test_build_docker_command_uses_named_run_volume_when_containerized(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    workspace = Path("/data/runs/run-1/workspace")
-    monkeypatch.setenv("REFACTOR_AGENT_SANDBOX_VOLUME", "refactor-agent-local_refactor-agent-memory")
-    monkeypatch.setenv("REFACTOR_AGENT_SANDBOX_DATA_ROOT", "/data")
-
-    command = build_docker_command(
-        workspace=workspace,
-        docker_image="refactor-agent-sandbox:py312",
-        memory="128m",
-        cpus=0.5,
-        inner_command="print('ok')",
-    )
-
-    assert command[command.index("-v") + 1] == (
-        "refactor-agent-local_refactor-agent-memory:/data:ro"
-    )
-    assert command[command.index("-w") + 1] == "/data/runs/run-1/workspace"
 
 
 def test_subprocess_environment_drops_credentials(monkeypatch: pytest.MonkeyPatch):

@@ -96,8 +96,3 @@ class PublishReceipt(BaseModel):
 
 class AnalysisEventSink(Protocol):
     def emit(self, event: AnalysisEvent) -> PublishReceipt: ...
-
-
-class NullAnalysisEventSink:
-    def emit(self, event: AnalysisEvent) -> PublishReceipt:
-        return PublishReceipt(accepted=True, reason="notification_sink_disabled")

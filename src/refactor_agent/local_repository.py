@@ -21,11 +21,9 @@ from refactor_agent.models import (
     GitHubRefactorJob,
     EvidenceLevel,
     RefactorRequest,
-    ReportPersona,
     RepositoryJobKind,
 )
 from refactor_agent.orchestrator import RefactorOrchestrator
-from refactor_agent.persona import inject_persona_report
 from refactor_agent.repository_allowlist import (
     RepositoryAllowlistPolicy,
     RepositoryNotAllowlistedError,
@@ -125,16 +123,8 @@ class LocalRepositoryRefactorService:
                     max_retry=self.settings.max_retry,
                     allowed_import_roots=self.settings.allowed_import_roots,
                     evidence_level=EvidenceLevel.REPOSITORY_TESTS,
-                    persona=ReportPersona(job.persona),
                 ),
                 execution_control=control,
-            )
-            report_path = self.settings.run_root / run_result.record.run_id / "artifacts" / "report.md"
-            inject_persona_report(
-                report_path,
-                run_result,
-                ReportPersona(job.persona),
-                persona_client=orchestrator.llm_client,
             )
             status = "DRY_RUN" if run_result.record.status == "SUCCESS" else "FAILED"
             return GitHubAutomationResult(

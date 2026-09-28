@@ -205,7 +205,6 @@ class _RefactorWorkflow:
             repo_name=self.repo_name,
             memory_key=self.memory_key,
             evidence_level=self.request.evidence_level,
-            report_persona=self.request.persona,
             graph_backend=self.orchestrator.graph_backend,
             build_report=render_report,
             write_artifacts=self._write_artifacts,

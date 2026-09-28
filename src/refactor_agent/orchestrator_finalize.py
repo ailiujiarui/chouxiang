@@ -8,7 +8,6 @@ from refactor_agent.execution_graph import ExecutionState
 from refactor_agent.models import (
     EvidenceLevel,
     RefactorRunResult,
-    ReportPersona,
     RewardBreakdown,
 )
 from refactor_agent.orchestrator_persistence import (
@@ -57,7 +56,6 @@ def run_finalize_execution_node(
     repo_name: str,
     memory_key: str,
     evidence_level: EvidenceLevel,
-    report_persona: ReportPersona,
     graph_backend: str,
     build_report: ReportBuilder,
     write_artifacts: ArtifactWriter,
@@ -74,7 +72,6 @@ def run_finalize_execution_node(
         repo_name=repo_name,
         memory_key=memory_key,
         evidence_level=evidence_level,
-        report_persona=report_persona,
     )
     record = outcome.record
     approved = outcome.approved
@@ -102,7 +99,6 @@ def run_finalize_execution_node(
         graph_backend,
         graph_trace,
         evidence_level,
-        report_persona,
         llm_usages=state.get("llm_usages", []),
     )
     write_artifacts(state, report)
@@ -123,7 +119,6 @@ def run_finalize_execution_node(
         graph_node_trace=graph_trace,
         llm_usages=state.get("llm_usages", []),
         evidence_level=evidence_level,
-        report_persona=report_persona,
     )
     reward = state.get("reward")
     mutation = state.get("mutation")

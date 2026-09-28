@@ -10,12 +10,7 @@ from refactor_agent.models import (
     AdversarialTestResult,
     AgentDebateMessage,
 )
-from refactor_agent.orchestrator_adversary import (
-    run_adversary_execution_node,
-    summarize_adversarial_failure,
-    summarize_adversary_pass,
-    summarize_critique,
-)
+from refactor_agent.orchestrator_adversary import run_adversary_execution_node
 from refactor_agent.orchestrator_state import initial_execution_state
 
 
@@ -149,19 +144,6 @@ def test_adversary_node_records_failure_and_closes_round(
         )
     ]
 
-
-def test_adversary_summaries_output():
-    critique = AdversarialCritique(
-        risk_level="LOW",
-        attack_plan=[],
-        rationale="none",
-    )
-    empty = _result(passed=True, generated=0, returncode=0)
-    failed = _result(passed=False, generated=1, returncode=7)
-
-    assert "暂无命中规则" in summarize_critique(critique)
-    assert "没找到" in summarize_adversary_pass(empty)
-    assert "返回码 7" in summarize_adversarial_failure(failed)
 
 
 def _state(tmp_path: Path, max_attempts: int):

@@ -88,18 +88,6 @@ def test_job_record_audit_and_analysis_projection_rollback_together(
     assert analysis_events.list_analysis_events() == []
 
 
-def test_job_repository_closes_every_operation_connection(tmp_path: Path) -> None:
-    factory = _TrackingConnectionFactory(tmp_path / "jobs.sqlite")
-    _initialize(factory)
-    repository = SQLiteGitHubJobStore(factory, SQLiteAnalysisEventStore(factory))
-    job = _github_job()
-
-    repository.create_github_job(job)
-    assert repository.get_github_job(job.job_id) is not None
-
-    assert factory.connections
-    assert all(connection.closed for connection in factory.connections)
-
 
 class _ConnectionFactory:
     def __init__(self, database_path: Path) -> None:

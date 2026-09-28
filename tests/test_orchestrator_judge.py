@@ -8,10 +8,7 @@ from refactor_agent.models import (
     MutationTestResult,
     RewardBreakdown,
 )
-from refactor_agent.orchestrator_judge import (
-    run_judge_execution_node,
-    summarize_judge,
-)
+from refactor_agent.orchestrator_judge import run_judge_execution_node
 from refactor_agent.orchestrator_state import initial_execution_state
 
 
@@ -102,11 +99,6 @@ def test_judge_node_routes_failed_candidate(
     assert state["debate_rounds"][-1].converged is False
     assert "Surviving mutants: replace return value" in state["previous_error"]
 
-
-def test_judge_summary_output():
-    reward = _reward()
-
-    assert "裁判评分=3.50" in summarize_judge(reward)
 
 
 def _state(

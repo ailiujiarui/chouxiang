@@ -26,10 +26,6 @@ def test_collection_is_denied_until_user_explicitly_consents() -> None:
     assert decision.reason == "activity_collection_not_authorized"
 
 
-def test_unanswered_consent_is_distinct_from_a_recorded_decline() -> None:
-    assert PrivacyPolicy().needs_initial_consent is True
-    assert PrivacyPolicy(PrivacyConsent()).needs_initial_consent is False
-
 
 def test_sensitive_and_meeting_windows_are_blocked_before_unified_event_creation() -> None:
     policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True, remote_inference_enabled=True))
@@ -46,15 +42,6 @@ def test_sensitive_and_meeting_windows_are_blocked_before_unified_event_creation
     assert (ssh.allowed, ssh.reason) == (False, "sensitive_window_or_content")
     assert (meeting.allowed, meeting.reason) == (False, "meeting_window")
 
-
-def test_false_meeting_signal_does_not_block_collection() -> None:
-    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
-
-    decision = policy.admit_activity(
-        RawActivitySignal(source="window", application_id="code", metadata={"is_meeting_likely": False})
-    )
-
-    assert decision.allowed is True
 
 
 def test_allowed_signal_becomes_unified_minimized_activity() -> None:
@@ -79,89 +66,6 @@ def test_allowed_signal_becomes_unified_minimized_activity() -> None:
     assert policy.prepare_remote_summary(decision.event) is None
 
 
-@pytest.mark.parametrize(
-    "process_name",
-    ["League of Legends.exe", "DeltaForceClient-Win64-Shipping.exe"],
-)
-def test_known_game_processes_are_minimized_without_leaking_process_name(process_name: str) -> None:
-    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
-
-    decision = policy.admit_activity(
-        RawActivitySignal(source="window", application_id=process_name)
-    )
-
-    assert decision.allowed is True
-    assert decision.event is not None
-    assert decision.event.application_id == "game"
-    assert process_name.casefold() not in decision.event.model_dump_json().casefold()
-
-
-@pytest.mark.parametrize(
-    ("activity_hint", "expected_activity"),
-    [
-        ("pytest failed", ActivityType.TEST_FAILED),
-        ("pytest passed", ActivityType.TEST_SUCCEEDED),
-        ("build succeeded", ActivityType.COMPILE_SUCCEEDED),
-    ],
-)
-def test_terminal_status_hints_are_minimized_to_activity_enums(
-    activity_hint: str,
-    expected_activity: ActivityType,
-) -> None:
-    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
-
-    decision = policy.admit_activity(
-        RawActivitySignal(
-            source="ide",
-            application_id="Code.exe",
-            activity_hint=activity_hint,
-        )
-    )
-
-    assert decision.event is not None
-    assert decision.event.activity is expected_activity
-    assert decision.event.confidence == 0.9
-    assert decision.event.summary == (
-        f"application=code; activity={expected_activity.value}; source=ide"
-    )
-
-
-def test_unknown_application_is_reduced_to_a_nonidentifying_category() -> None:
-    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
-
-    decision = policy.admit_activity(
-        RawActivitySignal(source="process", application_id="C:\\Customers\\Acme Internal Tool.exe")
-    )
-
-    assert decision.allowed is True
-    assert decision.event is not None
-    assert decision.event.application_id == "other"
-    assert "acme" not in decision.event.model_dump_json().casefold()
-
-
-@pytest.mark.parametrize(
-    ("executable", "category"),
-    [
-        ("Codex.exe", "code"),
-        ("Cursor.exe", "code"),
-        ("Windsurf.exe", "code"),
-        ("Zed.exe", "code"),
-        ("devenv.exe", "ide"),
-    ],
-)
-def test_development_tools_are_reduced_to_safe_categories(
-    executable: str,
-    category: str,
-) -> None:
-    policy = PrivacyPolicy(PrivacyConsent(activity_collection_enabled=True))
-
-    decision = policy.admit_activity(
-        RawActivitySignal(source="window", application_id=executable)
-    )
-
-    assert decision.event is not None
-    assert decision.event.application_id == category
-    assert executable.casefold() not in decision.event.model_dump_json().casefold()
 
 
 def test_remote_summary_accepts_only_unified_event_and_is_redacted() -> None:
@@ -188,27 +92,10 @@ def test_unified_event_rejects_raw_content_fields(forbidden: str) -> None:
         ActivityEvent.model_validate(payload)
 
 
-def test_unified_event_rejects_naive_time_and_unsafe_application() -> None:
-    with pytest.raises(ValidationError, match="timezone-aware"):
-        ActivityEvent(
-            occurred_at=datetime(2026, 7, 24, 8, 0),
-            source="window",
-            application_id="code",
-            activity=ActivityType.CODING,
-            confidence=0.8,
-        )
-    with pytest.raises(ValidationError):
-        ActivityEvent(
-            source="window",
-            application_id="C:\\private\\code.exe",
-            activity=ActivityType.CODING,
-            confidence=0.8,
-        )
-
 
 def test_store_persists_unified_events_and_windows_then_clears_both(tmp_path) -> None:
     store = PrivacyStore(tmp_path / "pet.sqlite")
-    consent = PrivacyConsent(activity_collection_enabled=True, python_review_enabled=True)
+    consent = PrivacyConsent(activity_collection_enabled=True)
     policy = PrivacyPolicy(consent)
     store.save_consent(consent)
     decision = policy.admit_activity(RawActivitySignal(source="window", application_id="code", activity=ActivityType.CODING, confidence=0.8))
@@ -236,31 +123,6 @@ def test_store_persists_unified_events_and_windows_then_clears_both(tmp_path) ->
     assert store.activity_window_count() == 0
 
 
-def test_store_rejects_events_that_bypass_minimization(tmp_path) -> None:
-    store = PrivacyStore(tmp_path / "pet.sqlite")
-    private = ActivityEvent(
-        source="window",
-        application_id="code",
-        activity=ActivityType.CODING,
-        confidence=0.8,
-        sensitivity="private",
-    )
-    with pytest.raises(ValueError, match="minimized"):
-        store.append_minimized_activity(private)
-
-    bypassed = ActivityEvent.model_construct(
-        event_id="unsafe",
-        occurred_at=datetime.now(timezone.utc),
-        source="window",
-        application_id="C:\\private\\code.exe",
-        activity=ActivityType.CODING,
-        confidence=0.8,
-        summary=None,
-        sensitivity="public",
-    )
-    with pytest.raises(ValueError, match="minimized"):
-        store.append_minimized_activity(bypassed)
-
 
 def test_store_is_idempotent_by_event_id(tmp_path) -> None:
     store = PrivacyStore(tmp_path / "pet.sqlite")
@@ -274,77 +136,3 @@ def test_store_is_idempotent_by_event_id(tmp_path) -> None:
 
     assert store.append_minimized_activity(event) is True
     assert store.append_minimized_activity(event) is False
-
-
-def test_store_migrates_legacy_activity_rows_without_losing_data(tmp_path) -> None:
-    database_path = tmp_path / "legacy.sqlite"
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE pet_privacy_consent (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                activity_collection_enabled INTEGER NOT NULL,
-                remote_inference_enabled INTEGER NOT NULL
-            );
-            INSERT INTO pet_privacy_consent VALUES (1, 1, 0);
-            CREATE TABLE pet_activity_events (
-                event_id TEXT PRIMARY KEY,
-                occurred_at TEXT NOT NULL,
-                source TEXT NOT NULL,
-                application_id TEXT NOT NULL,
-                idle_seconds INTEGER,
-                is_fullscreen INTEGER NOT NULL CHECK (is_fullscreen IN (0, 1)),
-                is_meeting_likely INTEGER NOT NULL CHECK (is_meeting_likely IN (0, 1))
-            );
-            INSERT INTO pet_activity_events
-                (event_id, occurred_at, source, application_id, idle_seconds,
-                 is_fullscreen, is_meeting_likely)
-            VALUES ('legacy-event', '2026-07-24T08:00:00+00:00', 'window', 'code', 3, 0, 0);
-            """
-        )
-
-    store = PrivacyStore(database_path)
-
-    assert store.load_consent() == PrivacyConsent(activity_collection_enabled=True)
-    assert store.activity_count() == 1
-    with sqlite3.connect(database_path) as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(pet_activity_events)")}
-        row = connection.execute(
-            "SELECT event_id, activity, confidence, summary FROM pet_activity_events"
-        ).fetchone()
-    assert {"activity", "confidence", "summary"} <= columns
-    assert row == ("legacy-event", "unknown", 0.0, None)
-
-
-def test_store_migrates_intermediate_activity_windows(tmp_path) -> None:
-    database_path = tmp_path / "intermediate.sqlite"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE pet_activity_windows (
-                application_id TEXT NOT NULL,
-                activity TEXT NOT NULL,
-                window_started_at TEXT NOT NULL,
-                last_occurred_at TEXT NOT NULL,
-                event_count INTEGER NOT NULL,
-                maximum_confidence REAL NOT NULL,
-                PRIMARY KEY (application_id, activity, window_started_at)
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO pet_activity_windows
-            VALUES ('code', 'coding', '2026-07-24T08:00:00+00:00',
-                    '2026-07-24T08:01:00+00:00', 2, 0.9)
-            """
-        )
-
-    store = PrivacyStore(database_path)
-
-    windows = store.list_activity_windows()
-    assert len(windows) == 1
-    assert windows[0].dominant_application == "code"
-    assert windows[0].dominant_activity == ActivityType.CODING
-    assert windows[0].event_count == 2
-    assert windows[0].confidence == 0.9

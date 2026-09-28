@@ -353,7 +353,6 @@ def create_app(
         response_payload = _sanitize_payload(record.model_dump(mode="json", exclude={"payload_json"}))
         response_payload.update(
             evidence_level=prepared.evidence_level.value,
-            report_persona=payload.persona.value,
             product_mode=product_mode(settings),
         )
         return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=response_payload)

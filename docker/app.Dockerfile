@@ -37,4 +37,4 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 VOLUME ["/data"]
 
 ENTRYPOINT ["refactor-agent"]
-CMD ["memories", "--limit", "20"]
+CMD ["jobs", "--limit", "20"]
